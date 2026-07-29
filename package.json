@@ -1,0 +1,16 @@
+{
+  "name": "pomodoro-aio",
+  "version": "0.3.4",
+  "private": true,
+  "description": "Pomodoro AIO Obsidian plugin",
+  "main": "main.js",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "test": "node scripts/cycle-mode-check.cjs",
+    "check": "node --check src/main.js && npm test && npm run build",
+    "install:vault": "npm run check && node scripts/install-vault.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.0"
+  }
+}
