@@ -60,9 +60,25 @@
   border-radius: 10px;
 }
 .pmd-cycle-row.is-current { background: var(--background-secondary); border-color: var(--interactive-accent); }
-.pmd-cycle-role { color: var(--text-muted); font-size: 12px; font-weight: 600; text-align: center; white-space: nowrap; }
+.pmd-cycle-row.is-selectable { cursor: pointer; }
+.pmd-cycle-role { align-self: start; padding-top: 8px; color: var(--text-muted); font-size: 12px; font-weight: 600; text-align: center; white-space: nowrap; }
 .pmd-cycle-row.is-current .pmd-cycle-role { color: var(--text-accent); }
-.pmd-cycle-duration { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.pmd-cycle-fields { display: grid; gap: 6px; min-width: 0; }
+.pmd-cycle-workspace {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 4px 28px 4px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  background-color: var(--background-primary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+.pmd-cycle-workspace:focus { color: var(--text-normal); border-color: var(--interactive-accent); }
+.pmd-cycle-duration { align-self: start; display: flex; align-items: center; gap: 4px; min-width: 0; }
 .pmd-cycle-min { width: 64px; min-width: 0; }
 .pmd-cycle-unit { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 .pmd-hidden { display: none; }

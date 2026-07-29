@@ -59,8 +59,10 @@ const DEFAULT_SETTINGS = {
   workMode: "standard",
   cycleTaskA: "",
   cycleMinA: 15,
+  cycleWorkspaceCommandA: "",
   cycleTaskB: "",
   cycleMinB: 15,
+  cycleWorkspaceCommandB: "",
 
   // 兼容性
   respectModalInputFocus: true
@@ -123,6 +125,10 @@ function formatTomatoNumber(val) {
   const num = Number(val) || 0;
   const rounded = Math.round(num * 10) / 10;
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+function positiveNumber(value, fallback, min=0.1) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.max(min, number) : fallback;
 }
 function playBeep(kind, enabled=true, waveform='sine', strong=false) {
   if (!enabled) return;
@@ -499,12 +505,21 @@ class PomodoroAIO extends Plugin {
   }
   executeStageCommand(commandId){
     const id = String(commandId||"").trim();
-    if (!id) return;
+    if (!id) return false;
     try {
-      this.app?.commands?.executeCommandById?.(id);
+      const executed = this.app?.commands?.executeCommandById?.(id);
+      if (executed === false) new Notice("附带命令不可用，请重新选择");
+      return executed !== false;
     } catch (err) {
       console.error(err);
+      new Notice("附带命令执行失败，请重新选择");
+      return false;
     }
+  }
+  getWorkspaceLayoutCommands(){
+    return (this.app?.commands?.listCommands?.() || [])
+      .filter(command=> command?.id?.startsWith("workspaces-plus:") && /(?:^|:\s)Load:\s/.test(String(command.name||"")))
+      .sort((a, b)=> String(a.name).localeCompare(String(b.name), "zh-CN"));
   }
 
   /* ====== 计时控制 ====== */
@@ -562,10 +577,13 @@ class PomodoroAIO extends Plugin {
       const task = String(this.runtime.currentTaskName || this.settings.defaultTaskName || "").trim();
       sysNotify("开始专注", `${formatTomatoNumber(minutes)} 分钟${task ? ` · 任务：${task}` : ""}`, this.settings.enableNotify);
     }
-    if (opts.cause !== 'auto' && this.settings.focusStartCommandId) this.executeStageCommand(this.settings.focusStartCommandId);
+    const commandId = opts.cycle
+      ? (this.runtime.cycleSlot === 1 ? this.settings.cycleWorkspaceCommandB : this.settings.cycleWorkspaceCommandA)
+      : this.settings.focusStartCommandId;
+    if (opts.cause !== 'auto' && commandId) this.executeStageCommand(commandId);
     this._resyncTick();
   }
-  startCycle(slot=0, options={}){
+  startCycle(slot=this.runtime.cycleSlot, options={}){
     const cycleSlot = slot === 1 ? 1 : 0;
     const task = String(cycleSlot ? this.settings.cycleTaskB : this.settings.cycleTaskA).trim();
     const minutes = Number(cycleSlot ? this.settings.cycleMinB : this.settings.cycleMinA);
@@ -619,7 +637,10 @@ class PomodoroAIO extends Plugin {
     this.saveState(); this.broadcast();
     this._resyncTick();
     if (triggerCommand && wasPaused && !this.runtime.paused) {
-      if (this.runtime.phase === 'focus' && this.settings.focusStartCommandId) this.executeStageCommand(this.settings.focusStartCommandId);
+      const focusCommandId = this.runtime.cycleActive
+        ? (this.runtime.cycleSlot === 1 ? this.settings.cycleWorkspaceCommandB : this.settings.cycleWorkspaceCommandA)
+        : this.settings.focusStartCommandId;
+      if (this.runtime.phase === 'focus' && focusCommandId) this.executeStageCommand(focusCommandId);
       else if (this.runtime.phase === 'break' && this.settings.breakStartCommandId) this.executeStageCommand(this.settings.breakStartCommandId);
     }
   }
@@ -881,6 +902,12 @@ class PomodoroAIO extends Plugin {
     Object.assign(this.settings, patch);
     this.saveSettings(); this.broadcast();
   }
+  selectCycleSlot(slot){
+    if (this.settings.workMode !== 'cycle' || this.runtime.phase !== 'idle' || this.runtime.strongAlert) return false;
+    this.runtime.cycleSlot = slot === 1 ? 1 : 0;
+    this.saveState(); this.broadcast();
+    return true;
+  }
   setLongFocusMinutes(minutes, broadcast=true){
     const num = Number(minutes);
     if (!isFinite(num)) return;
@@ -1026,13 +1053,18 @@ class PomodoroView extends ItemView {
       const cycleWrap = container.createDiv({ cls:"pmd-cycle" });
       const cycleRowA = cycleWrap.createDiv({ cls:"pmd-cycle-row" });
       const cycleRoleA = cycleRowA.createSpan({ cls:"pmd-cycle-role", text:"当前" });
-      const cycleTaskWrapA = cycleRowA.createDiv({ cls:"pmd-input-wrap" });
+      const cycleFieldsA = cycleRowA.createDiv({ cls:"pmd-cycle-fields" });
+      const cycleTaskWrapA = cycleFieldsA.createDiv({ cls:"pmd-input-wrap" });
       const cycleTaskA = cycleTaskWrapA.createEl("input", {
         type:"text", cls:"pmd-input",
         attr:{ list:"pmdCycleTaskListA", placeholder:"任务 A", "aria-label":"循环任务 A" }
       });
       const cycleTaskListA = cycleTaskWrapA.createEl("datalist", { attr:{ id:"pmdCycleTaskListA" } });
       const clearCycleTaskA = cycleTaskWrapA.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空任务名", "aria-label":"清空任务名", type:"button" } });
+      const cycleWorkspaceA = cycleFieldsA.createEl("select", {
+        cls:"pmd-cycle-workspace",
+        attr:{ "aria-label":"任务 A 工作区布局", title:"开始任务 A 时加载的 Workspaces Plus 布局" }
+      });
       const cycleDurationA = cycleRowA.createDiv({ cls:"pmd-cycle-duration" });
       const cycleMinA = cycleDurationA.createEl("input", {
         type:"number", cls:"pmd-cycle-min",
@@ -1042,13 +1074,18 @@ class PomodoroView extends ItemView {
 
       const cycleRowB = cycleWrap.createDiv({ cls:"pmd-cycle-row" });
       const cycleRoleB = cycleRowB.createSpan({ cls:"pmd-cycle-role", text:"下一段" });
-      const cycleTaskWrapB = cycleRowB.createDiv({ cls:"pmd-input-wrap" });
+      const cycleFieldsB = cycleRowB.createDiv({ cls:"pmd-cycle-fields" });
+      const cycleTaskWrapB = cycleFieldsB.createDiv({ cls:"pmd-input-wrap" });
       const cycleTaskB = cycleTaskWrapB.createEl("input", {
         type:"text", cls:"pmd-input",
         attr:{ list:"pmdCycleTaskListB", placeholder:"任务 B", "aria-label":"循环任务 B" }
       });
       const cycleTaskListB = cycleTaskWrapB.createEl("datalist", { attr:{ id:"pmdCycleTaskListB" } });
       const clearCycleTaskB = cycleTaskWrapB.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空任务名", "aria-label":"清空任务名", type:"button" } });
+      const cycleWorkspaceB = cycleFieldsB.createEl("select", {
+        cls:"pmd-cycle-workspace",
+        attr:{ "aria-label":"任务 B 工作区布局", title:"开始任务 B 时加载的 Workspaces Plus 布局" }
+      });
       const cycleDurationB = cycleRowB.createDiv({ cls:"pmd-cycle-duration" });
       const cycleMinB = cycleDurationB.createEl("input", {
         type:"number", cls:"pmd-cycle-min",
@@ -1059,6 +1096,26 @@ class PomodoroView extends ItemView {
       cycleTaskB.value = this.plugin.settings.cycleTaskB || "";
       cycleMinA.value = String(this.plugin.settings.cycleMinA || 15);
       cycleMinB.value = String(this.plugin.settings.cycleMinB || 15);
+      const fillWorkspaceSelect = (select, selected="")=> {
+        const commands = this.plugin.getWorkspaceLayoutCommands();
+        select.empty();
+        select.createEl("option", {
+          text: commands.length ? "布局 · 不切换" : "布局 · 未检测到 Workspaces Plus",
+          attr:{ value:"" }
+        });
+        commands.forEach(command=> select.createEl("option", {
+          text:`布局 · ${String(command.name).replace(/^.*?Load:\s*/, "")}`,
+          attr:{ value:command.id }
+        }));
+        if (selected && !commands.some(command=> command.id === selected)) {
+          select.createEl("option", { text:"布局 · 已失效，请重选", attr:{ value:selected } });
+        }
+        select.value = selected;
+      };
+      fillWorkspaceSelect(cycleWorkspaceA, this.plugin.settings.cycleWorkspaceCommandA || "");
+      fillWorkspaceSelect(cycleWorkspaceB, this.plugin.settings.cycleWorkspaceCommandB || "");
+      cycleWorkspaceA.onfocus = ()=> fillWorkspaceSelect(cycleWorkspaceA, cycleWorkspaceA.value);
+      cycleWorkspaceB.onfocus = ()=> fillWorkspaceSelect(cycleWorkspaceB, cycleWorkspaceB.value);
 
       // 操作按钮
       const actions = container.createDiv({ cls:"pmd-actions" });
@@ -1096,8 +1153,8 @@ class PomodoroView extends ItemView {
         if (cycleSaveTimer) window.clearTimeout(cycleSaveTimer);
         cycleSaveTimer = null;
         const patch = {
-        cycleTaskA: cycleTaskA.value.trim(), cycleMinA: Math.max(1, Number(cycleMinA.value) || 15),
-        cycleTaskB: cycleTaskB.value.trim(), cycleMinB: Math.max(1, Number(cycleMinB.value) || 15)
+        cycleTaskA: cycleTaskA.value.trim(), cycleMinA: Math.max(1, Number(cycleMinA.value) || 15), cycleWorkspaceCommandA: cycleWorkspaceA.value,
+        cycleTaskB: cycleTaskB.value.trim(), cycleMinB: Math.max(1, Number(cycleMinB.value) || 15), cycleWorkspaceCommandB: cycleWorkspaceB.value
         };
         if (Object.entries(patch).every(([key, value])=> this.plugin.settings[key] === value)) return;
         this.plugin.setCycleConfig(patch);
@@ -1110,10 +1167,13 @@ class PomodoroView extends ItemView {
         input.oninput = queueCycleSave;
         input.onchange = saveCycleConfig;
       });
+      [cycleWorkspaceA, cycleWorkspaceB].forEach(select=> select.onchange = saveCycleConfig);
       [cycleTaskA, cycleTaskB].forEach(input=> {
         input.addEventListener('focus', ()=> _openDatalist(input));
         input.addEventListener('click', ()=> _openDatalist(input));
       });
+      cycleRowA.ondblclick = (event)=> { if (!event.target.closest("input, button, select")) this.plugin.selectCycleSlot(0); };
+      cycleRowB.ondblclick = (event)=> { if (!event.target.closest("input, button, select")) this.plugin.selectCycleSlot(1); };
       const clearCurrentTask = (event)=> {
         event?.preventDefault();
         if (taskSaveTimer) window.clearTimeout(taskSaveTimer);
@@ -1194,7 +1254,8 @@ class PomodoroView extends ItemView {
 
         const renderKey = [
           cycleMode, s.showProjectSelector, s.currentProjectPath, s.dailyGoal,
-          s.cycleTaskA, s.cycleMinA, s.cycleTaskB, s.cycleMinB,
+          s.cycleTaskA, s.cycleMinA, s.cycleWorkspaceCommandA,
+          s.cycleTaskB, s.cycleMinB, s.cycleWorkspaceCommandB,
           r.phase, r.paused, r.strongAlert, r.pendingPhase, r.pendingCycleSlot,
           r.cycleActive, r.cycleSlot, r.sessionCount, r.currentTaskName,
           r.longFocusMinutes, this._todaySumCache
@@ -1221,11 +1282,25 @@ class PomodoroView extends ItemView {
         modeButton.setAttribute("aria-pressed", String(cycleMode));
         modeButton.setAttribute("aria-label", cycleMode ? "当前为循环工作，点击切换到普通专注" : "当前为普通专注，点击切换到循环工作");
         modeButton.setAttribute("title", cycleMode ? "切换到普通专注" : "切换到循环工作");
-        [cycleTaskA, cycleMinA, cycleTaskB, cycleMinB, clearCycleTaskA, clearCycleTaskB].forEach(input=> input.disabled = r.cycleActive);
+        const lockCycleA = r.cycleActive && r.cycleSlot === 0;
+        const lockCycleB = r.cycleActive && r.cycleSlot === 1;
+        [cycleTaskA, cycleMinA, clearCycleTaskA, cycleWorkspaceA].forEach(input=> input.disabled = lockCycleA);
+        [cycleTaskB, cycleMinB, clearCycleTaskB, cycleWorkspaceB].forEach(input=> input.disabled = lockCycleB);
+        if (document.activeElement !== cycleWorkspaceA && cycleWorkspaceA.value !== (s.cycleWorkspaceCommandA || "")) {
+          fillWorkspaceSelect(cycleWorkspaceA, s.cycleWorkspaceCommandA || "");
+        }
+        if (document.activeElement !== cycleWorkspaceB && cycleWorkspaceB.value !== (s.cycleWorkspaceCommandB || "")) {
+          fillWorkspaceSelect(cycleWorkspaceB, s.cycleWorkspaceCommandB || "");
+        }
         if (cycleMode) {
           const currentSlot = Number.isInteger(r.pendingCycleSlot) ? r.pendingCycleSlot : (r.cycleSlot === 1 ? 1 : 0);
+          const canSelectSlot = r.phase === 'idle' && !r.strongAlert;
           cycleRowA.classList.toggle("is-current", currentSlot === 0);
           cycleRowB.classList.toggle("is-current", currentSlot === 1);
+          cycleRowA.classList.toggle("is-selectable", canSelectSlot);
+          cycleRowB.classList.toggle("is-selectable", canSelectSlot);
+          cycleRowA.setAttribute("title", canSelectSlot ? "双击设为当前任务" : "");
+          cycleRowB.setAttribute("title", canSelectSlot ? "双击设为当前任务" : "");
           cycleRoleA.setText(currentSlot === 0 ? (r.strongAlert ? "待开始" : "当前") : "下一段");
           cycleRoleB.setText(currentSlot === 1 ? (r.strongAlert ? "待开始" : "当前") : "下一段");
           cycleRowA.setAttribute("aria-label", `${cycleRoleA.textContent}：任务 A`);
@@ -1342,17 +1417,18 @@ class PomodoroSettingTab extends PluginSettingTab {
     c.createEl("h2", { text:"Pomodoro AIO 设置" });
 
     c.createEl("h3", { text:"计时参数" });
-    new Setting(c).setName("专注时长（分钟）").addText(t=>t.setValue(String(s.focusMin)).onChange(v=>set({focusMin: Number(v)||25})));
+    new Setting(c).setName("专注时长（分钟）").addText(t=>t.setValue(String(s.focusMin)).onChange(v=>set({focusMin: positiveNumber(v, 25)})));
     new Setting(c).setName("默认长专注时长（分钟）").setDesc("用于视图中的长专注按钮")
       .addText(t=>t.setValue(String(s.longFocusDefaultMin || 50)).onChange(v=>{
-        const num = Math.max(1, Number(v) || (s.focusMin || 25));
+        const num = positiveNumber(v, positiveNumber(s.focusMin, 25));
         set({ longFocusDefaultMin: num });
         this.plugin.setLongFocusMinutes(num);
       }));
-    new Setting(c).setName("短休时长（分钟）").addText(t=>t.setValue(String(s.breakMin)).onChange(v=>set({breakMin: Number(v)||5})));
-    new Setting(c).setName("长休时长（分钟）").addText(t=>t.setValue(String(s.longBreakMin)).onChange(v=>set({longBreakMin: Number(v)||15})));
-    new Setting(c).setName("每 N 次长休一次").addText(t=>t.setValue(String(s.longEvery)).onChange(v=>set({longEvery: Number(v)||4})));
-    new Setting(c).setName("完成后自动进入下一段").addToggle(t=>t.setValue(s.autoNext).onChange(v=>set({autoNext:v})));
+    new Setting(c).setName("短休时长（分钟）").addText(t=>t.setValue(String(s.breakMin)).onChange(v=>set({breakMin: positiveNumber(v, 5)})));
+    new Setting(c).setName("长休时长（分钟）").addText(t=>t.setValue(String(s.longBreakMin)).onChange(v=>set({longBreakMin: positiveNumber(v, 15)})));
+    new Setting(c).setName("每 N 次长休一次").addText(t=>t.setValue(String(s.longEvery)).onChange(v=>set({longEvery: Math.max(1, Math.round(positiveNumber(v, 4, 1)))})));
+    new Setting(c).setName("完成后自动进入下一段").setDesc("仅普通模式；循环工作每段结束后需点击 Ribbon 确认下一段")
+      .addToggle(t=>t.setValue(s.autoNext).onChange(v=>set({autoNext:v})));
 
     c.createEl("h3", { text:"循环工作（无休息）" });
     new Setting(c).setName("任务 A 默认时长（分钟）").addText(t=>t.setValue(String(s.cycleMinA || 15)).onChange(v=>this.plugin.setCycleConfig({cycleMinA:Math.max(1, Number(v)||15)})));
@@ -1377,7 +1453,7 @@ class PomodoroSettingTab extends PluginSettingTab {
     new Setting(c).setName("项目状态字段名").addText(t=>t.setValue(s.projectStatusKey).onChange(v=>set({projectStatusKey:v||"项目状态"})));
     new Setting(c).setName("允许的项目状态（逗号分隔）").addText(t=>t.setValue(s.projectStatusWhitelist).onChange(v=>set({projectStatusWhitelist:v||"进行中,筹划中"})));
     new Setting(c).setName("项目 frontmatter 键名").addText(t=>t.setValue(s.projectFmKey).onChange(v=>set({projectFmKey: v||"番茄数"})));
-    new Setting(c).setName("显示项目选择").setDesc("关闭后侧栏不显示“选择项目”输入框；已选择的项目不会自动清除")
+    new Setting(c).setName("显示项目选择").setDesc("关闭后侧栏不显示“选择项目”输入框；已选项目仍会继续同步番茄")
       .addToggle(t=>t.setValue(s.showProjectSelector !== false).onChange(v=>set({showProjectSelector:v})));
 
     c.createEl("h3", { text:"兼容性与防干扰" });
@@ -1424,7 +1500,7 @@ class PomodoroSettingTab extends PluginSettingTab {
       d.setValue(s[key] || DEFAULT_SETTINGS[key]);
       d.onChange(v=>set({ [key]: soundOptions[v] ? v : DEFAULT_SETTINGS[key] }));
     }));
-    new Setting(c).setName("每日目标（段）").addText(t=>t.setValue(String(s.dailyGoal)).onChange(v=>set({dailyGoal: Number(v)||8})));
+    new Setting(c).setName("每日目标（段）").addText(t=>t.setValue(String(s.dailyGoal)).onChange(v=>set({dailyGoal: positiveNumber(v, 8)})));
 
     c.createEl("h3", { text:"强提醒与自动化" });
     new Setting(c).setName("持续提示音（强提醒）").setDesc("按下方间隔再次提醒，直到点击左侧番茄图标")
@@ -1459,7 +1535,7 @@ class PomodoroSettingTab extends PluginSettingTab {
         d.setValue(s.focusStartCommandId || "");
         d.onChange(v=> set({ focusStartCommandId: v }));
       });
-    new Setting(c).setName("开始休息时附带命令").setDesc("当启动短休或长休时，额外执行所选命令")
+    new Setting(c).setName("开始休息时附带命令").setDesc("当手动或强提醒确认开始短休/长休时，额外执行所选命令")
       .addDropdown(d=>{
         d.addOptions(commandOptions);
         d.setValue(s.breakStartCommandId || "");

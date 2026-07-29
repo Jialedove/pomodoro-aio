@@ -59,8 +59,10 @@ var DEFAULT_SETTINGS = {
   workMode: "standard",
   cycleTaskA: "",
   cycleMinA: 15,
+  cycleWorkspaceCommandA: "",
   cycleTaskB: "",
   cycleMinB: 15,
+  cycleWorkspaceCommandB: "",
   // 兼容性
   respectModalInputFocus: true
 };
@@ -122,6 +124,10 @@ function formatTomatoNumber(val) {
   const num = Number(val) || 0;
   const rounded = Math.round(num * 10) / 10;
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+function positiveNumber(value, fallback, min = 0.1) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.max(min, number) : fallback;
 }
 function playBeep(kind, enabled = true, waveform = "sine", strong = false) {
   if (!enabled) return;
@@ -527,12 +533,19 @@ var PomodoroAIO = class extends Plugin {
   }
   executeStageCommand(commandId) {
     const id = String(commandId || "").trim();
-    if (!id) return;
+    if (!id) return false;
     try {
-      this.app?.commands?.executeCommandById?.(id);
+      const executed = this.app?.commands?.executeCommandById?.(id);
+      if (executed === false) new Notice("\u9644\u5E26\u547D\u4EE4\u4E0D\u53EF\u7528\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9");
+      return executed !== false;
     } catch (err) {
       console.error(err);
+      new Notice("\u9644\u5E26\u547D\u4EE4\u6267\u884C\u5931\u8D25\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9");
+      return false;
     }
+  }
+  getWorkspaceLayoutCommands() {
+    return (this.app?.commands?.listCommands?.() || []).filter((command) => command?.id?.startsWith("workspaces-plus:") && /(?:^|:\s)Load:\s/.test(String(command.name || ""))).sort((a, b) => String(a.name).localeCompare(String(b.name), "zh-CN"));
   }
   /* ====== 计时控制 ====== */
   getLeftMs() {
@@ -586,10 +599,11 @@ var PomodoroAIO = class extends Plugin {
       const task = String(this.runtime.currentTaskName || this.settings.defaultTaskName || "").trim();
       sysNotify("\u5F00\u59CB\u4E13\u6CE8", `${formatTomatoNumber(minutes)} \u5206\u949F${task ? ` \xB7 \u4EFB\u52A1\uFF1A${task}` : ""}`, this.settings.enableNotify);
     }
-    if (opts.cause !== "auto" && this.settings.focusStartCommandId) this.executeStageCommand(this.settings.focusStartCommandId);
+    const commandId = opts.cycle ? this.runtime.cycleSlot === 1 ? this.settings.cycleWorkspaceCommandB : this.settings.cycleWorkspaceCommandA : this.settings.focusStartCommandId;
+    if (opts.cause !== "auto" && commandId) this.executeStageCommand(commandId);
     this._resyncTick();
   }
-  startCycle(slot = 0, options = {}) {
+  startCycle(slot = this.runtime.cycleSlot, options = {}) {
     const cycleSlot = slot === 1 ? 1 : 0;
     const task = String(cycleSlot ? this.settings.cycleTaskB : this.settings.cycleTaskA).trim();
     const minutes = Number(cycleSlot ? this.settings.cycleMinB : this.settings.cycleMinA);
@@ -650,7 +664,8 @@ var PomodoroAIO = class extends Plugin {
     this.broadcast();
     this._resyncTick();
     if (triggerCommand && wasPaused && !this.runtime.paused) {
-      if (this.runtime.phase === "focus" && this.settings.focusStartCommandId) this.executeStageCommand(this.settings.focusStartCommandId);
+      const focusCommandId = this.runtime.cycleActive ? this.runtime.cycleSlot === 1 ? this.settings.cycleWorkspaceCommandB : this.settings.cycleWorkspaceCommandA : this.settings.focusStartCommandId;
+      if (this.runtime.phase === "focus" && focusCommandId) this.executeStageCommand(focusCommandId);
       else if (this.runtime.phase === "break" && this.settings.breakStartCommandId) this.executeStageCommand(this.settings.breakStartCommandId);
     }
   }
@@ -940,6 +955,13 @@ var PomodoroAIO = class extends Plugin {
     this.saveSettings();
     this.broadcast();
   }
+  selectCycleSlot(slot) {
+    if (this.settings.workMode !== "cycle" || this.runtime.phase !== "idle" || this.runtime.strongAlert) return false;
+    this.runtime.cycleSlot = slot === 1 ? 1 : 0;
+    this.saveState();
+    this.broadcast();
+    return true;
+  }
   setLongFocusMinutes(minutes, broadcast = true) {
     const num = Number(minutes);
     if (!isFinite(num)) return;
@@ -1088,7 +1110,8 @@ var _PomodoroView = class _PomodoroView extends ItemView {
       const cycleWrap = container.createDiv({ cls: "pmd-cycle" });
       const cycleRowA = cycleWrap.createDiv({ cls: "pmd-cycle-row" });
       const cycleRoleA = cycleRowA.createSpan({ cls: "pmd-cycle-role", text: "\u5F53\u524D" });
-      const cycleTaskWrapA = cycleRowA.createDiv({ cls: "pmd-input-wrap" });
+      const cycleFieldsA = cycleRowA.createDiv({ cls: "pmd-cycle-fields" });
+      const cycleTaskWrapA = cycleFieldsA.createDiv({ cls: "pmd-input-wrap" });
       const cycleTaskA = cycleTaskWrapA.createEl("input", {
         type: "text",
         cls: "pmd-input",
@@ -1096,6 +1119,10 @@ var _PomodoroView = class _PomodoroView extends ItemView {
       });
       const cycleTaskListA = cycleTaskWrapA.createEl("datalist", { attr: { id: "pmdCycleTaskListA" } });
       const clearCycleTaskA = cycleTaskWrapA.createEl("button", { text: "\xD7", cls: "pmd-clear", attr: { title: "\u6E05\u7A7A\u4EFB\u52A1\u540D", "aria-label": "\u6E05\u7A7A\u4EFB\u52A1\u540D", type: "button" } });
+      const cycleWorkspaceA = cycleFieldsA.createEl("select", {
+        cls: "pmd-cycle-workspace",
+        attr: { "aria-label": "\u4EFB\u52A1 A \u5DE5\u4F5C\u533A\u5E03\u5C40", title: "\u5F00\u59CB\u4EFB\u52A1 A \u65F6\u52A0\u8F7D\u7684 Workspaces Plus \u5E03\u5C40" }
+      });
       const cycleDurationA = cycleRowA.createDiv({ cls: "pmd-cycle-duration" });
       const cycleMinA = cycleDurationA.createEl("input", {
         type: "number",
@@ -1105,7 +1132,8 @@ var _PomodoroView = class _PomodoroView extends ItemView {
       cycleDurationA.createSpan({ cls: "pmd-cycle-unit", text: "\u5206\u949F" });
       const cycleRowB = cycleWrap.createDiv({ cls: "pmd-cycle-row" });
       const cycleRoleB = cycleRowB.createSpan({ cls: "pmd-cycle-role", text: "\u4E0B\u4E00\u6BB5" });
-      const cycleTaskWrapB = cycleRowB.createDiv({ cls: "pmd-input-wrap" });
+      const cycleFieldsB = cycleRowB.createDiv({ cls: "pmd-cycle-fields" });
+      const cycleTaskWrapB = cycleFieldsB.createDiv({ cls: "pmd-input-wrap" });
       const cycleTaskB = cycleTaskWrapB.createEl("input", {
         type: "text",
         cls: "pmd-input",
@@ -1113,6 +1141,10 @@ var _PomodoroView = class _PomodoroView extends ItemView {
       });
       const cycleTaskListB = cycleTaskWrapB.createEl("datalist", { attr: { id: "pmdCycleTaskListB" } });
       const clearCycleTaskB = cycleTaskWrapB.createEl("button", { text: "\xD7", cls: "pmd-clear", attr: { title: "\u6E05\u7A7A\u4EFB\u52A1\u540D", "aria-label": "\u6E05\u7A7A\u4EFB\u52A1\u540D", type: "button" } });
+      const cycleWorkspaceB = cycleFieldsB.createEl("select", {
+        cls: "pmd-cycle-workspace",
+        attr: { "aria-label": "\u4EFB\u52A1 B \u5DE5\u4F5C\u533A\u5E03\u5C40", title: "\u5F00\u59CB\u4EFB\u52A1 B \u65F6\u52A0\u8F7D\u7684 Workspaces Plus \u5E03\u5C40" }
+      });
       const cycleDurationB = cycleRowB.createDiv({ cls: "pmd-cycle-duration" });
       const cycleMinB = cycleDurationB.createEl("input", {
         type: "number",
@@ -1124,6 +1156,26 @@ var _PomodoroView = class _PomodoroView extends ItemView {
       cycleTaskB.value = this.plugin.settings.cycleTaskB || "";
       cycleMinA.value = String(this.plugin.settings.cycleMinA || 15);
       cycleMinB.value = String(this.plugin.settings.cycleMinB || 15);
+      const fillWorkspaceSelect = (select, selected = "") => {
+        const commands = this.plugin.getWorkspaceLayoutCommands();
+        select.empty();
+        select.createEl("option", {
+          text: commands.length ? "\u5E03\u5C40 \xB7 \u4E0D\u5207\u6362" : "\u5E03\u5C40 \xB7 \u672A\u68C0\u6D4B\u5230 Workspaces Plus",
+          attr: { value: "" }
+        });
+        commands.forEach((command) => select.createEl("option", {
+          text: `\u5E03\u5C40 \xB7 ${String(command.name).replace(/^.*?Load:\s*/, "")}`,
+          attr: { value: command.id }
+        }));
+        if (selected && !commands.some((command) => command.id === selected)) {
+          select.createEl("option", { text: "\u5E03\u5C40 \xB7 \u5DF2\u5931\u6548\uFF0C\u8BF7\u91CD\u9009", attr: { value: selected } });
+        }
+        select.value = selected;
+      };
+      fillWorkspaceSelect(cycleWorkspaceA, this.plugin.settings.cycleWorkspaceCommandA || "");
+      fillWorkspaceSelect(cycleWorkspaceB, this.plugin.settings.cycleWorkspaceCommandB || "");
+      cycleWorkspaceA.onfocus = () => fillWorkspaceSelect(cycleWorkspaceA, cycleWorkspaceA.value);
+      cycleWorkspaceB.onfocus = () => fillWorkspaceSelect(cycleWorkspaceB, cycleWorkspaceB.value);
       const actions = container.createDiv({ cls: "pmd-actions" });
       const startBtn = actions.createEl("button", { text: "\u5F00\u59CB\u4E13\u6CE8", cls: "pmd-btn pmd-btn-primary", attr: { type: "button" } });
       const pauseBtn = actions.createEl("button", { text: "\u6682\u505C", cls: "pmd-btn", attr: { type: "button" } });
@@ -1157,8 +1209,10 @@ var _PomodoroView = class _PomodoroView extends ItemView {
         const patch = {
           cycleTaskA: cycleTaskA.value.trim(),
           cycleMinA: Math.max(1, Number(cycleMinA.value) || 15),
+          cycleWorkspaceCommandA: cycleWorkspaceA.value,
           cycleTaskB: cycleTaskB.value.trim(),
-          cycleMinB: Math.max(1, Number(cycleMinB.value) || 15)
+          cycleMinB: Math.max(1, Number(cycleMinB.value) || 15),
+          cycleWorkspaceCommandB: cycleWorkspaceB.value
         };
         if (Object.entries(patch).every(([key, value]) => this.plugin.settings[key] === value)) return;
         this.plugin.setCycleConfig(patch);
@@ -1171,10 +1225,17 @@ var _PomodoroView = class _PomodoroView extends ItemView {
         input.oninput = queueCycleSave;
         input.onchange = saveCycleConfig;
       });
+      [cycleWorkspaceA, cycleWorkspaceB].forEach((select) => select.onchange = saveCycleConfig);
       [cycleTaskA, cycleTaskB].forEach((input) => {
         input.addEventListener("focus", () => _openDatalist(input));
         input.addEventListener("click", () => _openDatalist(input));
       });
+      cycleRowA.ondblclick = (event) => {
+        if (!event.target.closest("input, button, select")) this.plugin.selectCycleSlot(0);
+      };
+      cycleRowB.ondblclick = (event) => {
+        if (!event.target.closest("input, button, select")) this.plugin.selectCycleSlot(1);
+      };
       const clearCurrentTask = (event) => {
         event?.preventDefault();
         if (taskSaveTimer) window.clearTimeout(taskSaveTimer);
@@ -1267,8 +1328,10 @@ var _PomodoroView = class _PomodoroView extends ItemView {
           s.dailyGoal,
           s.cycleTaskA,
           s.cycleMinA,
+          s.cycleWorkspaceCommandA,
           s.cycleTaskB,
           s.cycleMinB,
+          s.cycleWorkspaceCommandB,
           r.phase,
           r.paused,
           r.strongAlert,
@@ -1302,11 +1365,25 @@ var _PomodoroView = class _PomodoroView extends ItemView {
         modeButton.setAttribute("aria-pressed", String(cycleMode));
         modeButton.setAttribute("aria-label", cycleMode ? "\u5F53\u524D\u4E3A\u5FAA\u73AF\u5DE5\u4F5C\uFF0C\u70B9\u51FB\u5207\u6362\u5230\u666E\u901A\u4E13\u6CE8" : "\u5F53\u524D\u4E3A\u666E\u901A\u4E13\u6CE8\uFF0C\u70B9\u51FB\u5207\u6362\u5230\u5FAA\u73AF\u5DE5\u4F5C");
         modeButton.setAttribute("title", cycleMode ? "\u5207\u6362\u5230\u666E\u901A\u4E13\u6CE8" : "\u5207\u6362\u5230\u5FAA\u73AF\u5DE5\u4F5C");
-        [cycleTaskA, cycleMinA, cycleTaskB, cycleMinB, clearCycleTaskA, clearCycleTaskB].forEach((input) => input.disabled = r.cycleActive);
+        const lockCycleA = r.cycleActive && r.cycleSlot === 0;
+        const lockCycleB = r.cycleActive && r.cycleSlot === 1;
+        [cycleTaskA, cycleMinA, clearCycleTaskA, cycleWorkspaceA].forEach((input) => input.disabled = lockCycleA);
+        [cycleTaskB, cycleMinB, clearCycleTaskB, cycleWorkspaceB].forEach((input) => input.disabled = lockCycleB);
+        if (document.activeElement !== cycleWorkspaceA && cycleWorkspaceA.value !== (s.cycleWorkspaceCommandA || "")) {
+          fillWorkspaceSelect(cycleWorkspaceA, s.cycleWorkspaceCommandA || "");
+        }
+        if (document.activeElement !== cycleWorkspaceB && cycleWorkspaceB.value !== (s.cycleWorkspaceCommandB || "")) {
+          fillWorkspaceSelect(cycleWorkspaceB, s.cycleWorkspaceCommandB || "");
+        }
         if (cycleMode) {
           const currentSlot = Number.isInteger(r.pendingCycleSlot) ? r.pendingCycleSlot : r.cycleSlot === 1 ? 1 : 0;
+          const canSelectSlot = r.phase === "idle" && !r.strongAlert;
           cycleRowA.classList.toggle("is-current", currentSlot === 0);
           cycleRowB.classList.toggle("is-current", currentSlot === 1);
+          cycleRowA.classList.toggle("is-selectable", canSelectSlot);
+          cycleRowB.classList.toggle("is-selectable", canSelectSlot);
+          cycleRowA.setAttribute("title", canSelectSlot ? "\u53CC\u51FB\u8BBE\u4E3A\u5F53\u524D\u4EFB\u52A1" : "");
+          cycleRowB.setAttribute("title", canSelectSlot ? "\u53CC\u51FB\u8BBE\u4E3A\u5F53\u524D\u4EFB\u52A1" : "");
           cycleRoleA.setText(currentSlot === 0 ? r.strongAlert ? "\u5F85\u5F00\u59CB" : "\u5F53\u524D" : "\u4E0B\u4E00\u6BB5");
           cycleRoleB.setText(currentSlot === 1 ? r.strongAlert ? "\u5F85\u5F00\u59CB" : "\u5F53\u524D" : "\u4E0B\u4E00\u6BB5");
           cycleRowA.setAttribute("aria-label", `${cycleRoleA.textContent}\uFF1A\u4EFB\u52A1 A`);
@@ -1430,16 +1507,16 @@ var PomodoroSettingTab = class extends PluginSettingTab {
     c.empty();
     c.createEl("h2", { text: "Pomodoro AIO \u8BBE\u7F6E" });
     c.createEl("h3", { text: "\u8BA1\u65F6\u53C2\u6570" });
-    new Setting(c).setName("\u4E13\u6CE8\u65F6\u957F\uFF08\u5206\u949F\uFF09").addText((t) => t.setValue(String(s.focusMin)).onChange((v) => set({ focusMin: Number(v) || 25 })));
+    new Setting(c).setName("\u4E13\u6CE8\u65F6\u957F\uFF08\u5206\u949F\uFF09").addText((t) => t.setValue(String(s.focusMin)).onChange((v) => set({ focusMin: positiveNumber(v, 25) })));
     new Setting(c).setName("\u9ED8\u8BA4\u957F\u4E13\u6CE8\u65F6\u957F\uFF08\u5206\u949F\uFF09").setDesc("\u7528\u4E8E\u89C6\u56FE\u4E2D\u7684\u957F\u4E13\u6CE8\u6309\u94AE").addText((t) => t.setValue(String(s.longFocusDefaultMin || 50)).onChange((v) => {
-      const num = Math.max(1, Number(v) || (s.focusMin || 25));
+      const num = positiveNumber(v, positiveNumber(s.focusMin, 25));
       set({ longFocusDefaultMin: num });
       this.plugin.setLongFocusMinutes(num);
     }));
-    new Setting(c).setName("\u77ED\u4F11\u65F6\u957F\uFF08\u5206\u949F\uFF09").addText((t) => t.setValue(String(s.breakMin)).onChange((v) => set({ breakMin: Number(v) || 5 })));
-    new Setting(c).setName("\u957F\u4F11\u65F6\u957F\uFF08\u5206\u949F\uFF09").addText((t) => t.setValue(String(s.longBreakMin)).onChange((v) => set({ longBreakMin: Number(v) || 15 })));
-    new Setting(c).setName("\u6BCF N \u6B21\u957F\u4F11\u4E00\u6B21").addText((t) => t.setValue(String(s.longEvery)).onChange((v) => set({ longEvery: Number(v) || 4 })));
-    new Setting(c).setName("\u5B8C\u6210\u540E\u81EA\u52A8\u8FDB\u5165\u4E0B\u4E00\u6BB5").addToggle((t) => t.setValue(s.autoNext).onChange((v) => set({ autoNext: v })));
+    new Setting(c).setName("\u77ED\u4F11\u65F6\u957F\uFF08\u5206\u949F\uFF09").addText((t) => t.setValue(String(s.breakMin)).onChange((v) => set({ breakMin: positiveNumber(v, 5) })));
+    new Setting(c).setName("\u957F\u4F11\u65F6\u957F\uFF08\u5206\u949F\uFF09").addText((t) => t.setValue(String(s.longBreakMin)).onChange((v) => set({ longBreakMin: positiveNumber(v, 15) })));
+    new Setting(c).setName("\u6BCF N \u6B21\u957F\u4F11\u4E00\u6B21").addText((t) => t.setValue(String(s.longEvery)).onChange((v) => set({ longEvery: Math.max(1, Math.round(positiveNumber(v, 4, 1))) })));
+    new Setting(c).setName("\u5B8C\u6210\u540E\u81EA\u52A8\u8FDB\u5165\u4E0B\u4E00\u6BB5").setDesc("\u4EC5\u666E\u901A\u6A21\u5F0F\uFF1B\u5FAA\u73AF\u5DE5\u4F5C\u6BCF\u6BB5\u7ED3\u675F\u540E\u9700\u70B9\u51FB Ribbon \u786E\u8BA4\u4E0B\u4E00\u6BB5").addToggle((t) => t.setValue(s.autoNext).onChange((v) => set({ autoNext: v })));
     c.createEl("h3", { text: "\u5FAA\u73AF\u5DE5\u4F5C\uFF08\u65E0\u4F11\u606F\uFF09" });
     new Setting(c).setName("\u4EFB\u52A1 A \u9ED8\u8BA4\u65F6\u957F\uFF08\u5206\u949F\uFF09").addText((t) => t.setValue(String(s.cycleMinA || 15)).onChange((v) => this.plugin.setCycleConfig({ cycleMinA: Math.max(1, Number(v) || 15) })));
     new Setting(c).setName("\u4EFB\u52A1 B \u9ED8\u8BA4\u65F6\u957F\uFF08\u5206\u949F\uFF09").addText((t) => t.setValue(String(s.cycleMinB || 15)).onChange((v) => this.plugin.setCycleConfig({ cycleMinB: Math.max(1, Number(v) || 15) })));
@@ -1458,7 +1535,7 @@ var PomodoroSettingTab = class extends PluginSettingTab {
     new Setting(c).setName("\u9879\u76EE\u72B6\u6001\u5B57\u6BB5\u540D").addText((t) => t.setValue(s.projectStatusKey).onChange((v) => set({ projectStatusKey: v || "\u9879\u76EE\u72B6\u6001" })));
     new Setting(c).setName("\u5141\u8BB8\u7684\u9879\u76EE\u72B6\u6001\uFF08\u9017\u53F7\u5206\u9694\uFF09").addText((t) => t.setValue(s.projectStatusWhitelist).onChange((v) => set({ projectStatusWhitelist: v || "\u8FDB\u884C\u4E2D,\u7B79\u5212\u4E2D" })));
     new Setting(c).setName("\u9879\u76EE frontmatter \u952E\u540D").addText((t) => t.setValue(s.projectFmKey).onChange((v) => set({ projectFmKey: v || "\u756A\u8304\u6570" })));
-    new Setting(c).setName("\u663E\u793A\u9879\u76EE\u9009\u62E9").setDesc("\u5173\u95ED\u540E\u4FA7\u680F\u4E0D\u663E\u793A\u201C\u9009\u62E9\u9879\u76EE\u201D\u8F93\u5165\u6846\uFF1B\u5DF2\u9009\u62E9\u7684\u9879\u76EE\u4E0D\u4F1A\u81EA\u52A8\u6E05\u9664").addToggle((t) => t.setValue(s.showProjectSelector !== false).onChange((v) => set({ showProjectSelector: v })));
+    new Setting(c).setName("\u663E\u793A\u9879\u76EE\u9009\u62E9").setDesc("\u5173\u95ED\u540E\u4FA7\u680F\u4E0D\u663E\u793A\u201C\u9009\u62E9\u9879\u76EE\u201D\u8F93\u5165\u6846\uFF1B\u5DF2\u9009\u9879\u76EE\u4ECD\u4F1A\u7EE7\u7EED\u540C\u6B65\u756A\u8304").addToggle((t) => t.setValue(s.showProjectSelector !== false).onChange((v) => set({ showProjectSelector: v })));
     c.createEl("h3", { text: "\u517C\u5BB9\u6027\u4E0E\u9632\u5E72\u6270" });
     new Setting(c).setName("\u5728\u5F39\u7A97\u4E0E\u8F93\u5165\u65F6\u7981\u7528\u5FEB\u6377\u952E\u4E0E\u805A\u7126\u64CD\u4F5C").setDesc("\u907F\u514D\u5E72\u6270 Workspaces / Workspaces Plus \u7684\u5F39\u7A97\u4E0E\u8F93\u5165\uFF0C\u63A8\u8350\u4FDD\u6301\u5F00\u542F").addToggle((t) => t.setValue(s.respectModalInputFocus !== false).onChange((v) => set({ respectModalInputFocus: v })));
     c.createEl("h3", { text: "\u63D0\u9192\u4E0E\u53EF\u89C6\u5316" });
@@ -1500,7 +1577,7 @@ var PomodoroSettingTab = class extends PluginSettingTab {
       d.setValue(s[key] || DEFAULT_SETTINGS[key]);
       d.onChange((v) => set({ [key]: soundOptions[v] ? v : DEFAULT_SETTINGS[key] }));
     }));
-    new Setting(c).setName("\u6BCF\u65E5\u76EE\u6807\uFF08\u6BB5\uFF09").addText((t) => t.setValue(String(s.dailyGoal)).onChange((v) => set({ dailyGoal: Number(v) || 8 })));
+    new Setting(c).setName("\u6BCF\u65E5\u76EE\u6807\uFF08\u6BB5\uFF09").addText((t) => t.setValue(String(s.dailyGoal)).onChange((v) => set({ dailyGoal: positiveNumber(v, 8) })));
     c.createEl("h3", { text: "\u5F3A\u63D0\u9192\u4E0E\u81EA\u52A8\u5316" });
     new Setting(c).setName("\u6301\u7EED\u63D0\u793A\u97F3\uFF08\u5F3A\u63D0\u9192\uFF09").setDesc("\u6309\u4E0B\u65B9\u95F4\u9694\u518D\u6B21\u63D0\u9192\uFF0C\u76F4\u5230\u70B9\u51FB\u5DE6\u4FA7\u756A\u8304\u56FE\u6807").addToggle((t) => t.setValue(s.persistentAlertSound).onChange((v) => {
       set({ persistentAlertSound: v });
@@ -1531,7 +1608,7 @@ var PomodoroSettingTab = class extends PluginSettingTab {
       d.setValue(s.focusStartCommandId || "");
       d.onChange((v) => set({ focusStartCommandId: v }));
     });
-    new Setting(c).setName("\u5F00\u59CB\u4F11\u606F\u65F6\u9644\u5E26\u547D\u4EE4").setDesc("\u5F53\u542F\u52A8\u77ED\u4F11\u6216\u957F\u4F11\u65F6\uFF0C\u989D\u5916\u6267\u884C\u6240\u9009\u547D\u4EE4").addDropdown((d) => {
+    new Setting(c).setName("\u5F00\u59CB\u4F11\u606F\u65F6\u9644\u5E26\u547D\u4EE4").setDesc("\u5F53\u624B\u52A8\u6216\u5F3A\u63D0\u9192\u786E\u8BA4\u5F00\u59CB\u77ED\u4F11/\u957F\u4F11\u65F6\uFF0C\u989D\u5916\u6267\u884C\u6240\u9009\u547D\u4EE4").addDropdown((d) => {
       d.addOptions(commandOptions);
       d.setValue(s.breakStartCommandId || "");
       d.onChange((v) => set({ breakStartCommandId: v }));
