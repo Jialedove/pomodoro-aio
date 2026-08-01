@@ -12,6 +12,8 @@ assert.match(source, /const lockCycleB = r\.cycleActive && r\.cycleSlot === 1/);
 assert.match(source, /cycleRowA\.ondblclick/);
 assert.match(source, /cycleRowB\.ondblclick/);
 assert.match(source, /command\?\.id\?\.startsWith\("workspaces-plus:"\)/);
+assert.match(source, /list:"pmdCycleWorkspaceListA"/);
+assert.match(source, /list:"pmdCycleWorkspaceListB"/);
 assert.match(fs.readFileSync("styles.css", "utf8"), /pmd-datalist-opening .pmd-clear/);
 assert.match(fs.readFileSync("styles.css", "utf8"), /pmd-cycle-workspace/);
 
@@ -29,11 +31,13 @@ Module._load = (request, parent, isMain) => request === "obsidian"
 
 const PomodoroAIO = require("../src/main.js");
 const positiveNumber = Function("require", "module", `${source}\nreturn positiveNumber;`)(require, {});
+const workspaceLayoutLabel = Function("require", "module", `${source}\nreturn workspaceLayoutLabel;`)(require, {});
 Module._load = originalLoad;
 
 assert.equal(positiveNumber("-1", 25), 25);
 assert.equal(positiveNumber("0", 25), 25);
 assert.equal(positiveNumber("1.5", 25), 1.5);
+assert.equal(workspaceLayoutLabel({ name: "Workspaces Plus: Load: 研究" }), "研究");
 
 const plugin = new PomodoroAIO();
 plugin.settings = {
@@ -65,10 +69,14 @@ plugin.applyTomatoAndSum = async amount => { plugin.written = amount; };
 plugin.safeBumpProjectTomato = async () => {};
 plugin.executedCommands = [];
 plugin.app = {
+  internalPlugins: {
+    getPluginById: id => id === "workspaces" ? { instance:{ activeWorkspace:"整理" } } : null
+  },
   commands: {
     executeCommandById: id => { plugin.executedCommands.push(id); return true; },
     listCommands: () => [
       { id: "workspaces-plus:研究", name: "Workspaces Plus: Load: 研究" },
+      { id: "workspaces-plus:整理", name: "Workspaces Plus: Load: 整理" },
       { id: "workspaces-plus:open-workspaces-plus", name: "Open Workspaces Plus" },
       { id: "other:command", name: "Load: 其他" }
     ]
@@ -77,11 +85,11 @@ plugin.app = {
 
 assert.equal(plugin.selectCycleSlot(1), true);
 assert.equal(plugin.runtime.cycleSlot, 1);
-assert.deepEqual(plugin.getWorkspaceLayoutCommands().map(command => command.id), ["workspaces-plus:研究"]);
+assert.deepEqual(plugin.getWorkspaceLayoutCommands().map(command => command.id).sort(), ["workspaces-plus:研究", "workspaces-plus:整理"].sort());
 plugin.startCycle();
 assert.equal(plugin.runtime.currentTaskName, "简单任务");
 assert.equal(plugin.runtime.tomatoCredit, 1.2);
-assert.deepEqual(plugin.executedCommands, ["workspaces-plus:整理"]);
+assert.deepEqual(plugin.executedCommands, []);
 assert.equal(plugin.selectCycleSlot(0), false);
 plugin.runtime.startedAt = Date.now() - plugin.runtime.durationSec * 1000;
 
@@ -95,7 +103,7 @@ plugin.runtime.startedAt = Date.now() - plugin.runtime.durationSec * 1000;
   plugin.onRibbonClick();
   assert.equal(plugin.runtime.currentTaskName, "难任务");
   assert.equal(plugin.runtime.durationSec, 900);
-  assert.deepEqual(plugin.executedCommands, ["workspaces-plus:整理", "workspaces-plus:研究"]);
+  assert.deepEqual(plugin.executedCommands, ["workspaces-plus:研究"]);
   console.log("cycle mode check passed");
 })().catch(error => {
   console.error(error);
