@@ -3,12 +3,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const pluginDir = process.env.OBSIDIAN_PLUGIN_DIR;
+const pluginDir = process.env.OBSIDIAN_PLUGIN_DIR || "/Users/dove/Obsidian_Workspace/Dove的卡片库/.obsidian/plugins/pomodoro-aio";
 const artifacts = ["main.js", "manifest.json", "styles.css"];
-
-if (!pluginDir) {
-  throw new Error("Set OBSIDIAN_PLUGIN_DIR to the target plugin directory.");
-}
 
 await mkdir(pluginDir, { recursive: true });
 for (const name of artifacts) {

@@ -2,8 +2,8 @@
   "id": "pomodoro-aio",
   "name": "Pomodoro AIO",
   "version": "0.3.4",
-  "minAppVersion": "1.4.0",
+  "minAppVersion": "1.8.7",
   "description": "独立番茄钟：真正后台运行，任务行 n🍅 写入与当日汇总，项目文件 frontmatter 同步。",
-  "author": "you",
+  "author": "Jialedove",
   "isDesktopOnly": true
 }

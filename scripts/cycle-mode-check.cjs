@@ -3,28 +3,31 @@ const fs = require("node:fs");
 const Module = require("node:module");
 
 const source = fs.readFileSync("src/main.js", "utf8");
+const workspacesSource = fs.readFileSync("src/integrations/workspaces-plus.js", "utf8");
+const viewSource = fs.readFileSync("src/ui/pomodoro-view.js", "utf8");
 assert.doesNotMatch(source, /registerEvent\(this\.app\.workspace\.onLayoutReady/);
-assert.match(source, /clearTaskBtn\.onpointerdown/);
-assert.match(source, /clearProjBtn\.onpointerdown/);
-assert.match(source, /clearCycleWorkspaceA\.onpointerdown/);
-assert.match(source, /clearCycleWorkspaceB\.onpointerdown/);
+assert.match(viewSource, /clearTaskBtn\.onpointerdown/);
+assert.match(viewSource, /clearProjBtn\.onpointerdown/);
+assert.match(viewSource, /clearCycleWorkspaceA\.onpointerdown/);
+assert.match(viewSource, /clearCycleWorkspaceB\.onpointerdown/);
 assert.match(source, /this\._unloading = true/);
-assert.match(source, /const lockCycleA = r\.cycleActive && r\.cycleSlot === 0/);
-assert.match(source, /const lockCycleB = r\.cycleActive && r\.cycleSlot === 1/);
-assert.match(source, /cycleRowA\.ondblclick/);
-assert.match(source, /cycleRowB\.ondblclick/);
-assert.match(source, /command\?\.id\?\.startsWith\("workspaces-plus:"\)/);
-assert.match(source, /list:"pmdCycleWorkspaceListA"/);
-assert.match(source, /list:"pmdCycleWorkspaceListB"/);
+assert.match(viewSource, /const lockCycleA = cycleRunning && r\.cycleSlot === 0/);
+assert.match(viewSource, /const lockCycleB = cycleRunning && r\.cycleSlot === 1/);
+assert.match(viewSource, /cycleRowA\.ondblclick/);
+assert.match(viewSource, /cycleRowB\.ondblclick/);
+assert.match(workspacesSource, /command\?\.id\?\.startsWith\(WORKSPACES_PLUS_PREFIX\)/);
+assert.match(viewSource, /list:"pmdCycleWorkspaceListA"/);
+assert.match(viewSource, /list:"pmdCycleWorkspaceListB"/);
 assert.match(fs.readFileSync("styles.css", "utf8"), /pmd-datalist-opening .pmd-clear/);
 assert.match(fs.readFileSync("styles.css", "utf8"), /pmd-cycle-workspace/);
 
 const originalLoad = Module._load;
+const FakeTFile = class {};
 Module._load = (request, parent, isMain) => request === "obsidian"
   ? {
       Plugin: class {},
       Notice: class {},
-      TFile: class {},
+      TFile: FakeTFile,
       ItemView: class {},
       PluginSettingTab: class {},
       Setting: class {}
@@ -32,14 +35,13 @@ Module._load = (request, parent, isMain) => request === "obsidian"
   : originalLoad(request, parent, isMain);
 
 const PomodoroAIO = require("../src/main.js");
-const positiveNumber = Function("require", "module", `${source}\nreturn positiveNumber;`)(require, {});
-const workspaceLayoutLabel = Function("require", "module", `${source}\nreturn workspaceLayoutLabel;`)(require, {});
+const { positiveNumber } = require("../src/core/validation.js");
 Module._load = originalLoad;
 
 assert.equal(positiveNumber("-1", 25), 25);
 assert.equal(positiveNumber("0", 25), 25);
 assert.equal(positiveNumber("1.5", 25), 1.5);
-assert.equal(workspaceLayoutLabel({ name: "Workspaces Plus: Load: 研究" }), "研究");
+assert.equal(PomodoroAIO.workspaceLayoutLabel({ name: "Workspaces Plus: Load: 研究" }), "研究");
 
 const plugin = new PomodoroAIO();
 plugin.settings = {
@@ -54,23 +56,51 @@ plugin.settings = {
   persistentAlertSound: false,
   ribbonClickAutoNext: true,
   focusStartCommandId: "",
-  projectEnable: false
+  projectEnable: false,
+  allowAutoCreateTask: true,
+  fmKey: "番茄数"
   , workMode: "cycle"
 };
 plugin.runtime = {
-  phase: "idle",
+  schemaVersion: 3,
+  status: "idle",
+  stage: null,
+  mode: "cycle",
+  durationMs: 0,
+  startedAtMs: 0,
+  elapsedMs: 0,
+  remainingMs: 0,
+  pausedAtMs: 0,
+  sessionId: null,
+  plannedTomatoCredit: 1,
   sessionCount: 0,
-  cycleActive: false,
   cycleSlot: 0,
-  strongAlert: false
+  attention: null,
+  pendingSettlement: null,
+  projectQueue: [],
+  frontmatterQueue: [],
+  currentTaskName: "",
+  longFocusMinutes: 50
 };
 plugin.ensureDayFreshness = () => {};
 plugin.saveState = () => {};
 plugin.broadcast = () => {};
-plugin.applyTomatoAndSum = async amount => { plugin.written = amount; };
-plugin.safeBumpProjectTomato = async () => {};
 plugin.executedCommands = [];
+const todayFile = new FakeTFile();
+todayFile.path = "Daily/today.md";
+todayFile.content = "- [ ] 简单任务 0🍅\n";
+todayFile.frontmatter = {};
+plugin.todayFilePath = () => todayFile.path;
 plugin.app = {
+  vault: {
+    getAbstractFileByPath: path => path === todayFile.path ? todayFile : null,
+    read: async file => file.content,
+    process: async (file, callback) => { file.content = await callback(file.content); }
+  },
+  fileManager: {
+    async processFrontMatter(file, callback) { await callback(file.frontmatter); }
+  },
+  metadataCache: { getFileCache: () => ({}) },
   internalPlugins: {
     getPluginById: id => id === "workspaces" ? { instance:{ activeWorkspace:"整理" } } : null
   },
@@ -90,21 +120,23 @@ assert.equal(plugin.runtime.cycleSlot, 1);
 assert.deepEqual(plugin.getWorkspaceLayoutCommands().map(command => command.id).sort(), ["workspaces-plus:研究", "workspaces-plus:整理"].sort());
 plugin.startCycle();
 assert.equal(plugin.runtime.currentTaskName, "简单任务");
-assert.equal(plugin.runtime.tomatoCredit, 1.2);
+assert.equal(plugin.runtime.plannedTomatoCredit, 1.2);
 assert.deepEqual(plugin.executedCommands, []);
 assert.equal(plugin.selectCycleSlot(0), false);
-plugin.runtime.startedAt = Date.now() - plugin.runtime.durationSec * 1000;
+plugin.runtime.startedAtMs = Date.now() - plugin.runtime.durationMs;
 
 (async () => {
   await plugin.tick();
-  assert.equal(plugin.written, 1.2);
-  assert.equal(plugin.runtime.phase, "idle");
-  assert.equal(plugin.runtime.pendingCycleSlot, 0);
+  assert.match(todayFile.content, /简单任务 1.2🍅/);
+  assert.equal(plugin.runtime.status, "awaiting");
+  assert.equal(plugin.runtime.attention.cycleSlot, 0);
   assert.equal(plugin.getLeftSec(), 900);
 
   plugin.onRibbonClick();
   assert.equal(plugin.runtime.currentTaskName, "难任务");
-  assert.equal(plugin.runtime.durationSec, 900);
+  assert.equal(plugin.runtime.status, "running");
+  assert.equal(plugin.runtime.stage, "focus");
+  assert.equal(plugin.runtime.durationMs, 900_000);
   assert.deepEqual(plugin.executedCommands, ["workspaces-plus:研究"]);
   console.log("cycle mode check passed");
 })().catch(error => {

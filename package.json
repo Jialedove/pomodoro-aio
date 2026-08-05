@@ -5,12 +5,18 @@
   "description": "Pomodoro AIO Obsidian plugin",
   "main": "main.js",
   "scripts": {
-    "build": "node esbuild.config.mjs",
-    "test": "node scripts/cycle-mode-check.cjs",
-    "check": "node --check src/main.js && npm test && npm run build",
+    "dev": "node esbuild.config.mjs --watch",
+    "build:dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs --production",
+    "typecheck": "node scripts/typecheck.cjs",
+    "lint": "node scripts/lint.cjs",
+    "test": "node --test test/*.test.cjs && node scripts/cycle-mode-check.cjs",
+    "check:build": "node scripts/check-build.cjs",
+    "check": "npm run typecheck && npm run lint && npm test && npm run build && npm run check:build",
     "install:vault": "npm run check && node scripts/install-vault.mjs"
   },
   "devDependencies": {
-    "esbuild": "0.28.0"
+    "esbuild": "0.28.0",
+    "typescript": "7.0.2"
   }
 }
