@@ -1071,12 +1071,14 @@ class PomodoroView extends ItemView {
       });
       const cycleTaskListA = cycleTaskWrapA.createEl("datalist", { attr:{ id:"pmdCycleTaskListA" } });
       const clearCycleTaskA = cycleTaskWrapA.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空任务名", "aria-label":"清空任务名", type:"button" } });
-      const cycleWorkspaceA = cycleFieldsA.createEl("input", {
+      const cycleWorkspaceWrapA = cycleFieldsA.createDiv({ cls:"pmd-input-wrap" });
+      const cycleWorkspaceA = cycleWorkspaceWrapA.createEl("input", {
         type:"text",
         cls:"pmd-cycle-workspace",
         attr:{ list:"pmdCycleWorkspaceListA", placeholder:"筛选/选择布局", "aria-label":"任务 A 工作区布局", title:"开始任务 A 时加载的 Workspaces Plus 布局" }
       });
-      const cycleWorkspaceListA = cycleFieldsA.createEl("datalist", { attr:{ id:"pmdCycleWorkspaceListA" } });
+      const cycleWorkspaceListA = cycleWorkspaceWrapA.createEl("datalist", { attr:{ id:"pmdCycleWorkspaceListA" } });
+      const clearCycleWorkspaceA = cycleWorkspaceWrapA.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空工作区选择", "aria-label":"清空工作区选择", type:"button" } });
       const cycleDurationA = cycleRowA.createDiv({ cls:"pmd-cycle-duration" });
       const cycleMinA = cycleDurationA.createEl("input", {
         type:"number", cls:"pmd-cycle-min",
@@ -1094,12 +1096,14 @@ class PomodoroView extends ItemView {
       });
       const cycleTaskListB = cycleTaskWrapB.createEl("datalist", { attr:{ id:"pmdCycleTaskListB" } });
       const clearCycleTaskB = cycleTaskWrapB.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空任务名", "aria-label":"清空任务名", type:"button" } });
-      const cycleWorkspaceB = cycleFieldsB.createEl("input", {
+      const cycleWorkspaceWrapB = cycleFieldsB.createDiv({ cls:"pmd-input-wrap" });
+      const cycleWorkspaceB = cycleWorkspaceWrapB.createEl("input", {
         type:"text",
         cls:"pmd-cycle-workspace",
         attr:{ list:"pmdCycleWorkspaceListB", placeholder:"筛选/选择布局", "aria-label":"任务 B 工作区布局", title:"开始任务 B 时加载的 Workspaces Plus 布局" }
       });
-      const cycleWorkspaceListB = cycleFieldsB.createEl("datalist", { attr:{ id:"pmdCycleWorkspaceListB" } });
+      const cycleWorkspaceListB = cycleWorkspaceWrapB.createEl("datalist", { attr:{ id:"pmdCycleWorkspaceListB" } });
+      const clearCycleWorkspaceB = cycleWorkspaceWrapB.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空工作区选择", "aria-label":"清空工作区选择", type:"button" } });
       const cycleDurationB = cycleRowB.createDiv({ cls:"pmd-cycle-duration" });
       const cycleMinB = cycleDurationB.createEl("input", {
         type:"number", cls:"pmd-cycle-min",
@@ -1210,12 +1214,23 @@ class PomodoroView extends ItemView {
         saveCycleConfig();
         input.focus();
       };
+      const clearCycleWorkspace = (input, event)=> {
+        event?.preventDefault();
+        input.value = "";
+        input.dataset.commandId = "";
+        saveCycleConfig();
+        input.focus();
+      };
       clearTaskBtn.onpointerdown = clearCurrentTask;
       clearTaskBtn.onclick = (event)=> { if (event.detail === 0) clearCurrentTask(event); };
       clearCycleTaskA.onpointerdown = (event)=> clearCycleTask(cycleTaskA, event);
       clearCycleTaskA.onclick = (event)=> { if (event.detail === 0) clearCycleTask(cycleTaskA, event); };
       clearCycleTaskB.onpointerdown = (event)=> clearCycleTask(cycleTaskB, event);
       clearCycleTaskB.onclick = (event)=> { if (event.detail === 0) clearCycleTask(cycleTaskB, event); };
+      clearCycleWorkspaceA.onpointerdown = (event)=> clearCycleWorkspace(cycleWorkspaceA, event);
+      clearCycleWorkspaceA.onclick = (event)=> { if (event.detail === 0) clearCycleWorkspace(cycleWorkspaceA, event); };
+      clearCycleWorkspaceB.onpointerdown = (event)=> clearCycleWorkspace(cycleWorkspaceB, event);
+      clearCycleWorkspaceB.onclick = (event)=> { if (event.detail === 0) clearCycleWorkspace(cycleWorkspaceB, event); };
       projInput.onchange = ()=>{
         const label = projInput.value;
         const hit = (this._projOpts||[]).find(x=> x.label===label);
@@ -1305,8 +1320,8 @@ class PomodoroView extends ItemView {
         modeButton.setAttribute("title", cycleMode ? "切换到普通专注" : "切换到循环工作");
         const lockCycleA = r.cycleActive && r.cycleSlot === 0;
         const lockCycleB = r.cycleActive && r.cycleSlot === 1;
-        [cycleTaskA, cycleMinA, clearCycleTaskA, cycleWorkspaceA].forEach(input=> input.disabled = lockCycleA);
-        [cycleTaskB, cycleMinB, clearCycleTaskB, cycleWorkspaceB].forEach(input=> input.disabled = lockCycleB);
+        [cycleTaskA, cycleMinA, clearCycleTaskA, cycleWorkspaceA, clearCycleWorkspaceA].forEach(input=> input.disabled = lockCycleA);
+        [cycleTaskB, cycleMinB, clearCycleTaskB, cycleWorkspaceB, clearCycleWorkspaceB].forEach(input=> input.disabled = lockCycleB);
         if (document.activeElement !== cycleWorkspaceA && cycleWorkspaceA.dataset.commandId !== (s.cycleWorkspaceCommandA || "")) {
           fillWorkspaceList(cycleWorkspaceA, cycleWorkspaceListA, s.cycleWorkspaceCommandA || "");
         }

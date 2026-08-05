@@ -1129,12 +1129,14 @@ var _PomodoroView = class _PomodoroView extends ItemView {
       });
       const cycleTaskListA = cycleTaskWrapA.createEl("datalist", { attr: { id: "pmdCycleTaskListA" } });
       const clearCycleTaskA = cycleTaskWrapA.createEl("button", { text: "\xD7", cls: "pmd-clear", attr: { title: "\u6E05\u7A7A\u4EFB\u52A1\u540D", "aria-label": "\u6E05\u7A7A\u4EFB\u52A1\u540D", type: "button" } });
-      const cycleWorkspaceA = cycleFieldsA.createEl("input", {
+      const cycleWorkspaceWrapA = cycleFieldsA.createDiv({ cls: "pmd-input-wrap" });
+      const cycleWorkspaceA = cycleWorkspaceWrapA.createEl("input", {
         type: "text",
         cls: "pmd-cycle-workspace",
         attr: { list: "pmdCycleWorkspaceListA", placeholder: "\u7B5B\u9009/\u9009\u62E9\u5E03\u5C40", "aria-label": "\u4EFB\u52A1 A \u5DE5\u4F5C\u533A\u5E03\u5C40", title: "\u5F00\u59CB\u4EFB\u52A1 A \u65F6\u52A0\u8F7D\u7684 Workspaces Plus \u5E03\u5C40" }
       });
-      const cycleWorkspaceListA = cycleFieldsA.createEl("datalist", { attr: { id: "pmdCycleWorkspaceListA" } });
+      const cycleWorkspaceListA = cycleWorkspaceWrapA.createEl("datalist", { attr: { id: "pmdCycleWorkspaceListA" } });
+      const clearCycleWorkspaceA = cycleWorkspaceWrapA.createEl("button", { text: "\xD7", cls: "pmd-clear", attr: { title: "\u6E05\u7A7A\u5DE5\u4F5C\u533A\u9009\u62E9", "aria-label": "\u6E05\u7A7A\u5DE5\u4F5C\u533A\u9009\u62E9", type: "button" } });
       const cycleDurationA = cycleRowA.createDiv({ cls: "pmd-cycle-duration" });
       const cycleMinA = cycleDurationA.createEl("input", {
         type: "number",
@@ -1153,12 +1155,14 @@ var _PomodoroView = class _PomodoroView extends ItemView {
       });
       const cycleTaskListB = cycleTaskWrapB.createEl("datalist", { attr: { id: "pmdCycleTaskListB" } });
       const clearCycleTaskB = cycleTaskWrapB.createEl("button", { text: "\xD7", cls: "pmd-clear", attr: { title: "\u6E05\u7A7A\u4EFB\u52A1\u540D", "aria-label": "\u6E05\u7A7A\u4EFB\u52A1\u540D", type: "button" } });
-      const cycleWorkspaceB = cycleFieldsB.createEl("input", {
+      const cycleWorkspaceWrapB = cycleFieldsB.createDiv({ cls: "pmd-input-wrap" });
+      const cycleWorkspaceB = cycleWorkspaceWrapB.createEl("input", {
         type: "text",
         cls: "pmd-cycle-workspace",
         attr: { list: "pmdCycleWorkspaceListB", placeholder: "\u7B5B\u9009/\u9009\u62E9\u5E03\u5C40", "aria-label": "\u4EFB\u52A1 B \u5DE5\u4F5C\u533A\u5E03\u5C40", title: "\u5F00\u59CB\u4EFB\u52A1 B \u65F6\u52A0\u8F7D\u7684 Workspaces Plus \u5E03\u5C40" }
       });
-      const cycleWorkspaceListB = cycleFieldsB.createEl("datalist", { attr: { id: "pmdCycleWorkspaceListB" } });
+      const cycleWorkspaceListB = cycleWorkspaceWrapB.createEl("datalist", { attr: { id: "pmdCycleWorkspaceListB" } });
+      const clearCycleWorkspaceB = cycleWorkspaceWrapB.createEl("button", { text: "\xD7", cls: "pmd-clear", attr: { title: "\u6E05\u7A7A\u5DE5\u4F5C\u533A\u9009\u62E9", "aria-label": "\u6E05\u7A7A\u5DE5\u4F5C\u533A\u9009\u62E9", type: "button" } });
       const cycleDurationB = cycleRowB.createDiv({ cls: "pmd-cycle-duration" });
       const cycleMinB = cycleDurationB.createEl("input", {
         type: "number",
@@ -1272,6 +1276,13 @@ var _PomodoroView = class _PomodoroView extends ItemView {
         saveCycleConfig();
         input.focus();
       };
+      const clearCycleWorkspace = (input, event) => {
+        event?.preventDefault();
+        input.value = "";
+        input.dataset.commandId = "";
+        saveCycleConfig();
+        input.focus();
+      };
       clearTaskBtn.onpointerdown = clearCurrentTask;
       clearTaskBtn.onclick = (event) => {
         if (event.detail === 0) clearCurrentTask(event);
@@ -1283,6 +1294,14 @@ var _PomodoroView = class _PomodoroView extends ItemView {
       clearCycleTaskB.onpointerdown = (event) => clearCycleTask(cycleTaskB, event);
       clearCycleTaskB.onclick = (event) => {
         if (event.detail === 0) clearCycleTask(cycleTaskB, event);
+      };
+      clearCycleWorkspaceA.onpointerdown = (event) => clearCycleWorkspace(cycleWorkspaceA, event);
+      clearCycleWorkspaceA.onclick = (event) => {
+        if (event.detail === 0) clearCycleWorkspace(cycleWorkspaceA, event);
+      };
+      clearCycleWorkspaceB.onpointerdown = (event) => clearCycleWorkspace(cycleWorkspaceB, event);
+      clearCycleWorkspaceB.onclick = (event) => {
+        if (event.detail === 0) clearCycleWorkspace(cycleWorkspaceB, event);
       };
       projInput.onchange = () => {
         const label = projInput.value;
@@ -1388,8 +1407,8 @@ var _PomodoroView = class _PomodoroView extends ItemView {
         modeButton.setAttribute("title", cycleMode ? "\u5207\u6362\u5230\u666E\u901A\u4E13\u6CE8" : "\u5207\u6362\u5230\u5FAA\u73AF\u5DE5\u4F5C");
         const lockCycleA = r.cycleActive && r.cycleSlot === 0;
         const lockCycleB = r.cycleActive && r.cycleSlot === 1;
-        [cycleTaskA, cycleMinA, clearCycleTaskA, cycleWorkspaceA].forEach((input) => input.disabled = lockCycleA);
-        [cycleTaskB, cycleMinB, clearCycleTaskB, cycleWorkspaceB].forEach((input) => input.disabled = lockCycleB);
+        [cycleTaskA, cycleMinA, clearCycleTaskA, cycleWorkspaceA, clearCycleWorkspaceA].forEach((input) => input.disabled = lockCycleA);
+        [cycleTaskB, cycleMinB, clearCycleTaskB, cycleWorkspaceB, clearCycleWorkspaceB].forEach((input) => input.disabled = lockCycleB);
         if (document.activeElement !== cycleWorkspaceA && cycleWorkspaceA.dataset.commandId !== (s.cycleWorkspaceCommandA || "")) {
           fillWorkspaceList(cycleWorkspaceA, cycleWorkspaceListA, s.cycleWorkspaceCommandA || "");
         }

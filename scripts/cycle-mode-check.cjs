@@ -6,6 +6,8 @@ const source = fs.readFileSync("src/main.js", "utf8");
 assert.doesNotMatch(source, /registerEvent\(this\.app\.workspace\.onLayoutReady/);
 assert.match(source, /clearTaskBtn\.onpointerdown/);
 assert.match(source, /clearProjBtn\.onpointerdown/);
+assert.match(source, /clearCycleWorkspaceA\.onpointerdown/);
+assert.match(source, /clearCycleWorkspaceB\.onpointerdown/);
 assert.match(source, /this\._unloading = true/);
 assert.match(source, /const lockCycleA = r\.cycleActive && r\.cycleSlot === 0/);
 assert.match(source, /const lockCycleB = r\.cycleActive && r\.cycleSlot === 1/);

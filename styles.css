@@ -23,7 +23,8 @@
 .pmd-clear:hover { background: var(--background-modifier-hover); }
 .pmd-clear:active { background: var(--background-modifier-border); }
 /* 当输入为空且显示占位符时，隐藏清空按钮 */
-.pmd-input-wrap .pmd-input:placeholder-shown ~ .pmd-clear { opacity: 0; pointer-events: none; }
+.pmd-input-wrap .pmd-input:placeholder-shown ~ .pmd-clear,
+.pmd-input-wrap .pmd-cycle-workspace:placeholder-shown ~ .pmd-clear { opacity: 0; pointer-events: none; }
 .pmd-input-wrap.pmd-datalist-opening .pmd-clear { opacity: 0; pointer-events: none; }
 .pmd-input { flex: 1 1 auto; display: block; width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--background-modifier-border); border-radius: 8px; }
 .pmd-actions { display:flex; gap:8px; margin-top: 12px; flex-wrap: wrap; }
