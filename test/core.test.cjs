@@ -5,7 +5,8 @@ const {
   positiveNumber,
   normalizeTag,
   formatTomatoNumber,
-  isValidHHMM
+  isValidHHMM,
+  normalizeMarkdownPath
 } = require("../src/core/validation.js");
 const {
   getTomatoSum,
@@ -28,6 +29,17 @@ test("validation 纯函数拒绝非法时间并规范数值", () => {
   assert.equal(normalizeTag(" project "), "#project");
   assert.equal(normalizeTag("#project"), "#project");
   assert.equal(formatTomatoNumber(1.25), "1.3");
+});
+
+test("Markdown Vault 路径拒绝非规范或非 Markdown 输入", () => {
+  let normalizeCalls = 0;
+  const normalizePath = value => { normalizeCalls += 1; return value; };
+
+  assert.equal(normalizeMarkdownPath(" Daily/2026-08-06.md ", normalizePath), "Daily/2026-08-06.md");
+  assert.equal(normalizeCalls, 1);
+  for (const path of ["../escape.md", "Daily\\today.md", "Daily//today.md", "/Daily/today.md", "Daily/./today.md", "Daily/today.txt"]) {
+    assert.throws(() => normalizeMarkdownPath(path, normalizePath), /路径/);
+  }
 });
 
 test("task-lines 纯函数按完整任务名规划并应用变更", () => {

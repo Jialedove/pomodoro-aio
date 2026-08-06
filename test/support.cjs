@@ -106,7 +106,7 @@ class FailureStore {
   async save(value) {
     this.throwIfScheduled("save");
     const delay = this.saveDelays.shift() || 0;
-    if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+    if (delay) await new Promise(resolve => { setTimeout(resolve, delay); });
     this.value = clone(value);
     this.saves.push(clone(value));
   }
@@ -182,12 +182,28 @@ function loadPomodoro() {
   class FakeItemView {}
   class FakePluginSettingTab {}
   class FakeSetting {}
+  const getFrontMatterInfo = content => {
+    const match = String(content || "").match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+    return { exists: !!match, frontmatter: match?.[1] || "" };
+  };
+  const parseYaml = yaml => Object.fromEntries(String(yaml || "").split(/\r?\n/).map(line => {
+    const index = line.indexOf(":");
+    if (index === -1) return null;
+    const key = line.slice(0, index).trim();
+    const raw = line.slice(index + 1).trim();
+    const number = Number(raw);
+    return [key, raw !== "" && Number.isFinite(number) ? number : raw];
+  }).filter(Boolean));
+  const normalizePath = path => String(path || "").replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "");
 
   Module._load = (request, parent, isMain) => request === "obsidian"
     ? {
         Plugin: FakePlugin,
         Notice: FakeNotice,
         TFile: FakeTFile,
+        getFrontMatterInfo,
+        parseYaml,
+        normalizePath,
         ItemView: FakeItemView,
         PluginSettingTab: FakePluginSettingTab,
         Setting: FakeSetting
@@ -253,6 +269,7 @@ const BASE_RUNTIME = {
   plannedTomatoCredit: 1,
   attention: null,
   pendingSettlement: null,
+  pendingBreakTransition: null,
   projectQueue: [],
   frontmatterQueue: [],
   sessionCount: 0,

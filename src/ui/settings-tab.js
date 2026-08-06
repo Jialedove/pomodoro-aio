@@ -1,5 +1,7 @@
 const { PluginSettingTab, Setting, Notice } = require("obsidian");
 const { positiveNumber, normalizeTag } = require("../core/validation");
+/** @typedef {import("../../types/contracts").Settings} Settings */
+/** @typedef {"focusStartSound" | "breakStartSound" | "focusEndSound" | "breakEndSound" | "focusAlertSound" | "breakAlertSound"} SoundSettingKey */
 
 const SOUND_DEFAULTS = {
   focusStartSound: "focus-start",
@@ -12,12 +14,15 @@ const SOUND_DEFAULTS = {
 
 /* ========== 设置面板 ========== */
 class PomodoroSettingTab extends PluginSettingTab {
+  /** @param {any} app @param {any} plugin @param {(raw?:Record<string, any>, fallback?:Settings)=>Settings} normalizeSettings */
   constructor(app, plugin, normalizeSettings){ super(app, plugin); this.plugin=plugin; this.normalizeSettings=normalizeSettings; }
   display(){
     const s = this.plugin.settings;
+    /** @param {Partial<Settings>} patch */
     const set = async(patch)=>{
       const next = this.normalizeSettings({ ...this.plugin.settings, ...patch }, this.plugin.settings);
       if (patch.dayStartHHMM !== undefined && next.dayStartHHMM !== patch.dayStartHHMM) new Notice("一天开始时间格式无效，已保留原值");
+      if (patch.fallbackPattern !== undefined && next.fallbackPattern !== String(patch.fallbackPattern || "").trim()) new Notice("当日路径必须是规范的 Markdown 路径，已保留原值");
       Object.assign(this.plugin.settings, next);
       await this.plugin.saveSettings();
       this.plugin.broadcast();
@@ -89,6 +94,7 @@ class PomodoroSettingTab extends PluginSettingTab {
           }
         });
       });
+    /** @type {Record<string, string>} */
     const soundOptions = {
       "focus-start": "上扬双音",
       "break-start": "下行双音",
@@ -97,14 +103,16 @@ class PomodoroSettingTab extends PluginSettingTab {
       "focus-alert": "四连强提醒",
       "break-alert": "三连强提醒"
     };
-    [
+    /** @type {Array<[string, SoundSettingKey]>} */
+    const soundSettings = [
       ["开始专注提示音", "focusStartSound"],
       ["开始休息提示音", "breakStartSound"],
       ["专注结束提示音", "focusEndSound"],
       ["休息结束提示音", "breakEndSound"],
       ["专注结束强提醒音", "focusAlertSound"],
       ["休息结束强提醒音", "breakAlertSound"]
-    ].forEach(([name, key]) => new Setting(c).setName(name).addDropdown(d=>{
+    ];
+    soundSettings.forEach(([name, key]) => new Setting(c).setName(name).addDropdown(d=>{
       d.addOptions(soundOptions);
       d.setValue(s[key] || SOUND_DEFAULTS[key]);
       d.onChange(v=>set({ [key]: soundOptions[v] ? v : SOUND_DEFAULTS[key] }));
@@ -135,9 +143,10 @@ class PomodoroSettingTab extends PluginSettingTab {
       }));
     new Setting(c).setName("点击菜单图标自动进入下一阶段").setDesc("强提醒触发时，点击图标后立即推进下一段专注/休息")
       .addToggle(t=>t.setValue(s.ribbonClickAutoNext).onChange(v=>set({ ribbonClickAutoNext: v })));
+    /** @type {Record<string, string>} */
     const commandOptions = { "": "（不执行命令）" };
     const allCommands = this.app.commands?.listCommands?.() || [];
-    allCommands.forEach(cmd => { if (cmd?.id) commandOptions[cmd.id] = `${cmd.name} (${cmd.id})`; });
+    allCommands.forEach((/** @type {Record<string, any>} */ cmd) => { if (cmd?.id) commandOptions[cmd.id] = `${cmd.name} (${cmd.id})`; });
     new Setting(c).setName("开始专注时附带命令").setDesc("当手动或强提醒开始专注时，同时执行所选命令")
       .addDropdown(d=>{
         d.addOptions(commandOptions);

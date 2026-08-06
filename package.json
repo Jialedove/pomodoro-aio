@@ -9,7 +9,7 @@
     "build:dev": "node esbuild.config.mjs",
     "build": "node esbuild.config.mjs --production",
     "typecheck": "node scripts/typecheck.cjs",
-    "lint": "node scripts/lint.cjs",
+    "lint": "eslint src scripts test esbuild.config.mjs && node scripts/lint.cjs",
     "test": "node --test test/*.test.cjs && node scripts/cycle-mode-check.cjs",
     "check:build": "node scripts/check-build.cjs",
     "check": "npm run typecheck && npm run lint && npm test && npm run build && npm run check:build",
@@ -17,6 +17,7 @@
   },
   "devDependencies": {
     "esbuild": "0.28.0",
+    "eslint": "^10.8.0",
     "typescript": "7.0.2"
   }
 }

@@ -30,7 +30,8 @@ Module._load = (request, parent, isMain) => request === "obsidian"
       TFile: FakeTFile,
       ItemView: class {},
       PluginSettingTab: class {},
-      Setting: class {}
+      Setting: class {},
+      normalizePath: path => String(path || "").replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "")
     }
   : originalLoad(request, parent, isMain);
 
@@ -77,6 +78,7 @@ plugin.runtime = {
   cycleSlot: 0,
   attention: null,
   pendingSettlement: null,
+  pendingBreakTransition: null,
   projectQueue: [],
   frontmatterQueue: [],
   currentTaskName: "",
@@ -118,21 +120,21 @@ plugin.app = {
 assert.equal(plugin.selectCycleSlot(1), true);
 assert.equal(plugin.runtime.cycleSlot, 1);
 assert.deepEqual(plugin.getWorkspaceLayoutCommands().map(command => command.id).sort(), ["workspaces-plus:研究", "workspaces-plus:整理"].sort());
-plugin.startCycle();
-assert.equal(plugin.runtime.currentTaskName, "简单任务");
-assert.equal(plugin.runtime.plannedTomatoCredit, 1.2);
-assert.deepEqual(plugin.executedCommands, []);
-assert.equal(plugin.selectCycleSlot(0), false);
-plugin.runtime.startedAtMs = Date.now() - plugin.runtime.durationMs;
-
 (async () => {
+  await plugin.startCycle();
+  assert.equal(plugin.runtime.currentTaskName, "简单任务");
+  assert.equal(plugin.runtime.plannedTomatoCredit, 1.2);
+  assert.deepEqual(plugin.executedCommands, []);
+  assert.equal(plugin.selectCycleSlot(0), false);
+  plugin.runtime.startedAtMs = Date.now() - plugin.runtime.durationMs;
+
   await plugin.tick();
   assert.match(todayFile.content, /简单任务 1.2🍅/);
   assert.equal(plugin.runtime.status, "awaiting");
   assert.equal(plugin.runtime.attention.cycleSlot, 0);
   assert.equal(plugin.getLeftSec(), 900);
 
-  plugin.onRibbonClick();
+  await plugin.onRibbonClick();
   assert.equal(plugin.runtime.currentTaskName, "难任务");
   assert.equal(plugin.runtime.status, "running");
   assert.equal(plugin.runtime.stage, "focus");

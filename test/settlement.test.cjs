@@ -3,7 +3,8 @@ const assert = require("node:assert/strict");
 const {
   buildNextStageTransition,
   buildDailySettlementPlan,
-  buildSettlementJournal
+  buildSettlementJournal,
+  validateSettlementJournal
 } = require("../src/core/settlement.js");
 
 const settings = {
@@ -57,7 +58,7 @@ test("settlement 纯函数组装日记计划和可恢复 journal", () => {
     transition: { mode: "standard", isLong: false, autoNext: false, durationMs: 300_000 },
     createdAtMs: 123,
     daily,
-    project: { status: "skipped" }
+    project: { path: "", key: "番茄数", amount: 0.2, status: "skipped" }
   });
 
   assert.equal(daily.rowStatus, "pending");
@@ -66,5 +67,14 @@ test("settlement 纯函数组装日记计划和可恢复 journal", () => {
   assert.equal(journal.status, "prepared");
   assert.equal(journal.sessionId, "session-1");
   assert.equal(journal.daily, daily);
-  assert.deepEqual(journal.project, { status: "skipped" });
+  assert.deepEqual(journal.project, { path: "", key: "番茄数", amount: 0.2, status: "skipped" });
+  assert.equal(validateSettlementJournal(journal), null);
+  for (const invalid of [
+    { ...journal, schemaVersion: 2 },
+    { ...journal, amount: 0 },
+    { ...journal, status: "broken" },
+    { ...journal, transition: null },
+    { ...journal, daily: { ...daily, path: "" } },
+    { ...journal, daily: { ...daily, lineAfter: "" } }
+  ]) assert.ok(validateSettlementJournal(invalid));
 });

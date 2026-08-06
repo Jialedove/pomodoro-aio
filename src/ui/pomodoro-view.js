@@ -2,10 +2,15 @@ const { ItemView, Notice } = require("obsidian");
 const { TIMER_STATUS, TIMER_STAGE } = require("../core/timer");
 const { formatTomatoNumber, normalizeTag } = require("../core/validation");
 const { workspaceLayoutLabel } = require("../integrations/workspaces-plus");
+/** @typedef {import("../../types/contracts").Runtime} Runtime */
+/** @typedef {import("../../types/contracts").Settings} Settings */
+/** @typedef {{label:string, path:string}} ProjectOption */
 
+/** @param {number} sec */
 function mmss(sec) {
   return `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`;
 }
+/** @param {any} plugin @param {string} operation @param {unknown} error @param {string} step */
 function logViewError(plugin, operation, error, step) {
   console.error("Pomodoro AIO 视图操作失败", {
     operation,
@@ -13,14 +18,23 @@ function logViewError(plugin, operation, error, step) {
     stage: plugin?.runtime?.stage || null,
     target: null,
     step,
-    error: String(error?.message || error || "unknown error")
+    error: String(error instanceof Error ? error.message : error || "unknown error")
   });
 }
 
 /* ========== 视图（UI） ========== */
 class PomodoroView extends ItemView {
   static VIEW_TYPE = "pomodoro-aio-view";
-  constructor(leaf, plugin){ super(leaf); this.plugin=plugin; this.disposers=[]; }
+  /** @param {any} leaf @param {any} plugin */
+  constructor(leaf, plugin){
+    super(leaf);
+    this.plugin=plugin;
+    /** @type {Array<(() => void) | {off:()=>void}>} */
+    this.disposers=[];
+    /** @type {ProjectOption[]} */
+    this._projOpts=[];
+    this._todaySumCache=0;
+  }
   getViewType(){ return PomodoroView.VIEW_TYPE; }
   getDisplayText(){ return "番茄钟"; }
   getIcon(){ return "clock"; }
@@ -44,8 +58,8 @@ class PomodoroView extends ItemView {
         </g>
       </svg>
       <div class="pmd-ring-text">0/8</div>`;
-      const ringText = ring.querySelector(".pmd-ring-text");
-      const ringProgress = ring.querySelector(".pmd-ring-prog");
+      const ringText = /** @type {HTMLElement} */ (ring.querySelector(".pmd-ring-text"));
+      const ringProgress = /** @type {SVGElement} */ (ring.querySelector(".pmd-ring-prog"));
       ring.setAttribute("role", "progressbar");
       ring.setAttribute("aria-label", "今日番茄进度");
       ring.setAttribute("aria-valuemin", "0");
@@ -70,9 +84,10 @@ class PomodoroView extends ItemView {
       const projInput = projBox.createEl("input", { type:"text", attr:{ list:"pmdProjList", placeholder:`关联项目（可选；${projectTagLabel} 且状态在白名单）`, "aria-label":"关联项目（可选）" }, cls:"pmd-input" });
       const projList  = projBox.createEl("datalist", { attr:{ id:"pmdProjList" } });
       // 让输入框获得焦点时直接展开 datalist
+      /** @param {HTMLInputElement} input */
       const _openDatalist = (input)=>{
         const prev = input.value;
-        const inputWrap = !prev && input.closest(".pmd-input-wrap");
+        const inputWrap = !prev ? input.closest(".pmd-input-wrap") : null;
         inputWrap?.classList.add("pmd-datalist-opening");
         input.value = prev + "\u200B"; // 零宽空格触发 suggestions
         input.dispatchEvent(new Event('input', {bubbles:true}));
@@ -113,7 +128,7 @@ class PomodoroView extends ItemView {
 
       // —— 长专注控制 ——
       const longWrap = container.createDiv({ cls:"pmd-row pmd-row-inline pmd-long-row" });
-      const longLabel = longWrap.createSpan({ cls:"pmd-long-label", text:"长专注（分钟）" });
+      longWrap.createSpan({ cls:"pmd-long-label", text:"长专注（分钟）" });
       const longInput = longWrap.createEl("input", {
         type:"number",
         cls:"pmd-long-input",
@@ -186,18 +201,20 @@ class PomodoroView extends ItemView {
       cycleTaskB.value = this.plugin.settings.cycleTaskB || "";
       cycleMinA.value = String(this.plugin.settings.cycleMinA || 15);
       cycleMinB.value = String(this.plugin.settings.cycleMinB || 15);
+      /** @param {HTMLInputElement} input @param {ObsidianElement} list @param {string} [selected] */
       const fillWorkspaceList = (input, list, selected="")=> {
         const commands = this.plugin.getWorkspaceLayoutCommands();
         list.empty();
-        commands.forEach(command=> list.createEl("option", { attr:{ value:workspaceLayoutLabel(command) } }));
-        const selectedCommand = commands.find(command=> command.id === selected);
+        commands.forEach((/** @type {Record<string, any>} */ command)=> list.createEl("option", { attr:{ value:workspaceLayoutLabel(command) } }));
+        const selectedCommand = commands.find((/** @type {Record<string, any>} */ command)=> command.id === selected);
         input.dataset.commandId = selectedCommand?.id || "";
         input.value = selectedCommand ? workspaceLayoutLabel(selectedCommand) : selected ? "布局已失效，请重选" : "";
       };
+      /** @param {HTMLInputElement} input */
       const selectWorkspace = input=> {
-        const command = this.plugin.getWorkspaceLayoutCommands().find(item=> workspaceLayoutLabel(item) === input.value.trim());
+        const command = this.plugin.getWorkspaceLayoutCommands().find((/** @type {Record<string, any>} */ item)=> workspaceLayoutLabel(item) === input.value.trim());
         if (!command && input.value.trim()) {
-          const current = this.plugin.getWorkspaceLayoutCommands().find(item=> item.id === input.dataset.commandId);
+          const current = this.plugin.getWorkspaceLayoutCommands().find((/** @type {Record<string, any>} */ item)=> item.id === input.dataset.commandId);
           input.value = current ? workspaceLayoutLabel(current) : "";
           return;
         }
@@ -223,6 +240,7 @@ class PomodoroView extends ItemView {
       const sessionEl = meta.createSpan({ text:"  本次已完成：0 段" });
 
       /* 事件绑定 */
+      /** @type {number | null} */
       let taskSaveTimer = null;
       const saveTask = ()=>{
         if (taskSaveTimer) window.clearTimeout(taskSaveTimer);
@@ -240,6 +258,7 @@ class PomodoroView extends ItemView {
         const next = this.plugin.settings.workMode === 'cycle' ? 'standard' : 'cycle';
         this.plugin.setWorkMode(next);
       };
+      /** @type {number | null} */
       let cycleSaveTimer = null;
       const saveCycleConfig = ()=> {
         if (cycleSaveTimer) window.clearTimeout(cycleSaveTimer);
@@ -261,7 +280,7 @@ class PomodoroView extends ItemView {
       });
       [cycleWorkspaceA, cycleWorkspaceB].forEach(input=> {
         input.oninput = ()=> {
-          if (this.plugin.getWorkspaceLayoutCommands().some(command=> workspaceLayoutLabel(command) === input.value.trim())) selectWorkspace(input);
+          if (this.plugin.getWorkspaceLayoutCommands().some((/** @type {Record<string, any>} */ command)=> workspaceLayoutLabel(command) === input.value.trim())) selectWorkspace(input);
         };
         input.onchange = ()=> selectWorkspace(input);
       });
@@ -269,8 +288,9 @@ class PomodoroView extends ItemView {
         input.addEventListener('focus', ()=> _openDatalist(input));
         input.addEventListener('click', ()=> _openDatalist(input));
       });
-      cycleRowA.ondblclick = (event)=> { if (!event.target.closest("input, button, select")) this.plugin.selectCycleSlot(0); };
-      cycleRowB.ondblclick = (event)=> { if (!event.target.closest("input, button, select")) this.plugin.selectCycleSlot(1); };
+      cycleRowA.ondblclick = (event)=> { if (!(event.target instanceof Element && event.target.closest("input, button, select"))) this.plugin.selectCycleSlot(0); };
+      cycleRowB.ondblclick = (event)=> { if (!(event.target instanceof Element && event.target.closest("input, button, select"))) this.plugin.selectCycleSlot(1); };
+      /** @param {Event | null | undefined} event */
       const clearCurrentTask = (event)=> {
         event?.preventDefault();
         if (taskSaveTimer) window.clearTimeout(taskSaveTimer);
@@ -280,12 +300,14 @@ class PomodoroView extends ItemView {
         this.plugin.setCurrentTaskName("");
         taskInput.focus();
       };
+      /** @param {HTMLInputElement} input @param {Event | null | undefined} event */
       const clearCycleTask = (input, event)=> {
         event?.preventDefault();
         input.value = "";
         saveCycleConfig();
         input.focus();
       };
+      /** @param {HTMLInputElement} input @param {Event | null | undefined} event */
       const clearCycleWorkspace = (input, event)=> {
         event?.preventDefault();
         input.value = "";
@@ -308,6 +330,7 @@ class PomodoroView extends ItemView {
         const hit = (this._projOpts||[]).find(x=> x.label===label);
         this.plugin.setCurrentProjectPath(hit? hit.path : "");
       };
+      /** @param {Event | null | undefined} event */
       const clearProject = (event)=> {
         event?.preventDefault();
         projInput.value = "";
@@ -316,30 +339,29 @@ class PomodoroView extends ItemView {
       };
       clearProjBtn.onpointerdown = clearProject;
       clearProjBtn.onclick = (event)=> { if (event.detail === 0) clearProject(event); };
-      openTodayBtn.onclick = ()=> this.plugin.openToday();
-      longBtn.onclick = ()=>{
+      openTodayBtn.onclick = event=> this.plugin.runUserCommand(() => this.plugin.openToday(), event);
+      longBtn.onclick = event=> this.plugin.runUserCommand(() => {
         const minutes = ensureLongValue();
-        this.plugin.startFocus({ cause:'manual', minutes });
-      };
+        return this.plugin.startFocus({ cause:'manual', minutes });
+      }, event);
 
-      startBtn.onclick = ()=>{
+      startBtn.onclick = event=> this.plugin.runUserCommand(() => {
         const snap = this.plugin.snapshot();
-        if (snap.runtime.status === TIMER_STATUS.PAUSED) { this.plugin.togglePause(true); return; }
+        if (snap.runtime.status === TIMER_STATUS.PAUSED) return this.plugin.togglePause(true);
         if (snap.runtime.attention && !snap.runtime.attention.nextStarted) {
-          this.plugin.startPendingStage();
-          return;
+          return this.plugin.startPendingStage();
         }
         if (this.plugin.settings.workMode === 'cycle') {
           saveCycleConfig();
-          this.plugin.startCycle();
+          return this.plugin.startCycle();
         } else {
           saveTask();
-          this.plugin.startFocus({ cause:'manual' });
+          return this.plugin.startFocus({ cause:'manual' });
         }
-      };
-      pauseBtn.onclick = ()=> this.plugin.togglePause();
-      resetBtn.onclick = ()=> this.plugin.reset();
-      doneBtn.onclick  = ()=> this.plugin.forceCompleteFocusOnce();
+      }, event);
+      pauseBtn.onclick = event=> this.plugin.runUserCommand(() => this.plugin.togglePause(), event);
+      resetBtn.onclick = event=> this.plugin.runUserCommand(() => this.plugin.reset(), event);
+      doneBtn.onclick  = event=> this.plugin.runUserCommand(() => this.plugin.forceCompleteFocusOnce(), event);
       const refreshTodayUI = async ()=>{
         const snap = await this._safeRefreshTodaySnapshot();
         this._todaySumCache = snap.sum;
@@ -353,8 +375,11 @@ class PomodoroView extends ItemView {
 
       // 订阅状态广播
       let lastRenderKey = "";
+      /** @type {boolean | null} */
       let lastProjectMode = null;
+      /** @param {HTMLElement} el @param {boolean} visible */
       const show = (el, visible)=> el.classList.toggle("pmd-hidden", !visible);
+      /** @param {{settings:Settings, runtime:Runtime & {leftSec?:number}}} snap */
       const onState = (snap)=> {
         const { settings:s, runtime:r } = snap;
         const cycleMode = s.workMode === 'cycle';
@@ -390,7 +415,7 @@ class PomodoroView extends ItemView {
         modeButton.setAttribute("aria-pressed", String(cycleMode));
         modeButton.setAttribute("aria-label", cycleMode ? "当前为循环工作，点击切换到普通专注" : "当前为普通专注，点击切换到循环工作");
         modeButton.setAttribute("title", cycleMode ? "切换到普通专注" : "切换到循环工作");
-        const cycleRunning = r.mode === "cycle" && [TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED].includes(r.status);
+        const cycleRunning = r.mode === "cycle" && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED]).includes(r.status);
         const lockCycleA = cycleRunning && r.cycleSlot === 0;
         const lockCycleB = cycleRunning && r.cycleSlot === 1;
         [cycleTaskA, cycleMinA, clearCycleTaskA, cycleWorkspaceA, clearCycleWorkspaceA].forEach(input=> input.disabled = lockCycleA);
@@ -402,7 +427,7 @@ class PomodoroView extends ItemView {
           fillWorkspaceList(cycleWorkspaceB, cycleWorkspaceListB, s.cycleWorkspaceCommandB || "");
         }
         if (cycleMode) {
-          const currentSlot = Number.isInteger(r.attention?.cycleSlot) ? r.attention.cycleSlot : (r.cycleSlot === 1 ? 1 : 0);
+          const currentSlot = r.attention && Number.isInteger(r.attention.cycleSlot) ? r.attention.cycleSlot : (r.cycleSlot === 1 ? 1 : 0);
           const canSelectSlot = r.status === TIMER_STATUS.IDLE && !r.attention;
           const attentionActive = !!r.attention;
           cycleRowA.classList.toggle("is-current", currentSlot === 0);
@@ -470,7 +495,9 @@ class PomodoroView extends ItemView {
       }
 
       // 只在当日日记变化时刷新，避免固定轮询整个文件。
+      /** @type {number | null} */
       let vaultRefreshTimer = null;
+      /** @param {{path?:string} | null | undefined} file */
       const onVaultModify = file=>{
         if (file?.path !== this.plugin.todayFilePath()) return;
         if (vaultRefreshTimer) window.clearTimeout(vaultRefreshTimer);
@@ -491,17 +518,20 @@ class PomodoroView extends ItemView {
     }
   }
 
+  /** @param {ObsidianElement} datalist @param {string[]} arr */
   _fillTaskOptions(datalist, arr){
-    datalist.empty(); arr.forEach((n)=> datalist.createEl("option", { attr:{ value:n } }));
+    datalist.empty(); arr.forEach(n=> datalist.createEl("option", { attr:{ value:n } }));
   }
+  /** @param {ObsidianElement} datalist @param {ProjectOption[]} arr */
   _fillProjectOptions(datalist, arr){
-    datalist.empty(); arr.forEach((o)=> datalist.createEl("option", { attr:{ value:o.label } }));
+    datalist.empty(); arr.forEach(o=> datalist.createEl("option", { attr:{ value:o.label } }));
   }
 
   async _safeRefreshTodaySnapshot(){
     try { return await this.plugin.refreshTodaySnapshot(); }
     catch(err){ logViewError(this.plugin, "daily-refresh", err, "read"); return { file:null, sum:0, unchecked:[] }; }
   }
+  /** @returns {ProjectOption[]} */
   _safeProjectCandidates(){
     try { return this.plugin.projectCandidates(); }
     catch(err){ logViewError(this.plugin, "project-refresh", err, "list"); return []; }

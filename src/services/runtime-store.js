@@ -1,3 +1,4 @@
+/** @template T @param {T} value @returns {T} */
 function cloneValue(value) {
   if (value === undefined || value === null) return value;
   return JSON.parse(JSON.stringify(value));
@@ -19,6 +20,7 @@ class RuntimeStore {
     this.readSettings = readSettings;
     this.writeSettings = writeSettings;
     this.onError = onError;
+    /** @type {Promise<unknown>} */
     this.queue = Promise.resolve();
     this.lastError = null;
   }
@@ -31,6 +33,7 @@ class RuntimeStore {
     return this.readSettings();
   }
 
+  /** @param {() => unknown | Promise<unknown>} task @param {boolean} [critical] @param {{operation?:string, sessionId?:string|null, stage?:string|null}} [context] */
   enqueue(task, critical = false, context = {}) {
     const previous = this.queue || Promise.resolve();
     const operation = previous.catch(() => {}).then(task);
@@ -46,13 +49,15 @@ class RuntimeStore {
   /** @param {unknown} runtime @param {{critical?: boolean}} [options] */
   saveRuntime(runtime, options = {}) {
     const snapshot = cloneValue(runtime);
+    const record = snapshot && typeof snapshot === "object" ? snapshot : {};
     return this.enqueue(() => this.writeRuntime(snapshot), !!options.critical, {
       operation: "saveRuntime",
-      sessionId: snapshot?.sessionId || null,
-      stage: snapshot?.stage || null
+      sessionId: "sessionId" in record ? String(record.sessionId || "") || null : null,
+      stage: "stage" in record ? String(record.stage || "") || null : null
     });
   }
 
+  /** @param {unknown} settings */
   saveSettings(settings) {
     const snapshot = cloneValue(settings);
     return this.enqueue(() => this.writeSettings(snapshot), false, { operation: "saveSettings" });

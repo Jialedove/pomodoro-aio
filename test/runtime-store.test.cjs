@@ -9,7 +9,7 @@ test("runtime-store 在入队时复制快照并按顺序写入", async () => {
     readRuntime: async () => null,
     writeRuntime: async value => {
       const delay = delays.shift() || 0;
-      if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+      if (delay) await new Promise(resolve => { setTimeout(resolve, delay); });
       saves.push(value);
     },
     readSettings: async () => ({}),

@@ -2,15 +2,15 @@
 // 变更点：项目下拉在任务上方；项目下拉后有“打开项目”；右上角新增“打开当日日记”按钮；左侧 Ribbon 加图标。
 
 const {
-  Plugin, Notice, TFile
+  Plugin, Notice, TFile, getFrontMatterInfo, parseYaml, normalizePath
 } = require('obsidian');
 const {
   parseHHMMToMinutes,
   positiveNumber,
-  normalizeTag,
   formatTomatoNumber,
   isValidHHMM,
-  normalizeTomatoValue
+  normalizeTomatoValue,
+  normalizeMarkdownPath
 } = require("./core/validation");
 const {
   getTomatoSum,
@@ -27,18 +27,34 @@ const {
   getElapsedMs: calculateElapsedMs,
   getRemainingMs: calculateRemainingMs
 } = require("./core/timer");
+const { RUNTIME_EVENT, RUNTIME_EFFECT, reduceRuntime } = require("./core/state-machine");
 const {
   buildNextStageTransition,
   buildDailySettlementPlan,
-  buildSettlementJournal
+  buildSettlementJournal,
+  validateSettlementJournal
 } = require("./core/settlement");
 const { RuntimeStore, cloneValue } = require("./services/runtime-store");
 const { DailyRepository, ProjectRepository } = require("./services/repositories");
 const { PomodoroView } = require("./ui/pomodoro-view");
 const { PomodoroSettingTab } = require("./ui/settings-tab");
 const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/workspaces-plus");
+/** @typedef {import("../types/contracts").Attention} Attention */
+/** @typedef {import("../types/contracts").BreakTransition} BreakTransition */
+/** @typedef {import("../types/contracts").ProjectSettlementPlan} ProjectSettlementPlan */
+/** @typedef {import("../types/contracts").Runtime} Runtime */
+/** @typedef {import("../types/contracts").RuntimeEvent} RuntimeEvent */
+/** @typedef {import("../types/contracts").Settings} Settings */
+/** @typedef {import("../types/contracts").SettlementJournal} SettlementJournal */
+/** @typedef {import("../types/contracts").StageTransition} StageTransition */
+/** @typedef {import("../types/contracts").TimerStage} TimerStage */
+/** @typedef {Record<string, any>} AnyRecord */
+/** @typedef {{suppressNotify?:boolean, cause?:string, minutes?:number|null, cycle?:boolean, cycleSlot?:0|1, taskName?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean}} StartFocusOptions */
+/** @typedef {{forceRun?:boolean, suppressNotify?:boolean, cause?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean}} StartBreakOptions */
+/** @typedef {{type?:string, isLong?:boolean, cycleSlot?:number|null, autoStarted?:boolean, durationMs?:number, taskName?:string}} NextPhase */
 
 /* ========== 默认设置 ========== */
+/** @type {Settings} */
 const DEFAULT_SETTINGS = {
   // 计时
   focusMin: 25,
@@ -102,18 +118,26 @@ const DEFAULT_SETTINGS = {
 };
 
 /* ========== 工具函数 ========== */
+/** @param {Date} now @param {unknown} startHHMM */
 function getLogicalDayKey(now, startHHMM) {
   const startMin = parseHHMMToMinutes(startHHMM) ?? 0;
   const curMin = now.getHours()*60 + now.getMinutes();
   const base = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const d = new Date(base);
   if (curMin < startMin) d.setDate(d.getDate() - 1);
-  const pad2 = (n)=> String(n).padStart(2,"0");
+  const pad2 = (/** @type {number} */ n)=> String(n).padStart(2,"0");
   return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
 }
+/** @param {unknown} pattern @param {string} dayKey */
 function renderPattern(pattern, dayKey) {
   return String(pattern||"").replace("{{date:YYYY-MM-DD}}", dayKey);
 }
+/** @param {unknown} value @returns {string | null} */
+function tryNormalizeMarkdownPath(value) {
+  try { return normalizeMarkdownPath(value, normalizePath); }
+  catch (error) { return null; }
+}
+/** @param {Settings} settings @returns {Runtime} */
 function createRuntimeDefaults(settings) {
   return {
     schemaVersion: TIMER_SCHEMA_VERSION,
@@ -130,6 +154,8 @@ function createRuntimeDefaults(settings) {
     plannedTomatoCredit: plannedTomatoAmount((Number(settings.focusMin) || 25) * 60 * 1000),
     attention: null,
     pendingSettlement: null,
+    pendingBreakTransition: null,
+    quarantinedSettlement: null,
     projectQueue: [],
     frontmatterQueue: [],
     sessionCount: 0,
@@ -139,19 +165,20 @@ function createRuntimeDefaults(settings) {
     viewWasOpen: false
   };
 }
+/** @param {Record<string, any>} [raw] @param {Settings} [fallback] @returns {Settings} */
 function normalizeSettings(raw={}, fallback=DEFAULT_SETTINGS) {
   const base = Object.assign({}, DEFAULT_SETTINGS, fallback || {});
   const source = raw || {};
   const result = Object.assign({}, base, source, { schemaVersion: TIMER_SCHEMA_VERSION });
-  const has = key => Object.prototype.hasOwnProperty.call(source, key);
-  const number = (key, min=0.1) => {
+  const has = (/** @type {string} */ key) => Object.prototype.hasOwnProperty.call(source, key);
+  const number = (/** @type {keyof Settings} */ key, min=0.1) => {
     const fallbackValue = positiveNumber(base[key], DEFAULT_SETTINGS[key], min);
-    return has(key) ? positiveNumber(source[key], fallbackValue, min) : fallbackValue;
+    return has(String(key)) ? positiveNumber(source[key], fallbackValue, min) : fallbackValue;
   };
-  const integer = (key, min=1) => {
+  const integer = (/** @type {keyof Settings} */ key, min=1) => {
     const fallbackValue = Math.max(min, Math.round(Number(base[key]) || min));
     const value = Number(source[key]);
-    return has(key) && Number.isFinite(value) && value >= min ? Math.round(value) : fallbackValue;
+    return has(String(key)) && Number.isFinite(value) && value >= min ? Math.round(value) : fallbackValue;
   };
   result.focusMin = number("focusMin");
   result.breakMin = number("breakMin");
@@ -168,42 +195,84 @@ function normalizeSettings(raw={}, fallback=DEFAULT_SETTINGS) {
   result.workMode = source.workMode === "cycle" || (!has("workMode") && base.workMode === "cycle") ? "cycle" : "standard";
   result.soundWaveform = ["sine", "square", "triangle"].includes(source.soundWaveform)
     ? source.soundWaveform : base.soundWaveform;
+  const fallbackPattern = tryNormalizeMarkdownPath(base.fallbackPattern) || DEFAULT_SETTINGS.fallbackPattern;
+  result.fallbackPattern = has("fallbackPattern")
+    ? (tryNormalizeMarkdownPath(source.fallbackPattern) || fallbackPattern)
+    : fallbackPattern;
+  const projectPath = has("currentProjectPath") ? source.currentProjectPath : base.currentProjectPath;
+  result.currentProjectPath = String(projectPath || "").trim()
+    ? (tryNormalizeMarkdownPath(projectPath) || "")
+    : "";
   for (const key of ["autoNext", "projectEnable", "showProjectSelector", "enableSound", "enableNotify", "persistentAlertSound", "ribbonClickAutoNext", "allowCreateDaily", "allowAutoCreateTask", "respectModalInputFocus"]) {
     if (typeof source[key] !== "boolean") result[key] = base[key];
   }
   return result;
 }
+/** @param {unknown} value @param {Settings} settings @returns {Attention | null} */
 function normalizeAttention(value, settings) {
-  if (!value || ![TIMER_STAGE.FOCUS, TIMER_STAGE.BREAK].includes(value.type)) return null;
-  const cycleSlot = Number.isInteger(value.cycleSlot) ? (value.cycleSlot === 1 ? 1 : 0) : null;
-  const durationMs = Math.max(1, Number(value.durationMs) || configuredStageDurationMs(settings, value.type, !!value.isLong, cycleSlot));
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = /** @type {AnyRecord} */ (value);
+  if (![TIMER_STAGE.FOCUS, TIMER_STAGE.BREAK].includes(record.type)) return null;
+  const cycleSlot = Number.isInteger(record.cycleSlot) ? (record.cycleSlot === 1 ? 1 : 0) : null;
+  const durationMs = Math.max(1, Number(record.durationMs) || configuredStageDurationMs(settings, record.type, !!record.isLong, cycleSlot));
+  /** @type {Attention} */
   const result = {
-    type: value.type,
-    isLong: !!value.isLong,
+    type: record.type,
+    isLong: !!record.isLong,
     cycleSlot,
-    nextStarted: !!value.nextStarted,
+    nextStarted: !!record.nextStarted,
     durationMs
   };
-  if (value.taskName !== undefined) result.taskName = String(value.taskName || "").trim();
+  if (record.taskName !== undefined) result.taskName = String(record.taskName || "").trim();
   return result;
 }
+/** @param {unknown} value @returns {{journal:SettlementJournal|null, error:string|null}} */
 function normalizeSettlement(value) {
-  if (!value || typeof value !== "object" || !String(value.sessionId || "")) return null;
-  return cloneValue(value);
+  if (!value) return { journal: null, error: null };
+  const error = validateSettlementJournal(value);
+  if (error) return { journal: null, error };
+  const journal = /** @type {SettlementJournal} */ (cloneValue(value));
+  try {
+    journal.daily.path = normalizeMarkdownPath(journal.daily.path, normalizePath);
+    if (journal.project.path) journal.project.path = normalizeMarkdownPath(journal.project.path, normalizePath);
+    return { journal, error:null };
+  } catch (pathError) {
+    return { journal:null, error:`journal 路径非法：${pathError instanceof Error ? pathError.message : String(pathError)}` };
+  }
 }
+/** @param {unknown} value @returns {BreakTransition | null} */
+function normalizeBreakTransition(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = /** @type {AnyRecord} */ (value);
+  if (record.schemaVersion !== 1 || record.status !== "break-completing") return null;
+  if (typeof record.autoNext !== "boolean" || !Number.isFinite(record.durationMs) || record.durationMs <= 0) return null;
+  if (!Number.isFinite(record.createdAtMs) || record.createdAtMs <= 0) return null;
+  return /** @type {BreakTransition} */ (cloneValue(record));
+}
+/** @param {unknown} value @returns {AnyRecord[]} */
 function normalizeProjectQueue(value) {
   if (!Array.isArray(value)) return [];
-  return value.filter(item => item && typeof item === "object" && String(item.sessionId || "") && String(item.path || ""))
-    .map(item => cloneValue(item));
+  return value.flatMap(item => {
+    const path = tryNormalizeMarkdownPath(item?.path);
+    return item && typeof item === "object" && String(item.sessionId || "") && path
+      ? [{ ...cloneValue(item), path }]
+      : [];
+  });
 }
+/** @param {unknown} value @returns {AnyRecord[]} */
 function normalizeFrontmatterQueue(value) {
   if (!Array.isArray(value)) return [];
-  return value.filter(item => item && typeof item === "object" && String(item.path || "") && String(item.key || ""))
-    .map(item => cloneValue(item));
+  return value.flatMap(item => {
+    const path = tryNormalizeMarkdownPath(item?.path);
+    return item && typeof item === "object" && String(item.key || "") && path
+      ? [{ ...cloneValue(item), path }]
+      : [];
+  });
 }
+/** @param {unknown} raw @param {Settings} settings @param {number} [now] @returns {Runtime} */
 function normalizeRuntime(raw, settings, now=Date.now()) {
   const defaults = createRuntimeDefaults(settings);
-  const source = raw || {};
+  const source = raw && typeof raw === "object" && !Array.isArray(raw) ? /** @type {AnyRecord} */ (raw) : {};
   const legacy = !source.status;
   const legacyPhase = source.phase === TIMER_STAGE.FOCUS || source.phase === TIMER_STAGE.BREAK ? source.phase : null;
   const legacyPending = source.strongAlert && source.pendingPhase ? {
@@ -214,6 +283,8 @@ function normalizeRuntime(raw, settings, now=Date.now()) {
     durationMs: configuredStageDurationMs(settings, source.pendingPhase, !!source.pendingIsLong, source.pendingCycleSlot)
   } : null;
   const attention = normalizeAttention(source.attention || legacyPending, settings);
+  const settlement = normalizeSettlement(source.pendingSettlement);
+  const breakTransition = normalizeBreakTransition(source.pendingBreakTransition);
   const mode = source.mode === "cycle" || source.cycleActive || (legacy && settings.workMode === "cycle") ? "cycle" : "standard";
   let status = Object.values(TIMER_STATUS).includes(source.status) ? source.status : TIMER_STATUS.IDLE;
   let stage = source.stage === TIMER_STAGE.FOCUS || source.stage === TIMER_STAGE.BREAK ? source.stage : null;
@@ -253,7 +324,14 @@ function normalizeRuntime(raw, settings, now=Date.now()) {
     sessionId: source.sessionId || (stage === TIMER_STAGE.FOCUS && [TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED].includes(status) ? createSessionId() : null),
     plannedTomatoCredit: plannedTomatoAmount(durationMs || (Number(settings.focusMin) || 25) * 60 * 1000),
     attention,
-    pendingSettlement: normalizeSettlement(source.pendingSettlement),
+    pendingSettlement: settlement.journal,
+    pendingBreakTransition: breakTransition,
+    quarantinedSettlement: settlement.error ? {
+      sessionId: String(source.pendingSettlement?.sessionId || "") || null,
+      schemaVersion: Number.isFinite(source.pendingSettlement?.schemaVersion) ? source.pendingSettlement.schemaVersion : null,
+      atMs: now,
+      error: settlement.error
+    } : (source.quarantinedSettlement && typeof source.quarantinedSettlement === "object" ? cloneValue(source.quarantinedSettlement) : null),
     projectQueue: normalizeProjectQueue(source.projectQueue),
     frontmatterQueue: normalizeFrontmatterQueue(source.frontmatterQueue),
     sessionCount: Math.max(0, Math.floor(Number(source.sessionCount) || 0)),
@@ -316,28 +394,52 @@ function normalizeRuntime(raw, settings, now=Date.now()) {
     result.status = TIMER_STATUS.FAILED;
     result.failure = { stage: result.stage, sessionId: result.sessionId || null, atMs: now, message: "运行状态缺少有效开始时间" };
   }
-  if (result.status === TIMER_STATUS.SETTLING && !result.pendingSettlement) {
+  if (result.status === TIMER_STATUS.SETTLING && !result.pendingSettlement && !result.pendingBreakTransition) {
     result.status = TIMER_STATUS.FAILED;
-    result.failure = { stage: result.stage, sessionId: result.sessionId || null, atMs: now, message: "结算状态缺少 journal" };
+    result.failure = { stage: result.stage, sessionId: result.sessionId || null, atMs: now, message: "转换状态缺少 journal" };
   }
   if ([TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED].includes(result.status)) result.attention = null;
   if (result.stage === TIMER_STAGE.FOCUS && result.status !== TIMER_STATUS.AWAITING) result.plannedTomatoCredit = plannedTomatoAmount(result.durationMs);
   if (result.stage === TIMER_STAGE.BREAK) result.plannedTomatoCredit = 0;
+  if (settlement.error) {
+    result.status = TIMER_STATUS.FAILED;
+    result.stage = null;
+    result.durationMs = 0;
+    result.startedAtMs = 0;
+    result.elapsedMs = 0;
+    result.remainingMs = 0;
+    result.pausedAtMs = 0;
+    result.sessionId = null;
+    result.plannedTomatoCredit = 0;
+    result.attention = null;
+    result.failure = {
+      operation: "quarantineSettlement",
+      sessionId: result.quarantinedSettlement.sessionId,
+      stage: TIMER_STAGE.FOCUS,
+      target: null,
+      step: "validate",
+      atMs: now,
+      message: `无效结算 journal 已隔离：${settlement.error}`
+    };
+  }
   return result;
 }
+/** @param {string} kind @param {boolean} [enabled] @param {"sine" | "square" | "triangle"} [waveform] @param {boolean} [strong] */
 function playBeep(kind, enabled=true, waveform='sine', strong=false) {
   if (!enabled) return;
   try {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     const ctx = new Ctx();
-    const tones = {
+    /** @type {Record<string, number[]>} */
+    const toneMap = {
       'focus-start': [740, 988],
       'break-start': [660, 523],
       'focus-end': [784, 784, 1047],
       'break-end': [1047, 784, 1047],
       'focus-alert': [784, 1047, 784, 1047],
       'break-alert': [1047, 1047, 784]
-    }[kind] || [520];
+    };
+    const tones = toneMap[kind] || [520];
     // 波形来源于设置：sine/square/triangle
     tones.forEach((frequency, index) => {
       const osc = ctx.createOscillator(); const gain = ctx.createGain();
@@ -354,6 +456,7 @@ function playBeep(kind, enabled=true, waveform='sine', strong=false) {
     console.warn("Pomodoro AIO 声音提示失败", error);
   }
 }
+/** @param {string} title @param {string} body @param {boolean} [enabled] */
 function sysNotify(title, body, enabled=true) {
   if (!enabled) return;
   try {
@@ -371,6 +474,7 @@ function sysNotify(title, body, enabled=true) {
     new Notice(`${title}｜${body}`);
   }
 }
+/** @param {string} operation @param {unknown} error @param {{sessionId?:string|null, stage?:string|null, target?:string|null, step?:string|null}} [context] */
 function logPluginError(operation, error, context={}) {
   const details = {
     operation,
@@ -378,13 +482,42 @@ function logPluginError(operation, error, context={}) {
     stage: context.stage || null,
     target: context.target || null,
     step: context.step || null,
-    error: String(error?.message || error || "unknown error")
+    error: String(error instanceof Error ? error.message : error || "unknown error")
   };
   console.error("Pomodoro AIO 操作失败", details);
   return details;
 }
 /* ========== 后台守护 ========== */
 class PomodoroAIO extends Plugin {
+  /** @param {...any} args */
+  constructor(...args) {
+    super(...args);
+    this.settings = normalizeSettings();
+    this.runtime = createRuntimeDefaults(this.settings);
+    /** @type {InstanceType<typeof RuntimeStore> | null} */
+    this.runtimeStore = null;
+    /** @type {InstanceType<typeof DailyRepository> | null} */
+    this.dailyRepository = null;
+    /** @type {InstanceType<typeof ProjectRepository> | null} */
+    this.projectRepository = null;
+    /** @type {InstanceType<typeof WorkspacesPlusAdapter> | null} */
+    this.workspacesPlus = null;
+    /** @type {ObsidianElement | null} */
+    this.ribbon = null;
+    /** @type {ObsidianElement | null} */
+    this.ribbonBadge = null;
+    /** @type {number | null} */
+    this._alertInterval = null;
+    /** @type {number | null} */
+    this._alertEscalationTimeout = null;
+    /** @type {number | null} */
+    this._tickTimeout = null;
+    /** @type {unknown} */
+    this._lastPersistenceError = null;
+    this._completionInFlight = false;
+    this._unloading = false;
+    this._scheduleTick = () => {};
+  }
   async onload() {
     this._lastPersistenceError = null;
     await this.loadSettings();
@@ -393,9 +526,13 @@ class PomodoroAIO extends Plugin {
     this._alertEscalationTimeout = null;
     this._completionInFlight = false;
     this.ribbonBadge = null;
-    if (!this.runtime.dayKey) this.runtime.dayKey = this.logicalTodayKey();
+    if (!this.runtime.dayKey) this.runtime = reduceRuntime(this.runtime, {
+      type:RUNTIME_EVENT.DAY_ROLLOVER,
+      dayKey:this.logicalTodayKey()
+    }).runtime;
     await this.saveState({ critical:true });
     await this.recoverPendingSettlement();
+    await this.recoverPendingBreakTransition();
     try {
       await this.repairFrontmatterQueue();
     } catch (error) {
@@ -418,7 +555,7 @@ class PomodoroAIO extends Plugin {
       this.ribbonBadge = this.ribbon.createDiv({ cls:"pomodoro-ribbon-badge" });
       const originalClick = this.ribbon.onclick?.bind(this.ribbon);
       this.ribbon.onclick = (evt) => {
-        this.onRibbonClick(evt);
+        this.runUserCommand(() => this.onRibbonClick(), evt);
         if (originalClick) originalClick(evt);
       };
     }
@@ -486,15 +623,55 @@ class PomodoroAIO extends Plugin {
           stage: context.stage || this.runtime?.stage,
           step: "write"
         });
-        new Notice("番茄钟状态保存失败，后续操作仍会保留并继续重试");
+        new Notice("番茄钟状态保存失败，请重试当前操作");
       }
     });
     return this.runtimeStore;
   }
   async loadState(){ return this._getRuntimeStore().loadRuntime(); }
   async flushPendingSaves(){ await this._getRuntimeStore().flush(); }
+  /** @param {{critical?:boolean}} [options] */
   async saveState(options={}){
     return this._getRuntimeStore().saveRuntime(this.runtime, options);
+  }
+  /** @param {Runtime} previousRuntime */
+  async saveTransition(previousRuntime){
+    try {
+      await this.saveState({ critical:true });
+    } catch (error) {
+      this.runtime = previousRuntime;
+      this.applyStrongAlertStateFromRuntime();
+      this.broadcast();
+      this._resyncTick();
+      throw error;
+    }
+  }
+  /** @param {RuntimeEvent} event */
+  applyRuntimeEvent(event){
+    const transition = reduceRuntime(this.runtime, event);
+    this.runtime = transition.runtime;
+    return transition.effects;
+  }
+  /** @param {string[]} [effects] */
+  runRuntimeEffects(effects=[]){
+    for (const effect of effects) {
+      if (effect === RUNTIME_EFFECT.ALERT_START) {
+        this.updateRibbonAlertUI(true);
+        this.startPersistentAlertSound();
+      } else if (effect === RUNTIME_EFFECT.ALERT_STOP) {
+        this.stopPersistentAlertSound();
+        this.updateRibbonAlertUI(false);
+        this.updateRibbonBadge();
+      } else if (effect === RUNTIME_EFFECT.BROADCAST) this.broadcast();
+      else if (effect === RUNTIME_EFFECT.RESYNC) this._resyncTick();
+    }
+  }
+  /** @param {RuntimeEvent} event */
+  async commitRuntimeEvent(event){
+    const previousRuntime = this.runtime;
+    const effects = this.applyRuntimeEvent(event);
+    await this.saveTransition(previousRuntime);
+    this.runRuntimeEffects(effects);
   }
   async loadSettings(){
     const data = await this._getRuntimeStore().loadSettings();
@@ -507,6 +684,7 @@ class PomodoroAIO extends Plugin {
 
   /* ====== 环境守护 ====== */
   respectGuardsEnabled(){ return this.settings?.respectModalInputFocus !== false; }
+  /** @param {Element | null | undefined} el */
   isElementVisible(el){
     if (!el) return false;
     try {
@@ -515,10 +693,11 @@ class PomodoroAIO extends Plugin {
         if (style.display === "none") return false;
         if (style.visibility === "hidden" || style.visibility === "collapse") return false;
       }
-      if (el.offsetParent === null && style?.position !== "fixed") return false;
+      if (el instanceof HTMLElement && el.offsetParent === null && style?.position !== "fixed") return false;
       return true;
     } catch { return true; }
   }
+  /** @param {unknown} target */
   isTextInputTarget(target){
     const el = target instanceof HTMLElement ? target : null;
     if (!el) return false;
@@ -547,6 +726,7 @@ class PomodoroAIO extends Plugin {
       return false;
     } catch { return false; }
   }
+  /** @param {Event | null | undefined} evt @param {{allowInPluginInput?:boolean, allowInText?:boolean}} [opts] */
   shouldBlockHotkeys(evt, opts={}){
     if (!this.respectGuardsEnabled()) return false;
     if (evt?.defaultPrevented) return true;
@@ -560,6 +740,7 @@ class PomodoroAIO extends Plugin {
     if (!allowInPluginInput && !allowInText && target && this.isTextInputTarget(target)) return true;
     return false;
   }
+  /** @param {{source?:string}} [opts] */
   shouldBlockFocusLayoutSideEffects(opts={}){
     if (!this.respectGuardsEnabled()) return false;
     const source = opts.source || "auto";
@@ -571,25 +752,28 @@ class PomodoroAIO extends Plugin {
     }
     return false;
   }
+  /** @param {()=>any} fn @param {Event | null | undefined} evt */
   runUserCommand(fn, evt){
     if (this.shouldBlockHotkeys(evt, { allowInText:true })) return false;
     if (this.shouldBlockFocusLayoutSideEffects({ source:"user" })) return false;
     try {
       const result = fn();
-      result?.catch?.(error => logPluginError("user-command", error, { step:"execute" }));
+      result?.catch?.((/** @type {unknown} */ error) => logPluginError("user-command", error, { step:"execute" }));
     } catch(err){ logPluginError("user-command", err, { step:"execute" }); }
     return true;
   }
+  /** @param {()=>any} fn */
   runAutoAction(fn){
     if (this.shouldBlockFocusLayoutSideEffects({ source:"auto" })) return false;
     try {
       const result = fn();
-      result?.catch?.(error => logPluginError("auto-action", error, { step:"execute" }));
+      result?.catch?.((/** @type {unknown} */ error) => logPluginError("auto-action", error, { step:"execute" }));
     } catch(err){ logPluginError("auto-action", err, { step:"execute" }); }
     return true;
   }
 
   /* ====== 视图与广播 ====== */
+  /** @param {{source?:string}} [opts] */
   async activateView(opts={}) {
     const source = opts.source || "user";
     if (this.shouldBlockFocusLayoutSideEffects({ source })) return;
@@ -611,14 +795,16 @@ class PomodoroAIO extends Plugin {
       runtime: Object.assign({}, this.runtime, { leftMs, leftSec: Math.ceil(leftMs / 1000) })
     };
   }
+  /** @param {(Runtime & {leftSec?:number}) | null | undefined} [runtime] */
   updateRibbonVisuals(runtime){
     if (!this.ribbon) return;
     const r = runtime || Object.assign({}, this.runtime, { leftSec: this.getLeftSec() });
     this.updateRibbonBadge(r);
     this.updateRibbonAlertUI(!!r.attention);
   }
+  /** @param {(Runtime & {leftSec?:number}) | null | undefined} [runtime] */
   updateRibbonBadge(runtime){
-    if (!this.ribbonBadge) return;
+    if (!this.ribbonBadge || !this.ribbon) return;
     const status = runtime?.status || this.runtime.status;
     const sec = runtime?.leftSec ?? this.getLeftSec();
     const show = status !== TIMER_STATUS.IDLE && sec > 0;
@@ -631,6 +817,7 @@ class PomodoroAIO extends Plugin {
       this.ribbon.removeClass("pomodoro-ribbon-has-badge");
     }
   }
+  /** @param {boolean} active */
   updateRibbonAlertUI(active){
     if (!this.ribbon) return;
     if (active) this.ribbon.addClass("pomodoro-ribbon-alert");
@@ -667,62 +854,58 @@ class PomodoroAIO extends Plugin {
     this.updateRibbonAlertUI(true);
     this.startPersistentAlertSound();
   }
-  onRibbonClick(evt){
+  async onRibbonClick(){
     if (!this.runtime.attention) return;
     if (!this.settings.ribbonClickAutoNext || this.runtime.attention.nextStarted) {
-      this.stopStrongAlert();
+      await this.stopStrongAlert();
       return;
     }
-    this.startPendingStage();
+    await this.startPendingStage();
   }
-  startPendingStage(){
+  async startPendingStage(){
     const next = this.runtime.attention;
-    if (!next || next.nextStarted) { this.stopStrongAlert(); return; }
-    if (next.type === TIMER_STAGE.BREAK) this.startBreak(next.isLong, { forceRun:true, cause:'manual', durationMs:next.durationMs, allowTransition:true });
+    if (!next || next.nextStarted) { await this.stopStrongAlert(); return; }
+    if (next.type === TIMER_STAGE.BREAK) await this.startBreak(next.isLong, { forceRun:true, cause:'manual', durationMs:next.durationMs, allowTransition:true });
     else if (next.type === TIMER_STAGE.FOCUS && Number.isInteger(next.cycleSlot)) {
+      /** @type {StartFocusOptions} */
       const options = { cause:'manual', durationMs:next.durationMs, allowTransition:true };
       if (next.taskName !== undefined) options.taskName = next.taskName;
-      this.startCycle(next.cycleSlot, options);
+      await this.startCycle(next.cycleSlot === 1 ? 1 : 0, options);
     }
-    else if (next.type === TIMER_STAGE.FOCUS) this.startFocus({ cause:'manual', durationMs:next.durationMs, allowTransition:true });
-    else this.stopStrongAlert();
+    else if (next.type === TIMER_STAGE.FOCUS) await this.startFocus({ cause:'manual', durationMs:next.durationMs, allowTransition:true });
+    else await this.stopStrongAlert();
   }
-  beginStrongAlert(nextPhase){
+  /** @param {NextPhase} nextPhase */
+  async beginStrongAlert(nextPhase){
     const type = nextPhase?.type;
-    if (![TIMER_STAGE.FOCUS, TIMER_STAGE.BREAK].includes(type)) return;
+    if (type !== TIMER_STAGE.FOCUS && type !== TIMER_STAGE.BREAK) return;
+    const stage = /** @type {TimerStage} */ (type);
     const cycleSlot = Number.isInteger(nextPhase?.cycleSlot) ? (nextPhase.cycleSlot === 1 ? 1 : 0) : null;
+    /** @type {Attention} */
     const attention = {
-      type,
+      type:stage,
       isLong: !!nextPhase?.isLong,
       cycleSlot,
       nextStarted: !!nextPhase?.autoStarted,
-      durationMs: Math.max(1, Number(nextPhase?.durationMs) || configuredStageDurationMs(this.settings, type, !!nextPhase?.isLong, cycleSlot))
+      durationMs: Math.max(1, Number(nextPhase?.durationMs) || configuredStageDurationMs(this.settings, stage, !!nextPhase?.isLong, cycleSlot))
     };
     if (nextPhase?.taskName !== undefined) attention.taskName = String(nextPhase.taskName || "").trim();
-    this.runtime.attention = attention;
-    if (!attention.nextStarted) this.clearStageTiming(TIMER_STATUS.AWAITING);
-    this.saveState();
-    this.updateRibbonAlertUI(true);
-    this.startPersistentAlertSound();
-    this.broadcast();
+    await this.commitRuntimeEvent({ type:RUNTIME_EVENT.SET_ATTENTION, attention });
   }
-  stopStrongAlert(){
+  async stopStrongAlert(){
     if (!this.runtime.attention) {
       this.stopPersistentAlertSound();
       this.updateRibbonAlertUI(false);
       return;
     }
-    this.runtime.attention = null;
-    this.saveState();
-    this.stopPersistentAlertSound();
-    this.updateRibbonAlertUI(false);
-    this.updateRibbonBadge();
-    this.broadcast();
+    await this.commitRuntimeEvent({ type:RUNTIME_EVENT.CLEAR_ATTENTION });
   }
+  /** @param {unknown} tomatoAmount @param {string} next */
   focusCompletionBody(tomatoAmount, next){
     const task = String(this.runtime.currentTaskName || this.settings.defaultTaskName || "").trim();
     return `${task ? `完成：${task} · ` : ""}+${formatTomatoNumber(tomatoAmount)}🍅\n下一步：${next}`;
   }
+  /** @param {unknown} commandId */
   executeStageCommand(commandId){
     const id = String(commandId||"").trim();
     if (!id) return false;
@@ -740,6 +923,7 @@ class PomodoroAIO extends Plugin {
   getWorkspaceLayoutCommands(){
     return this._getWorkspacesPlus().getLayoutCommands();
   }
+  /** @param {unknown} commandId */
   isWorkspaceLayoutActive(commandId){
     return this._getWorkspacesPlus().isLayoutActive(commandId);
   }
@@ -748,49 +932,27 @@ class PomodoroAIO extends Plugin {
   getLeftMs(){
     return calculateRemainingMs(this.runtime, this.settings);
   }
+  /** @param {number} [at] */
   getElapsedMs(at=Date.now()){
     return calculateElapsedMs(this.runtime, at);
-  }
-  /** @param {string} [status] */
-  clearStageTiming(status=TIMER_STATUS.IDLE){
-    const r = this.runtime;
-    r.status = status;
-    r.stage = null;
-    r.durationMs = 0;
-    r.startedAtMs = 0;
-    r.elapsedMs = 0;
-    r.remainingMs = status === TIMER_STATUS.AWAITING ? Math.max(0, Number(r.attention?.durationMs) || 0) : 0;
-    r.pausedAtMs = 0;
-    r.sessionId = null;
-    r.plannedTomatoCredit = 0;
-  }
-  startStage(stage, durationMs, session=false){
-    const r = this.runtime;
-    const now = Date.now();
-    r.status = TIMER_STATUS.RUNNING;
-    r.stage = stage;
-    r.durationMs = Math.max(1, Math.round(Number(durationMs) || 1));
-    r.startedAtMs = now;
-    r.elapsedMs = 0;
-    r.remainingMs = r.durationMs;
-    r.pausedAtMs = 0;
-    r.sessionId = session ? createSessionId() : null;
-    r.plannedTomatoCredit = stage === TIMER_STAGE.FOCUS ? plannedTomatoAmount(r.durationMs) : 0;
-    delete r.failure;
   }
   getLeftSec(){
     return Math.ceil(this.getLeftMs() / 1000);
   }
-  ensureDayFreshness(){
+  /** @param {boolean} [persist] */
+  ensureDayFreshness(persist=true){
     const cur = this.logicalTodayKey();
     if (this.runtime.dayKey !== cur){
-      this.runtime.dayKey = cur;
-      this.runtime.sessionCount = 0; // 跨天清空“本次已完成段数”
-      this.saveState();
-      this.broadcast();
+      const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.DAY_ROLLOVER, dayKey:cur });
+      if (persist) {
+        this.saveState();
+        this.runRuntimeEffects(effects);
+      }
     }
   }
-  startFocus(options){
+  /** @param {boolean | StartFocusOptions} [options] */
+  async startFocus(options){
+    /** @type {StartFocusOptions} */
     let opts = { suppressNotify:false, cause:'manual', minutes:null, cycle:false };
     if (typeof options === 'boolean') opts.suppressNotify = options;
     else if (options && typeof options === 'object') opts = Object.assign(opts, options);
@@ -798,24 +960,33 @@ class PomodoroAIO extends Plugin {
       new Notice("存在未完成结算，请先重载插件恢复");
       return false;
     }
+    if (this.runtime.pendingBreakTransition && !opts.allowPendingBreakTransition) {
+      new Notice("休息转换待恢复，请重载插件或重置");
+      return false;
+    }
     if (!opts.allowTransition && (this.runtime.status !== TIMER_STATUS.IDLE || this.runtime.attention)) {
       new Notice("当前已有计时，请先完成或重置当前阶段");
       return false;
     }
-    this.ensureDayFreshness();
+    const previousRuntime = this.runtime;
+    this.ensureDayFreshness(false);
     const requestedDurationMs = Number(opts.durationMs);
     const durationMs = Number.isFinite(requestedDurationMs) && requestedDurationMs > 0 ? Math.round(requestedDurationMs) : 0;
     const minutesRaw = typeof opts.minutes === 'number' && isFinite(opts.minutes) && opts.minutes > 0 ? opts.minutes : (this.settings.focusMin || 25);
     const minutes = durationMs ? durationMs / 60_000 : Math.max(0.1, minutesRaw);
-    if (opts.minutes != null && !opts.cycle) this.setLongFocusMinutes(minutes, false);
-    this.stopStrongAlert();
-    if (!opts.cycle) {
-      this.runtime.mode = 'standard';
-      this.runtime.cycleSlot = 0;
-    } else this.runtime.mode = 'cycle';
-    this.startStage(TIMER_STAGE.FOCUS, durationMs || minutes * 60 * 1000, true);
-    this.saveState();
-    this.broadcast();
+    const effects = this.applyRuntimeEvent({
+      type:RUNTIME_EVENT.START_STAGE,
+      stage:TIMER_STAGE.FOCUS,
+      durationMs:durationMs || minutes * 60 * 1000,
+      now:Date.now(),
+      sessionId:createSessionId(),
+      mode:opts.cycle ? "cycle" : "standard",
+      cycleSlot:opts.cycle ? (opts.cycleSlot === 1 ? 1 : 0) : 0,
+      currentTaskName:opts.cycle && opts.taskName !== undefined ? opts.taskName : undefined,
+      longFocusMinutes:opts.minutes != null && !opts.cycle ? minutes : undefined
+    });
+    await this.saveTransition(previousRuntime);
+    this.runRuntimeEffects(effects);
     playBeep(this.settings.focusStartSound, this.settings.enableSound, this.settings.soundWaveform);
     if (!opts.suppressNotify) {
       const task = String(this.runtime.currentTaskName || this.settings.defaultTaskName || "").trim();
@@ -825,11 +996,15 @@ class PomodoroAIO extends Plugin {
       ? (this.runtime.cycleSlot === 1 ? this.settings.cycleWorkspaceCommandB : this.settings.cycleWorkspaceCommandA)
       : this.settings.focusStartCommandId;
     if (opts.cause !== 'auto' && commandId) this.executeStageCommand(commandId);
-    this._resyncTick();
   }
-  startCycle(slot=this.runtime.cycleSlot, options={}){
+  /** @param {number} [slot] @param {StartFocusOptions} [options] */
+  async startCycle(slot=this.runtime.cycleSlot, options={}){
     if (this.runtime.pendingSettlement) {
       new Notice("存在未完成结算，请先重载插件恢复");
+      return false;
+    }
+    if (this.runtime.pendingBreakTransition) {
+      new Notice("休息转换待恢复，请重载插件或重置");
       return false;
     }
     if (!options?.allowTransition && (this.runtime.status !== TIMER_STATUS.IDLE || this.runtime.attention)) {
@@ -846,12 +1021,11 @@ class PomodoroAIO extends Plugin {
       : Number(cycleSlot ? this.settings.cycleMinB : this.settings.cycleMinA);
     if (!task) { new Notice(`请先填写任务 ${cycleSlot ? "B" : "A"}`); return; }
     if (!isFinite(minutes) || minutes <= 0) { new Notice(`请设置任务 ${cycleSlot ? "B" : "A"} 的时长`); return; }
-    this.runtime.mode = 'cycle';
-    this.runtime.cycleSlot = cycleSlot;
-    this.runtime.currentTaskName = task;
-    this.startFocus(Object.assign({ cause:'manual', minutes, cycle:true }, options));
+    return this.startFocus(Object.assign({ cause:'manual' }, options, { minutes, cycle:true, cycleSlot, taskName:task }));
   }
-  startBreak(isLong=false, options){
+  /** @param {boolean} [isLong] @param {boolean | StartBreakOptions} [options] */
+  async startBreak(isLong=false, options){
+    /** @type {StartBreakOptions} */
     let opts = { forceRun:true, suppressNotify:false, cause:'manual' };
     if (typeof options === 'boolean') opts.forceRun = options;
     else if (options && typeof options === 'object') opts = Object.assign(opts, options);
@@ -859,14 +1033,16 @@ class PomodoroAIO extends Plugin {
       new Notice("存在未完成结算，请先重载插件恢复");
       return false;
     }
+    if (this.runtime.pendingBreakTransition && !opts.allowPendingBreakTransition) {
+      new Notice("休息转换待恢复，请重载插件或重置");
+      return false;
+    }
     if (!opts.allowTransition && (this.runtime.status !== TIMER_STATUS.IDLE || this.runtime.attention)) {
       new Notice("当前已有计时，请先完成或重置当前阶段");
       return false;
     }
-    this.ensureDayFreshness();
-    this.stopStrongAlert();
-    this.runtime.mode = 'standard';
-    this.runtime.cycleSlot = 0;
+    const previousRuntime = this.runtime;
+    this.ensureDayFreshness(false);
     const requestedDurationMs = Number(opts.durationMs);
     const durationMs = Number.isFinite(requestedDurationMs) && requestedDurationMs > 0
       ? Math.round(requestedDurationMs)
@@ -874,73 +1050,74 @@ class PomodoroAIO extends Plugin {
     const minutes = durationMs / 60_000;
     const forceRun = opts.forceRun ?? true;
     const shouldRun = forceRun !== false && (forceRun || !!this.settings.autoNext);
-    if (shouldRun) this.startStage(TIMER_STAGE.BREAK, durationMs, false);
-    else {
-      this.clearStageTiming(TIMER_STATUS.AWAITING);
-      this.runtime.remainingMs = durationMs;
-    }
-    this.saveState();
-    this.broadcast();
+    const effects = this.applyRuntimeEvent(shouldRun ? {
+      type:RUNTIME_EVENT.START_STAGE,
+      stage:TIMER_STAGE.BREAK,
+      durationMs,
+      now:Date.now(),
+      sessionId:null,
+      mode:"standard",
+      cycleSlot:0
+    } : {
+      type:RUNTIME_EVENT.AWAIT_STAGE,
+      durationMs,
+      mode:"standard",
+      cycleSlot:0
+    });
+    await this.saveTransition(previousRuntime);
+    this.runRuntimeEffects(effects);
     playBeep(this.settings.breakStartSound, this.settings.enableSound, this.settings.soundWaveform);
     if (!opts.suppressNotify) {
       const task = String(this.runtime.currentTaskName || this.settings.defaultTaskName || "").trim();
       sysNotify("开始休息", `${formatTomatoNumber(minutes)} 分钟${task ? ` · 刚完成：${task}` : ""}`, this.settings.enableNotify);
     }
     if (opts.cause !== 'auto' && this.settings.breakStartCommandId) this.executeStageCommand(this.settings.breakStartCommandId);
-    this._resyncTick();
   }
-  togglePause(triggerCommand=false){
-    this.ensureDayFreshness();
+  /** @param {boolean} [triggerCommand] */
+  async togglePause(triggerCommand=false){
     const r = this.runtime;
-    if (![TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED].includes(r.status)) return false;
+    if (!/** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(r.status)) return false;
+    const previousRuntime = this.runtime;
+    this.ensureDayFreshness(false);
     const wasPaused = r.status === TIMER_STATUS.PAUSED;
-    this.stopStrongAlert();
+    let effects;
     if (!wasPaused){
       const now = Date.now();
       const elapsedMs = this.getElapsedMs(now);
       if (elapsedMs >= r.durationMs) {
-        const completion = r.stage === TIMER_STAGE.FOCUS ? this.settleFocus(false) : this.settleBreak();
-        completion?.catch(error => logPluginError("pause-at-boundary", error, {
-          sessionId: r.sessionId,
-          stage: r.stage,
-          step: "settle"
-        }));
+        await (r.stage === TIMER_STAGE.FOCUS ? this.settleFocus(false) : this.settleBreak());
         return false;
       }
-      r.elapsedMs = elapsedMs;
-      r.remainingMs = Math.max(0, r.durationMs - elapsedMs);
-      r.startedAtMs = 0;
-      r.pausedAtMs = now;
-      r.status = TIMER_STATUS.PAUSED;
+      effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.PAUSE, now, elapsedMs });
     } else {
-      r.startedAtMs = Date.now();
-      r.pausedAtMs = 0;
-      r.status = TIMER_STATUS.RUNNING;
-      r.remainingMs = Math.max(0, r.durationMs - r.elapsedMs);
+      effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.RESUME, now:Date.now() });
     }
-    this.saveState(); this.broadcast();
-    this._resyncTick();
-    if (triggerCommand && wasPaused && r.status === TIMER_STATUS.RUNNING) {
-      const focusCommandId = r.mode === 'cycle'
-        ? (r.cycleSlot === 1 ? this.settings.cycleWorkspaceCommandB : this.settings.cycleWorkspaceCommandA)
+    await this.saveTransition(previousRuntime);
+    this.runRuntimeEffects(effects);
+    const current = this.runtime;
+    if (triggerCommand && wasPaused && current.status === TIMER_STATUS.RUNNING) {
+      const focusCommandId = current.mode === 'cycle'
+        ? (current.cycleSlot === 1 ? this.settings.cycleWorkspaceCommandB : this.settings.cycleWorkspaceCommandA)
         : this.settings.focusStartCommandId;
-      if (r.stage === TIMER_STAGE.FOCUS && focusCommandId) this.executeStageCommand(focusCommandId);
-      else if (r.stage === TIMER_STAGE.BREAK && this.settings.breakStartCommandId) this.executeStageCommand(this.settings.breakStartCommandId);
+      if (current.stage === TIMER_STAGE.FOCUS && focusCommandId) this.executeStageCommand(focusCommandId);
+      else if (current.stage === TIMER_STAGE.BREAK && this.settings.breakStartCommandId) this.executeStageCommand(this.settings.breakStartCommandId);
     }
     return true;
   }
-  reset(showNotice=true){
+  /** @param {boolean} [showNotice] */
+  async reset(showNotice=true){
     if (this.runtime.pendingSettlement) {
       new Notice("存在未完成结算，请先重载插件恢复");
       return false;
     }
-    this.ensureDayFreshness();
-    this.stopStrongAlert();
-    this.runtime.mode = this.settings.workMode === 'cycle' ? 'cycle' : 'standard';
-    this.runtime.cycleSlot = 0;
-    this.clearStageTiming(TIMER_STATUS.IDLE);
-    this.saveState(); this.broadcast();
-    this._resyncTick();
+    const previousRuntime = this.runtime;
+    this.ensureDayFreshness(false);
+    const effects = this.applyRuntimeEvent({
+      type:RUNTIME_EVENT.RESET,
+      mode:this.settings.workMode === 'cycle' ? 'cycle' : 'standard'
+    });
+    await this.saveTransition(previousRuntime);
+    this.runRuntimeEffects(effects);
     if (showNotice) new Notice("已重置");
     return true;
   }
@@ -963,7 +1140,7 @@ class PomodoroAIO extends Plugin {
   }
   async forceCompleteFocusOnce(){
     this.ensureDayFreshness();
-    if (![TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED].includes(this.runtime.status) || this.runtime.stage !== TIMER_STAGE.FOCUS) {
+    if (!/** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(this.runtime.status) || this.runtime.stage !== TIMER_STAGE.FOCUS) {
       new Notice("当前不在专注阶段"); return;
     }
     if (this._completionInFlight) { new Notice("正在结算当前专注"); return; }
@@ -971,21 +1148,27 @@ class PomodoroAIO extends Plugin {
     await this.settleFocus(true);
   }
 
+  /** @param {boolean} [manual] */
   async settleFocus(manual=false){
     const r = this.runtime;
-    if (this._completionInFlight || ![TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED].includes(r.status) || r.stage !== TIMER_STAGE.FOCUS) return;
+    if (this._completionInFlight || !/** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(r.status) || r.stage !== TIMER_STAGE.FOCUS) return;
     this._completionInFlight = true;
     const elapsedMs = this.getElapsedMs();
     const tomatoAmount = manual ? actualTomatoAmount(elapsedMs) : plannedTomatoAmount(r.durationMs);
-    r.sessionId ||= createSessionId();
-    r.status = TIMER_STATUS.SETTLING;
+    const settlementEffects = this.applyRuntimeEvent({
+      type:RUNTIME_EVENT.BEGIN_FOCUS_SETTLEMENT,
+      sessionId:r.sessionId || createSessionId()
+    });
     try {
-      if (!r.pendingSettlement || r.pendingSettlement.sessionId !== r.sessionId) {
-        const sessionCountAfter = (r.sessionCount || 0) + 1;
-        const transition = buildNextStageTransition(this.settings, r, sessionCountAfter);
-        r.pendingSettlement = await this.prepareSettlement(tomatoAmount, transition, sessionCountAfter, manual);
+      const current = this.runtime;
+      if (!current.pendingSettlement || current.pendingSettlement.sessionId !== current.sessionId) {
+        const sessionCountAfter = (current.sessionCount || 0) + 1;
+        const transition = buildNextStageTransition(this.settings, current, sessionCountAfter);
+        const journal = await this.prepareSettlement(tomatoAmount, transition, sessionCountAfter, manual);
+        this.applyRuntimeEvent({ type:RUNTIME_EVENT.SET_PENDING_SETTLEMENT, journal });
         await this.saveState({ critical:true });
       }
+      this.runRuntimeEffects(settlementEffects);
       await this.resumePendingSettlement();
     } catch (error) {
       this.markSettlementFailed(error, { operation:"settleFocus", step:"prepareOrResume" });
@@ -993,6 +1176,7 @@ class PomodoroAIO extends Plugin {
       this._completionInFlight = false;
     }
   }
+  /** @param {number} amount @param {StageTransition} transition @param {number} sessionCountAfter @param {boolean} [manual] @returns {Promise<SettlementJournal>} */
   async prepareSettlement(amount, transition, sessionCountAfter, manual=false){
     const path = this.todayFilePath();
     const dailyRepository = this._getDailyRepository();
@@ -1006,7 +1190,7 @@ class PomodoroAIO extends Plugin {
       settings: this.settings
     });
     return buildSettlementJournal({
-      sessionId: this.runtime.sessionId,
+      sessionId: this.runtime.sessionId || createSessionId(),
       durationMs: this.runtime.durationMs,
       taskName,
       amount,
@@ -1015,9 +1199,10 @@ class PomodoroAIO extends Plugin {
       transition,
       createdAtMs: Date.now(),
       daily,
-      project: this.prepareProjectSettlement(amount)
+      project: await this.prepareProjectSettlement(amount)
     });
   }
+  /** @param {number} amount */
   prepareProjectSettlement(amount){
     return this._getProjectRepository().prepareSettlementPlan({
       path: this.settings.currentProjectPath,
@@ -1026,6 +1211,7 @@ class PomodoroAIO extends Plugin {
       enabled: this.settings.projectEnable
     });
   }
+  /** @param {SettlementJournal} journal */
   async applyDailySettlement(journal){
     const daily = journal.daily;
     if (!daily || !daily.path) throw new Error("结算 journal 缺少日记写入计划");
@@ -1033,7 +1219,7 @@ class PomodoroAIO extends Plugin {
     let file = dailyRepository.getFile(daily.path);
     if (!file) {
       if (daily.rowStatus === "applied") throw settlementConflict("已完成的日记文件不存在，无法安全恢复");
-      file = await this.ensureTodayFile();
+      file = await dailyRepository.ensureFileAtPath(daily.path);
     }
     if (!dailyRepository.isFile(file)) throw new Error("当天路径不是文件");
 
@@ -1053,7 +1239,7 @@ class PomodoroAIO extends Plugin {
         this.removeFrontmatterRepair(daily.path, daily.frontmatterKey);
       } catch (error) {
         daily.frontmatterStatus = "pending";
-        daily.frontmatterError = String(error?.message || error);
+        daily.frontmatterError = String(error instanceof Error ? error.message : error);
         logPluginError("daily-settlement", error, {
           sessionId: journal.sessionId,
           stage: journal.stage,
@@ -1073,9 +1259,11 @@ class PomodoroAIO extends Plugin {
     journal.status = "dailyApplied";
     await this.saveState({ critical:true });
   }
+  /** @param {ProjectSettlementPlan} plan */
   async applyProjectPlan(plan){
     return this._getProjectRepository().applyPlan(plan);
   }
+  /** @param {SettlementJournal} journal */
   async applyProjectSettlement(journal){
     const project = journal.project;
     if (!project || project.status === "skipped") {
@@ -1099,6 +1287,7 @@ class PomodoroAIO extends Plugin {
     journal.status = "projectApplied";
     await this.saveState({ critical:true });
   }
+  /** @param {AnyRecord} item */
   upsertProjectRetry(item){
     const queue = this.runtime.projectQueue || (this.runtime.projectQueue = []);
     const copy = cloneValue(item);
@@ -1106,9 +1295,11 @@ class PomodoroAIO extends Plugin {
     if (index === -1) queue.push(copy);
     else queue[index] = copy;
   }
+  /** @param {unknown} sessionId @param {unknown} path */
   removeProjectRetry(sessionId, path){
     this.runtime.projectQueue = (this.runtime.projectQueue || []).filter(item=> !(item.sessionId === sessionId && item.path === path));
   }
+  /** @param {AnyRecord[]} queue @param {number} startIndex @param {AnyRecord} predecessor */
   rebaseProjectSuccessors(queue, startIndex, predecessor){
     if (predecessor.afterValue === undefined) return;
     const key = `${predecessor.path}\u0000${predecessor.key}`;
@@ -1123,6 +1314,7 @@ class PomodoroAIO extends Plugin {
       afterValue = item.afterValue;
     }
   }
+  /** @param {AnyRecord} item */
   upsertFrontmatterRepair(item){
     const queue = this.runtime.frontmatterQueue || (this.runtime.frontmatterQueue = []);
     const copy = cloneValue(item);
@@ -1130,6 +1322,7 @@ class PomodoroAIO extends Plugin {
     if (index === -1) queue.push(copy);
     else queue[index] = copy;
   }
+  /** @param {unknown} path @param {unknown} key @param {unknown} [sessionId] */
   removeFrontmatterRepair(path, key, sessionId){
     this.runtime.frontmatterQueue = (this.runtime.frontmatterQueue || []).filter(item=> !(item.path === path && item.key === key && (!sessionId || item.sessionId === sessionId)));
   }
@@ -1147,7 +1340,7 @@ class PomodoroAIO extends Plugin {
         queue.splice(i, 1);
         changed = true;
       } catch (error) {
-        item.error = String(error?.message || error);
+        item.error = String(error instanceof Error ? error.message : error);
         changed = true;
         logPluginError("frontmatter-repair", error, {
           sessionId: item.sessionId,
@@ -1173,9 +1366,9 @@ class PomodoroAIO extends Plugin {
       }
       let result;
       try {
-        result = await this.applyProjectPlan(item);
+        result = await this.applyProjectPlan(/** @type {ProjectSettlementPlan} */ (item));
       } catch (error) {
-        result = { status: "pending", error: String(error?.message || error) };
+        result = { status: "pending", error: String(error instanceof Error ? error.message : error) };
       }
       item.status = result.status;
       if (result.error) item.error = result.error;
@@ -1198,10 +1391,9 @@ class PomodoroAIO extends Plugin {
     }
     if (changed) await this.saveState();
   }
+  /** @param {SettlementJournal} journal */
   async finalizeFocusSettlement(journal){
-    const r = this.runtime;
-    r.sessionCount = Math.max(r.sessionCount || 0, Number(journal.sessionCountAfter) || 0);
-    r.sessionId = journal.sessionId;
+    this.applyRuntimeEvent({ type:RUNTIME_EVENT.FINALIZE_SETTLEMENT, journal });
     journal.status = "runtimeFinalizing";
     await this.saveState({ critical:true });
 
@@ -1221,22 +1413,27 @@ class PomodoroAIO extends Plugin {
     }
 
     if (journal.transition.mode === "cycle") {
+      const r = this.runtime;
       const already = r.status === TIMER_STATUS.AWAITING
         && r.attention?.type === TIMER_STAGE.FOCUS
         && r.attention?.cycleSlot === journal.transition.cycleSlot;
       if (!already) {
-        r.mode = "cycle";
-        r.cycleSlot = journal.transition.cycleSlot;
-        this.clearStageTiming(TIMER_STATUS.AWAITING);
-        this.beginStrongAlert({ type:TIMER_STAGE.FOCUS, cycleSlot:r.cycleSlot, taskName:journal.transition.taskName, autoStarted:false, durationMs:journal.transition.durationMs });
+        this.applyRuntimeEvent({
+          type:RUNTIME_EVENT.AWAIT_STAGE,
+          durationMs:journal.transition.durationMs,
+          mode:"cycle",
+          cycleSlot:journal.transition.cycleSlot
+        });
+        await this.beginStrongAlert({ type:TIMER_STAGE.FOCUS, cycleSlot:journal.transition.cycleSlot, taskName:journal.transition.taskName, autoStarted:false, durationMs:journal.transition.durationMs });
       }
     } else {
+      const r = this.runtime;
       const attentionMatches = !r.attention
         || (r.attention.type === TIMER_STAGE.BREAK && !!r.attention.isLong === !!journal.transition.isLong);
       const existingBreak = journal.transition.autoNext
         && r.stage === TIMER_STAGE.BREAK
         && Math.round(Number(r.durationMs) || 0) === Math.round(Number(journal.transition.durationMs) || 0)
-        && [TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING].includes(r.status)
+        && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING]).includes(r.status)
         && (Number(r.startedAtMs) > 0 || (Number(r.pausedAtMs) > 0 && Number(r.remainingMs) > 0))
         && attentionMatches;
       const alreadyAwaiting = !journal.transition.autoNext
@@ -1244,7 +1441,7 @@ class PomodoroAIO extends Plugin {
         && r.attention?.type === TIMER_STAGE.BREAK
         && !!r.attention?.isLong === !!journal.transition.isLong;
       if (!existingBreak && !alreadyAwaiting) {
-        this.startBreak(journal.transition.isLong, {
+        await this.startBreak(journal.transition.isLong, {
           forceRun: journal.transition.autoNext,
           cause: journal.manual ? "manual" : "auto",
           suppressNotify: true,
@@ -1253,11 +1450,9 @@ class PomodoroAIO extends Plugin {
           allowPendingSettlement: true
         });
       } else if (existingBreak && r.status === TIMER_STATUS.SETTLING) {
-        r.status = r.startedAtMs ? TIMER_STATUS.RUNNING : TIMER_STATUS.PAUSED;
-        r.sessionId = null;
-        r.plannedTomatoCredit = 0;
+        this.applyRuntimeEvent({ type:RUNTIME_EVENT.RESTORE_ACTIVE_STAGE });
       }
-      this.beginStrongAlert({
+      await this.beginStrongAlert({
         type:TIMER_STAGE.BREAK,
         isLong:journal.transition.isLong,
         autoStarted:journal.transition.autoNext,
@@ -1266,21 +1461,15 @@ class PomodoroAIO extends Plugin {
     }
     journal.status = "settled";
     await this.saveState({ critical:true });
-    r.pendingSettlement = null;
+    const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.CLEAR_PENDING_SETTLEMENT });
     await this.saveState({ critical:true });
-    this.broadcast();
-    this._resyncTick();
+    this.runRuntimeEffects(effects);
   }
   async resumePendingSettlement(){
     const journal = this.runtime.pendingSettlement;
     if (!journal) return;
-    this.runtime.status = TIMER_STATUS.SETTLING;
-    this.runtime.sessionId = journal.sessionId;
-    if (journal.status === "prepared" || journal.status === "dailyApplied" || journal.status === "projectApplied") {
-      this.runtime.stage = TIMER_STAGE.FOCUS;
-      this.runtime.durationMs = journal.durationMs;
-    }
-    delete this.runtime.failure;
+    const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.RESUME_SETTLEMENT, journal });
+    this.runRuntimeEffects(effects);
     await this.applyDailySettlement(journal);
     await this.applyProjectSettlement(journal);
     await this.finalizeFocusSettlement(journal);
@@ -1296,27 +1485,75 @@ class PomodoroAIO extends Plugin {
       this._completionInFlight = false;
     }
   }
+  /** @param {BreakTransition} transition */
+  async advanceBreakTransition(transition){
+    const r = this.runtime;
+    const focusStarted = transition.autoNext
+      && r.stage === TIMER_STAGE.FOCUS
+      && Math.round(Number(r.durationMs) || 0) === Math.round(transition.durationMs)
+      && (/** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.FAILED]).includes(r.status) && Number(r.startedAtMs) > 0
+        || /** @type {string[]} */ ([TIMER_STATUS.PAUSED, TIMER_STATUS.FAILED]).includes(r.status) && Number(r.pausedAtMs) > 0 && Number(r.remainingMs) > 0);
+    if (focusStarted && r.status === TIMER_STATUS.FAILED) {
+      this.applyRuntimeEvent({ type:RUNTIME_EVENT.RESTORE_FOCUS });
+    }
+    if (transition.autoNext && !focusStarted) {
+      await this.startFocus({
+        suppressNotify:true,
+        cause:'auto',
+        allowTransition:true,
+        allowPendingBreakTransition:true,
+        durationMs:transition.durationMs
+      });
+    }
+    await this.beginStrongAlert({
+      type:TIMER_STAGE.FOCUS,
+      autoStarted:transition.autoNext,
+      durationMs:transition.durationMs
+    });
+    const previousRuntime = this.runtime;
+    const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.CLEAR_BREAK_TRANSITION });
+    await this.saveTransition(previousRuntime);
+    this.runRuntimeEffects(effects);
+  }
+  async recoverPendingBreakTransition(){
+    const transition = this.runtime.pendingBreakTransition;
+    if (!transition) return;
+    this._completionInFlight = true;
+    try {
+      await this.advanceBreakTransition(transition);
+    } catch (error) {
+      this.markSettlementFailed(error, { operation:"recoverBreakTransition", step:"advanceFocus" });
+    } finally {
+      this._completionInFlight = false;
+    }
+  }
   async settleBreak(){
     const r = this.runtime;
     if (this._completionInFlight || r.status !== TIMER_STATUS.RUNNING || r.stage !== TIMER_STAGE.BREAK) return;
     this._completionInFlight = true;
-    r.status = TIMER_STATUS.SETTLING;
-    this.saveState(); this.broadcast();
+    /** @type {BreakTransition} */
+    const transition = {
+      schemaVersion:1,
+      status:"break-completing",
+      autoNext:!!this.settings.autoNext,
+      durationMs:configuredStageDurationMs(this.settings, TIMER_STAGE.FOCUS),
+      createdAtMs:Date.now()
+    };
+    const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.BEGIN_BREAK_TRANSITION, transition });
     try {
+      await this.saveState({ critical:true });
+      this.runRuntimeEffects(effects);
       playBeep(this.settings.breakEndSound, this.settings.enableSound, this.settings.soundWaveform);
-      const autoNext = !!this.settings.autoNext;
       const task = String(this.runtime.currentTaskName || this.settings.defaultTaskName || "").trim();
-      sysNotify("休息结束", `下一步：${autoNext ? "已开始" : "点击番茄图标开始"}专注${task ? ` · 任务：${task}` : ""}`, this.settings.enableNotify);
-      if (autoNext) this.startFocus({ suppressNotify:true, cause:'auto', allowTransition:true });
-      else this.clearStageTiming(TIMER_STATUS.AWAITING);
-      this.beginStrongAlert({ type:TIMER_STAGE.FOCUS, autoStarted:autoNext, durationMs:configuredStageDurationMs(this.settings, TIMER_STAGE.FOCUS) });
-      this._resyncTick();
+      sysNotify("休息结束", `下一步：${transition.autoNext ? "已开始" : "点击番茄图标开始"}专注${task ? ` · 任务：${task}` : ""}`, this.settings.enableNotify);
+      await this.advanceBreakTransition(transition);
     } catch (error) {
       this.markSettlementFailed(error, { operation:"settleBreak", step:"advanceFocus" });
     } finally {
       this._completionInFlight = false;
     }
   }
+  /** @param {unknown} error @param {{operation?:string, sessionId?:string|null, stage?:string|null, target?:string|null, step?:string|null}} [context] */
   markSettlementFailed(error, context={}){
     const r = this.runtime;
     const details = logPluginError(context.operation || "settlement", error, {
@@ -1325,13 +1562,13 @@ class PomodoroAIO extends Plugin {
       stage: context.stage || r.stage || r.pendingSettlement?.stage,
       target: context.target || r.pendingSettlement?.daily?.path || r.pendingSettlement?.project?.path
     });
-    r.status = TIMER_STATUS.FAILED;
-    r.failure = {
+    const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.FAIL, failure:{
       ...details,
       atMs: Date.now(),
       message: details.error
-    };
-    this.saveState(); this.broadcast();
+    } });
+    this.saveState();
+    this.runRuntimeEffects(effects);
     new Notice("结算失败，journal 已保留，请重载插件恢复");
   }
 
@@ -1343,7 +1580,10 @@ class PomodoroAIO extends Plugin {
   /* ====== 文件相关 ====== */
   logicalTodayKey(now=new Date()){ return getLogicalDayKey(now, this.settings.dayStartHHMM || "00:00"); }
   todayFilePath(){
-    return renderPattern(this.settings.fallbackPattern || "Daily/{{date:YYYY-MM-DD}}.md", this.logicalTodayKey());
+    return normalizeMarkdownPath(
+      renderPattern(this.settings.fallbackPattern || "Daily/{{date:YYYY-MM-DD}}.md", this.logicalTodayKey()),
+      normalizePath
+    );
   }
   _getDailyRepository(){
     if (this.dailyRepository) return this.dailyRepository;
@@ -1362,7 +1602,11 @@ class PomodoroAIO extends Plugin {
       vault: this.app.vault,
       fileManager: this.app.fileManager,
       metadataCache: this.app.metadataCache,
-      isFile: file => file instanceof TFile
+      isFile: file => file instanceof TFile,
+      readFrontmatter: async file => {
+        const info = getFrontMatterInfo(await this.app.vault.read(file));
+        return info.exists ? (parseYaml(info.frontmatter) || {}) : {};
+      }
     });
     return this.projectRepository;
   }
@@ -1373,6 +1617,7 @@ class PomodoroAIO extends Plugin {
   }
   async ensureTodayFile(){ return this._getDailyRepository().ensureTodayFile(); }
   async readToday(){ return this._getDailyRepository().readToday(); }
+  /** @param {unknown} text */
   async listUncheckedTasksFromText(text){ return this._getDailyRepository().listUncheckedTasksFromText(text); }
 
   // 当日任务行尾追加对应 🍅 数量，并写入 frontmatter[fmKey]；返回今日累计
@@ -1394,7 +1639,7 @@ class PomodoroAIO extends Plugin {
         path: result.file.path,
         key: this.settings.fmKey || "番茄数",
         expectedSum: result.sum,
-        error: String(result.frontmatterError?.message || result.frontmatterError)
+        error: String(result.frontmatterError instanceof Error ? result.frontmatterError.message : result.frontmatterError)
       });
       this.saveState();
       new Notice("当日日记 frontmatter 汇总写入失败，任务行记录已保留");
@@ -1440,41 +1685,56 @@ class PomodoroAIO extends Plugin {
       statusWhitelist: this.settings.projectStatusWhitelist
     });
   }
+  /** @param {unknown} name */
   setCurrentTaskName(name){
-    this.runtime.currentTaskName = String(name||"").trim();
-    this.saveState(); this.broadcast();
+    const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.SET_TASK, name });
+    this.saveState();
+    this.runRuntimeEffects(effects);
   }
+  /** @param {unknown} open */
   setViewWasOpen(open){
-    this.runtime.viewWasOpen = !!open;
+    this.applyRuntimeEvent({ type:RUNTIME_EVENT.SET_VIEW_OPEN, open });
     this.saveState();
   }
+  /** @param {unknown} path */
   setCurrentProjectPath(path){
-    this.settings.currentProjectPath = String(path||"").trim();
+    const rawPath = String(path||"").trim();
+    const projectPath = rawPath ? tryNormalizeMarkdownPath(rawPath) : "";
+    if (rawPath && !projectPath) { new Notice("项目路径无效"); return false; }
+    this.settings.currentProjectPath = projectPath || "";
     this.saveSettings(); this.broadcast();
+    return true;
   }
+  /** @param {unknown} mode */
   setWorkMode(mode){
     if (this.runtime.status !== TIMER_STATUS.IDLE || this.runtime.attention) { new Notice("请先重置当前计时，再切换工作模式"); return false; }
     this.settings = normalizeSettings({ ...this.settings, workMode: mode === 'cycle' ? 'cycle' : 'standard' }, this.settings);
     this.saveSettings(); this.broadcast();
     return true;
   }
+  /** @param {Partial<Settings>} patch */
   setCycleConfig(patch){
     this.settings = normalizeSettings({ ...this.settings, ...patch }, this.settings);
     this.saveSettings(); this.broadcast();
   }
+  /** @param {unknown} slot */
   selectCycleSlot(slot){
     if (this.settings.workMode !== 'cycle' || this.runtime.status !== TIMER_STATUS.IDLE || this.runtime.attention) return false;
-    this.runtime.cycleSlot = slot === 1 ? 1 : 0;
-    this.saveState(); this.broadcast();
+    const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.SELECT_CYCLE_SLOT, slot });
+    this.saveState();
+    this.runRuntimeEffects(effects);
     return true;
   }
+  /** @param {unknown} minutes @param {boolean} [broadcast] */
   setLongFocusMinutes(minutes, broadcast=true){
     const num = Number(minutes);
     if (!isFinite(num)) return;
     const normalized = Math.max(0.1, Math.round(num * 10) / 10);
-    this.runtime.longFocusMinutes = normalized;
-    this.saveState();
-    if (broadcast) this.broadcast();
+    const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.SET_LONG_FOCUS, minutes:normalized, broadcast });
+    if (broadcast) {
+      this.saveState();
+      this.runRuntimeEffects(effects);
+    }
   }
 
   // 打开当日日记
@@ -1486,7 +1746,7 @@ class PomodoroAIO extends Plugin {
   // 打开当前选择的项目文件
   async openCurrentProject() {
     if (this.shouldBlockFocusLayoutSideEffects({ source:"user" })) return;
-    const p = (this.settings.currentProjectPath || "").trim();
+    const p = this.settings.currentProjectPath;
     if (!p) { new Notice("未选择项目"); return; }
     const projectRepository = this._getProjectRepository();
     const f = projectRepository.getFile(p);

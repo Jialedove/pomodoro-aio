@@ -5,9 +5,15 @@ const {
   applyTaskLineMutation,
   settlementConflict
 } = require("../core/task-lines");
-const { normalizeTag, normalizeTomatoValue } = require("../core/validation");
+const { normalizePath } = require("obsidian");
+const { normalizeTag, normalizeTomatoValue, normalizeMarkdownPath } = require("../core/validation");
+/** @typedef {import("../../types/contracts").Settings} Settings */
+/** @typedef {import("../../types/contracts").TaskMutationPlan} TaskMutationPlan */
+/** @typedef {import("../../types/contracts").ProjectSettlementPlan} ProjectSettlementPlan */
+/** @typedef {Record<string, any>} ObsidianRecord */
 
 class DailyRepository {
+  /** @param {{vault:ObsidianRecord, fileManager:ObsidianRecord, isFile:(file:unknown)=>boolean, todayPath:()=>string, allowCreateDaily:()=>boolean}} options */
   constructor({ vault, fileManager, isFile, todayPath, allowCreateDaily }) {
     this.vault = vault;
     this.fileManager = fileManager;
@@ -16,20 +22,27 @@ class DailyRepository {
     this._allowCreateDaily = allowCreateDaily;
   }
 
+  /** @param {unknown} path */
   getFile(path) {
-    return this.vault.getAbstractFileByPath(path);
+    return this.vault.getAbstractFileByPath(normalizeMarkdownPath(path, normalizePath));
   }
 
+  /** @param {unknown} file */
   isFile(file) {
     return !!file && this._isFile(file);
   }
 
   async ensureTodayFile() {
-    const path = this._todayPath();
-    let file = this.getFile(path);
+    return this.ensureFileAtPath(this._todayPath());
+  }
+
+  /** @param {unknown} path */
+  async ensureFileAtPath(path) {
+    const targetPath = normalizeMarkdownPath(path, normalizePath);
+    let file = this.vault.getAbstractFileByPath(targetPath);
     if (!file) {
       if (!this._allowCreateDaily()) throw new Error("找不到当天文件，且未开启自动创建");
-      const parts = path.split("/");
+      const parts = targetPath.split("/");
       if (parts.length > 1) {
         let accumulated = "";
         for (let i = 0; i < parts.length - 1; i++) {
@@ -41,16 +54,18 @@ class DailyRepository {
           }
         }
       }
-      file = await this.vault.create(path, "");
+      file = await this.vault.create(targetPath, "");
     }
     if (!this.isFile(file)) throw new Error("目标不是文件");
     return file;
   }
 
+  /** @param {any} file */
   async read(file) {
     return this.vault.read(file);
   }
 
+  /** @param {unknown} path */
   async readPath(path) {
     const file = this.getFile(path);
     return {
@@ -64,15 +79,18 @@ class DailyRepository {
     return { file, text: await this.read(file) };
   }
 
+  /** @param {any} file @param {(text:string)=>string} callback */
   async process(file, callback) {
     if (typeof this.vault.process !== "function") throw new Error("当前 Obsidian 不支持原子日记处理");
     return this.vault.process(file, callback);
   }
 
+  /** @param {any} file @param {(frontmatter:ObsidianRecord)=>void} callback */
   async processFrontMatter(file, callback) {
     return this.fileManager.processFrontMatter(file, callback);
   }
 
+  /** @param {unknown} text */
   listUncheckedTasksFromText(text) {
     const lines = String(text || "").split(/\r?\n/);
     const names = new Set();
@@ -84,6 +102,7 @@ class DailyRepository {
     return Array.from(names);
   }
 
+  /** @param {{taskName:unknown, amount?:number, settings:Settings, frontmatterKey?:string}} input */
   async addTomatoAndSum({ taskName, amount = 1, settings, frontmatterKey }) {
     const cleanTaskName = String(taskName || "").trim();
     if (!cleanTaskName) throw new Error("任务名为空");
@@ -99,6 +118,7 @@ class DailyRepository {
       });
     }
     const sum = getTomatoSum(text);
+    /** @type {unknown} */
     let frontmatterError = null;
     try {
       await this.processFrontMatter(file, frontmatter => {
@@ -110,47 +130,54 @@ class DailyRepository {
     return { file, text, sum, frontmatterError };
   }
 
+  /** @param {any} file @param {TaskMutationPlan} plan */
   async applyPlannedMutation(file, plan) {
-    let mutation = null;
+    let mutation = { text:"", alreadyApplied:false };
     await this.process(file, current => {
       mutation = applyTaskLineMutation(current, plan);
       return mutation.text;
     });
     return {
-      text: mutation?.text || await this.read(file),
-      alreadyApplied: !!mutation?.alreadyApplied
+      text: mutation.text || await this.read(file),
+      alreadyApplied: mutation.alreadyApplied
     };
   }
 }
 
 class ProjectRepository {
-  constructor({ vault, fileManager, metadataCache, isFile }) {
+  /** @param {{vault:ObsidianRecord, fileManager:ObsidianRecord, metadataCache:ObsidianRecord, isFile:(file:unknown)=>boolean, readFrontmatter:(file:any)=>Promise<ObsidianRecord>}} options */
+  constructor({ vault, fileManager, metadataCache, isFile, readFrontmatter }) {
     this.vault = vault;
     this.fileManager = fileManager;
     this.metadataCache = metadataCache;
     this._isFile = isFile;
+    this._readFrontmatter = readFrontmatter;
   }
 
+  /** @param {unknown} path */
   getFile(path) {
-    return this.vault.getAbstractFileByPath(path);
+    return this.vault.getAbstractFileByPath(normalizeMarkdownPath(path, normalizePath));
   }
 
+  /** @param {unknown} file */
   isFile(file) {
     return !!file && this._isFile(file);
   }
 
+  /** @param {any} file @param {(frontmatter:ObsidianRecord)=>void} callback */
   async processFrontMatter(file, callback) {
     return this.fileManager.processFrontMatter(file, callback);
   }
 
-  prepareSettlementPlan({ path, key, amount, enabled }) {
-    const projectPath = String(path || "").trim();
+  /** @param {{path:unknown, key:string, amount:number, enabled:boolean}} input @returns {Promise<ProjectSettlementPlan>} */
+  async prepareSettlementPlan({ path, key, amount, enabled }) {
+    const rawPath = String(path || "").trim();
     const frontmatterKey = key || "番茄数";
-    if (!enabled || !projectPath) return { path: projectPath, key: frontmatterKey, status: "skipped", amount };
+    if (!enabled || !rawPath) return { path: rawPath, key: frontmatterKey, status: "skipped", amount };
+    const projectPath = normalizeMarkdownPath(rawPath, normalizePath);
     const file = this.getFile(projectPath);
     if (!this.isFile(file)) return { path: projectPath, key: frontmatterKey, status: "missing", amount, deferred: true };
-    const cache = this.metadataCache?.getFileCache?.(file) || {};
-    const frontmatter = cache.frontmatter || file.frontmatter || {};
+    const frontmatter = await this._readFrontmatter(file);
     const beforeValue = normalizeTomatoValue(frontmatter[frontmatterKey]);
     return {
       path: projectPath,
@@ -162,9 +189,11 @@ class ProjectRepository {
     };
   }
 
+  /** @param {ProjectSettlementPlan | null | undefined} plan @returns {Promise<{status:ProjectSettlementPlan["status"], error?:string}>} */
   async applyPlan(plan) {
     if (!plan || plan.status === "applied" || plan.status === "skipped") return { status: plan?.status || "skipped" };
-    const file = this.getFile(plan.path);
+    const projectPath = normalizeMarkdownPath(plan.path, normalizePath);
+    const file = this.vault.getAbstractFileByPath(projectPath);
     if (!this.isFile(file)) return { status: "missing", error: "项目文件不存在" };
     try {
       await this.processFrontMatter(file, frontmatter => {
@@ -183,12 +212,13 @@ class ProjectRepository {
       return { status: "applied" };
     } catch (error) {
       return {
-        status: error?.code === "SETTLEMENT_CONFLICT" ? "conflict" : "pending",
-        error: String(error?.message || error)
+        status: error && typeof error === "object" && "code" in error && error.code === "SETTLEMENT_CONFLICT" ? "conflict" : "pending",
+        error: String(error instanceof Error ? error.message : error)
       };
     }
   }
 
+  /** @param {{tag:unknown, statusKey:string, statusWhitelist:string}} input */
   listCandidates({ tag, statusKey, statusWhitelist }) {
     const tagWant = normalizeTag(tag || "#project");
     const whitelist = new Set(String(statusWhitelist || "进行中,筹划中").split(",").map(value => value.trim()).filter(Boolean));
@@ -198,9 +228,9 @@ class ProjectRepository {
       const frontmatter = cache.frontmatter || {};
       const tags = new Set();
       const frontmatterTags = frontmatter.tags;
-      if (Array.isArray(frontmatterTags)) frontmatterTags.forEach(value => tags.add(normalizeTag(value)));
+      if (Array.isArray(frontmatterTags)) frontmatterTags.forEach((/** @type {any} */ value) => tags.add(normalizeTag(value)));
       else if (typeof frontmatterTags === "string") frontmatterTags.split(/[,\s]+/).forEach(value => value && tags.add(normalizeTag(value)));
-      (cache.tags || []).forEach(entry => entry?.tag && tags.add(entry.tag));
+      (cache.tags || []).forEach((/** @type {Record<string, any>} */ entry) => entry?.tag && tags.add(entry.tag));
       if (!tags.has(tagWant)) continue;
       const status = String(frontmatter[statusKey || "项目状态"] || "").trim();
       if (!whitelist.has(status)) continue;
@@ -209,10 +239,14 @@ class ProjectRepository {
     return result;
   }
 
+  /** @param {{path:unknown, key?:string, amount?:number}} input */
   async bumpTomato({ path, key, amount = 1 }) {
     const add = Math.max(0, Number(amount) || 0);
     if (!add) return;
-    const file = this.getFile(String(path || "").trim());
+    const rawPath = String(path || "").trim();
+    if (!rawPath) return;
+    const projectPath = normalizeMarkdownPath(rawPath, normalizePath);
+    const file = this.vault.getAbstractFileByPath(projectPath);
     if (!this.isFile(file)) return;
     await this.processFrontMatter(file, frontmatter => {
       const field = key || "番茄数";

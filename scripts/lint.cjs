@@ -4,6 +4,14 @@ const path = require("node:path");
 const projectRoot = path.resolve(__dirname, "..");
 const packageJson = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
 const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, "manifest.json"), "utf8"));
+const jsconfig = JSON.parse(fs.readFileSync(path.join(projectRoot, "jsconfig.json"), "utf8"));
+
+if (jsconfig.compilerOptions?.strict !== true || jsconfig.compilerOptions?.noImplicitAny === false) {
+  throw new Error("TypeScript checkJs must keep strict mode enabled");
+}
+if (!packageJson.devDependencies?.eslint || !/^eslint\b/.test(packageJson.scripts?.lint || "")) {
+  throw new Error("npm run lint must execute the installed ESLint");
+}
 
 if (packageJson.version !== manifest.version) {
   throw new Error(`package.json and manifest.json versions differ: ${packageJson.version} vs ${manifest.version}`);
@@ -31,4 +39,4 @@ function scan(dir) {
 scan(sourceRoot);
 
 if (errors.length) throw new Error(errors.join("\n"));
-console.log("lint passed");
+console.log("project validation passed");
