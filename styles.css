@@ -126,6 +126,29 @@
   animation: pomodoro-ribbon-pulse 1s ease-in-out infinite;
   pointer-events: none;
 }
+.pmd-blackout-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.32);
+  background: #000;
+  cursor: pointer;
+}
+.pmd-blackout-content { display: grid; justify-items: center; gap: 12px; }
+.pmd-blackout-label { font-size: 14px; letter-spacing: .12em; }
+.pmd-blackout-time { font-size: clamp(32px, 8vw, 72px); font-variant-numeric: tabular-nums; }
+.pmd-blackout-exit {
+  padding: 7px 12px;
+  color: rgba(255, 255, 255, 0.4);
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.pmd-blackout-exit:hover,
+.pmd-blackout-exit:focus-visible { color: rgba(255, 255, 255, 0.8); border-color: rgba(255, 255, 255, 0.5); }
 @keyframes pomodoro-ribbon-pulse {
   0%,100% { opacity: 0.25; }
   50% { opacity: 1; }

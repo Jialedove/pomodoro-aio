@@ -50,6 +50,21 @@ test("空的快速记录不会创建当日日记", async () => {
   assert.equal(vault.getAbstractFileByPath("Daily/today.md"), null);
 });
 
+test("插件按快照同步休息黑屏且设置默认关闭", () => {
+  const plugin = createPlugin();
+  const calls = [];
+  plugin.breakBlackout = { sync(...args){ calls.push(args); return true; } };
+  const runtime = { ...plugin.runtime, status:"running", stage:"break", leftSec:120 };
+
+  assert.equal(plugin.syncBreakBlackout({ settings:{ ...plugin.settings, breakBlackoutEnabled:true }, runtime }), true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0].stage, "break");
+  assert.equal(calls[0][1], true);
+  assert.equal(calls[0][2], 120);
+  assert.equal(PomodoroAIO.normalizeSettings({}).breakBlackoutEnabled, false);
+  assert.equal(PomodoroAIO.normalizeSettings({ breakBlackoutEnabled:true }).breakBlackoutEnabled, true);
+});
+
 test("普通模式：开始自定义专注保留任务并折算番茄额度", async () => {
   const clock = new FakeClock(10_000);
   const plugin = createPlugin({ runtime: { currentTaskName: "写测试" } });

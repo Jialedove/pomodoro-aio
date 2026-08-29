@@ -252,6 +252,7 @@ const BASE_SETTINGS = {
   ribbonClickAutoNext: true,
   focusStartCommandId: "",
   breakStartCommandId: "",
+  breakBlackoutEnabled: false,
   workMode: "standard",
   cycleTaskA: "",
   cycleMinA: 15,

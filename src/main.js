@@ -39,6 +39,7 @@ const { DailyRepository, ProjectRepository } = require("./services/repositories"
 const { normalizeCaptureHeading, normalizeCaptureText } = require("./core/quick-capture");
 const { PomodoroView } = require("./ui/pomodoro-view");
 const { QuickCaptureModal } = require("./ui/quick-capture-modal");
+const { BreakBlackoutController } = require("./ui/break-blackout");
 const { PomodoroSettingTab } = require("./ui/settings-tab");
 const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/workspaces-plus");
 /** @typedef {import("../types/contracts").Attention} Attention */
@@ -106,6 +107,7 @@ const DEFAULT_SETTINGS = {
   ribbonClickAutoNext: true,
   focusStartCommandId: "",
   breakStartCommandId: "",
+  breakBlackoutEnabled: false,
 
   // 循环工作：两项任务交替，无休息阶段
   workMode: "standard",
@@ -207,7 +209,7 @@ function normalizeSettings(raw={}, fallback=DEFAULT_SETTINGS) {
     ? (tryNormalizeMarkdownPath(projectPath) || "")
     : "";
   result.captureHeading = normalizeCaptureHeading(has("captureHeading") ? source.captureHeading : base.captureHeading);
-  for (const key of ["autoNext", "projectEnable", "showProjectSelector", "enableSound", "enableNotify", "persistentAlertSound", "ribbonClickAutoNext", "allowCreateDaily", "allowAutoCreateTask", "respectModalInputFocus"]) {
+  for (const key of ["autoNext", "projectEnable", "showProjectSelector", "enableSound", "enableNotify", "persistentAlertSound", "ribbonClickAutoNext", "allowCreateDaily", "allowAutoCreateTask", "respectModalInputFocus", "breakBlackoutEnabled"]) {
     if (typeof source[key] !== "boolean") result[key] = base[key];
   }
   return result;
@@ -506,6 +508,8 @@ class PomodoroAIO extends Plugin {
     this.projectRepository = null;
     /** @type {InstanceType<typeof WorkspacesPlusAdapter> | null} */
     this.workspacesPlus = null;
+    /** @type {InstanceType<typeof BreakBlackoutController> | null} */
+    this.breakBlackout = null;
     /** @type {ObsidianElement | null} */
     this.ribbon = null;
     /** @type {ObsidianElement | null} */
@@ -530,6 +534,7 @@ class PomodoroAIO extends Plugin {
     this._alertEscalationTimeout = null;
     this._completionInFlight = false;
     this.ribbonBadge = null;
+    this._getBreakBlackoutController();
     if (!this.runtime.dayKey) this.runtime = reduceRuntime(this.runtime, {
       type:RUNTIME_EVENT.DAY_ROLLOVER,
       dayKey:this.logicalTodayKey()
@@ -605,9 +610,11 @@ class PomodoroAIO extends Plugin {
     this._scheduleTick();
     this.applyStrongAlertStateFromRuntime();
     this.updateRibbonVisuals();
+    this.syncBreakBlackout();
   }
   async onunload(){
     this._unloading = true;
+    this.breakBlackout?.destroy();
     this.stopPersistentAlertSound();
     if (this._tickTimeout) window.clearTimeout(this._tickTimeout);
     await this.flushPendingSaves();
@@ -722,7 +729,8 @@ class PomodoroAIO extends Plugin {
       const selectors = [
         ".modal", ".modal-container", ".modal-bg",
         ".prompt", ".suggestion-container", ".popover",
-        ".quick-switcher", ".command-palette", ".mod-command-palette"
+        ".quick-switcher", ".command-palette", ".mod-command-palette",
+        ".pmd-blackout-overlay"
       ];
       const nodes = root?.querySelectorAll?.(selectors.join(", ")) || [];
       for (const el of nodes) {
@@ -791,7 +799,21 @@ class PomodoroAIO extends Plugin {
   broadcast() {
     const snap = this.snapshot();
     this.updateRibbonVisuals(snap.runtime);
+    this.syncBreakBlackout(snap);
     this.app.workspace.trigger('pomodoro:aio-state', snap);
+  }
+  _getBreakBlackoutController(){
+    if (this.breakBlackout) return this.breakBlackout;
+    if (typeof document === "undefined" || !document.body) return null;
+    this.breakBlackout = new BreakBlackoutController({ document });
+    return this.breakBlackout;
+  }
+  /** @param {{settings:Settings, runtime:Runtime & {leftSec?:number}} | null} [snapshot] */
+  syncBreakBlackout(snapshot=null){
+    const controller = this._getBreakBlackoutController();
+    if (!controller) return false;
+    const snap = snapshot || this.snapshot();
+    return controller.sync(snap.runtime, snap.settings.breakBlackoutEnabled, snap.runtime.leftSec ?? this.getLeftSec());
   }
   snapshot(){
     const leftMs = this.getLeftMs();

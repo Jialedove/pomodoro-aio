@@ -42,6 +42,7 @@ export interface Settings {
   ribbonClickAutoNext: boolean;
   focusStartCommandId: string;
   breakStartCommandId: string;
+  breakBlackoutEnabled: boolean;
   workMode: WorkMode;
   cycleTaskA: string;
   cycleMinA: number;
