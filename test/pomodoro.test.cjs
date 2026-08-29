@@ -28,6 +28,28 @@ test("计时基线：剩余时间由绝对开始时间计算", () => {
   assert.equal(clock.runSync(() => plugin.getLeftMs()), 1_498_750);
 });
 
+test("快速记录复用逻辑当日日记并区分待办与想法", async () => {
+  const vault = new FakeVault({ "Daily/today.md": "# 日记\n" });
+  const plugin = createPlugin({ vault, settings:{ captureHeading:"收集箱" } });
+
+  await plugin.quickCapture("稍后处理\n第二部分", "todo");
+  await plugin.quickCapture("新的方向", "idea");
+
+  assert.equal(
+    vault.getAbstractFileByPath("Daily/today.md").content,
+    "# 日记\n\n## 收集箱\n\n- [ ] 稍后处理 第二部分\n- 新的方向\n"
+  );
+  assert.deepEqual(plugin.notices.slice(-2), ["待办已记入当日日记", "想法已记入当日日记"]);
+});
+
+test("空的快速记录不会创建当日日记", async () => {
+  const vault = new FakeVault();
+  const plugin = createPlugin({ vault });
+
+  await assert.rejects(() => plugin.quickCapture("  \n ", "todo"), /内容为空/);
+  assert.equal(vault.getAbstractFileByPath("Daily/today.md"), null);
+});
+
 test("普通模式：开始自定义专注保留任务并折算番茄额度", async () => {
   const clock = new FakeClock(10_000);
   const plugin = createPlugin({ runtime: { currentTaskName: "写测试" } });

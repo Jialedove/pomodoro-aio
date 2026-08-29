@@ -36,7 +36,9 @@ const {
 } = require("./core/settlement");
 const { RuntimeStore, cloneValue } = require("./services/runtime-store");
 const { DailyRepository, ProjectRepository } = require("./services/repositories");
+const { normalizeCaptureHeading, normalizeCaptureText } = require("./core/quick-capture");
 const { PomodoroView } = require("./ui/pomodoro-view");
+const { QuickCaptureModal } = require("./ui/quick-capture-modal");
 const { PomodoroSettingTab } = require("./ui/settings-tab");
 const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/workspaces-plus");
 /** @typedef {import("../types/contracts").Attention} Attention */
@@ -75,6 +77,7 @@ const DEFAULT_SETTINGS = {
   allowAutoCreateTask: true,
   tasksHeading: "",
   defaultTaskName: "",
+  captureHeading: "Inbox",
 
   // 项目同步
   projectEnable: true,
@@ -203,6 +206,7 @@ function normalizeSettings(raw={}, fallback=DEFAULT_SETTINGS) {
   result.currentProjectPath = String(projectPath || "").trim()
     ? (tryNormalizeMarkdownPath(projectPath) || "")
     : "";
+  result.captureHeading = normalizeCaptureHeading(has("captureHeading") ? source.captureHeading : base.captureHeading);
   for (const key of ["autoNext", "projectEnable", "showProjectSelector", "enableSound", "enableNotify", "persistentAlertSound", "ribbonClickAutoNext", "allowCreateDaily", "allowAutoCreateTask", "respectModalInputFocus"]) {
     if (typeof source[key] !== "boolean") result[key] = base[key];
   }
@@ -568,6 +572,7 @@ class PomodoroAIO extends Plugin {
     this.addCommand({ id: 'reset', name: '重置', callback: (evt)=> this.runUserCommand(()=> this.reset(), evt) });
     this.addCommand({ id: 'complete-now', name: '立刻结算当前专注（按实际时长）', callback: (evt)=> this.runUserCommand(()=> this.forceCompleteFocusOnce(), evt) });
     this.addCommand({ id: 'open-today', name: '打开当日日记', callback: (evt)=> this.runUserCommand(()=> this.openToday(), evt) });
+    this.addCommand({ id: 'quick-capture', name: '快速记录', callback: (evt)=> this.runUserCommand(()=> this.openQuickCaptureModal(), evt) });
 
     // 设置页
     this.addSettingTab(new PomodoroSettingTab(this.app, this, normalizeSettings));
@@ -1677,6 +1682,35 @@ class PomodoroAIO extends Plugin {
     const sum = getTomatoSum(text);
     const unchecked = await this.listUncheckedTasksFromText(text);
     return { file, sum, unchecked };
+  }
+  /** @param {unknown} text @param {"todo"|"idea"} [kind] */
+  async quickCapture(text, kind="todo"){
+    const content = normalizeCaptureText(text);
+    if (!content) {
+      new Notice("请输入要记录的内容");
+      throw new Error("记录内容为空");
+    }
+    try {
+      const result = await this._getDailyRepository().appendCapture({
+        text:content,
+        kind:kind === "idea" ? "idea" : "todo",
+        heading:this.settings.captureHeading
+      });
+      new Notice(kind === "idea" ? "想法已记入当日日记" : "待办已记入当日日记");
+      this.broadcast();
+      return result;
+    } catch (error) {
+      if (String(error instanceof Error ? error.message : error) !== "记录内容为空") {
+        logPluginError("quick-capture", error, { target:this.todayFilePath(), step:"write" });
+        new Notice("快速记录失败，请检查当日日记设置");
+      }
+      throw error;
+    }
+  }
+  openQuickCaptureModal(){
+    const modal = new QuickCaptureModal(this.app, (text, kind)=> this.quickCapture(text, kind));
+    modal.open();
+    return modal;
   }
   projectCandidates(){
     return this._getProjectRepository().listCandidates({

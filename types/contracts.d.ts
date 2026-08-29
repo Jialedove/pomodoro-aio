@@ -17,6 +17,7 @@ export interface Settings {
   allowAutoCreateTask: boolean;
   tasksHeading: string;
   defaultTaskName: string;
+  captureHeading: string;
   projectEnable: boolean;
   projectTag: string;
   projectStatusKey: string;

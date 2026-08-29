@@ -54,6 +54,8 @@ class PomodoroSettingTab extends PluginSettingTab {
     new Setting(c).setName("当日路径模板").setDesc("不依赖 Daily Notes；使用 {{date:YYYY-MM-DD}}")
       .addText(t=>t.setValue(s.fallbackPattern).onChange(v=>set({fallbackPattern: v||"Daily/{{date:YYYY-MM-DD}}.md"})));
     new Setting(c).setName("找不到当天文件时自动创建").addToggle(t=>t.setValue(s.allowCreateDaily).onChange(v=>set({allowCreateDaily:v})));
+    new Setting(c).setName("快速记录区域标题").setDesc("待办与想法写入当日日记的这个标题下；默认 Inbox")
+      .addText(t=>t.setValue(s.captureHeading || "Inbox").onChange(v=>set({captureHeading:v || "Inbox"})));
 
     c.createEl("h3", { text:"任务与写入" });
     new Setting(c).setName("默认任务名（可空）").addText(t=>t.setValue(s.defaultTaskName).onChange(v=>set({defaultTaskName:v})));
