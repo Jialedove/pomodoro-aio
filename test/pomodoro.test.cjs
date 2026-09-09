@@ -125,6 +125,129 @@ test("循环模式：A/B 交替、额度和布局命令保持一致", async () =
   assert.deepEqual(commands.executed, ["workspaces-plus:研究"]);
 });
 
+test("循环模式达到轮次阈值后等待用户开始短休", async () => {
+  const clock = new FakeClock(120_000);
+  const plugin = createPlugin({
+    vault: new FakeVault({ "Daily/today.md": "- [ ] A 0🍅\n- [ ] B 0🍅\n" }),
+    settings: {
+      workMode: "cycle",
+      cycleTaskA: "A",
+      cycleMinA: 1,
+      cycleTaskB: "B",
+      cycleMinB: 1,
+      cycleBreakEvery: 1,
+      breakMin: 1
+    }
+  });
+
+  await clock.run(() => plugin.startCycle(0));
+  plugin.runtime.startedAtMs = clock.now() - plugin.runtime.durationMs;
+  await silenceConsoleError(() => clock.run(() => plugin.tick()));
+  assert.equal(plugin.runtime.attention.cycleSlot, 1);
+
+  await clock.run(() => plugin.onRibbonClick());
+  assert.equal(plugin.runtime.currentTaskName, "B");
+  plugin.runtime.startedAtMs = clock.now() - plugin.runtime.durationMs;
+  await silenceConsoleError(() => clock.run(() => plugin.tick()));
+
+  assert.equal(plugin.runtime.status, "awaiting");
+  assert.equal(plugin.runtime.stage, null);
+  assert.equal(plugin.runtime.mode, "cycle");
+  assert.equal(plugin.runtime.cycleSlot, 0);
+  assert.equal(plugin.runtime.cycleRoundCount, 1);
+  assert.equal(plugin.runtime.durationMs, 0);
+  assert.equal(plugin.runtime.remainingMs, 60_000);
+  assert.deepEqual(plugin.runtime.breakContinuation, {
+    mode: "cycle",
+    cycleSlot: 0,
+    taskName: "A",
+    durationMs: 60_000
+  });
+  assert.equal(plugin.runtime.attention.type, "break");
+  assert.equal(plugin.runtime.attention.nextStarted, false);
+
+  await clock.run(() => plugin.onRibbonClick());
+  assert.equal(plugin.runtime.status, "running");
+  assert.equal(plugin.runtime.stage, "break");
+  assert.equal(plugin.runtime.attention, null);
+  plugin.runtime.startedAtMs = clock.now() - plugin.runtime.durationMs;
+  await silenceConsoleError(() => clock.run(() => plugin.tick()));
+
+  assert.equal(plugin.runtime.status, "awaiting");
+  assert.equal(plugin.runtime.stage, null);
+  assert.equal(plugin.runtime.attention.type, "focus");
+  assert.equal(plugin.runtime.attention.cycleSlot, 0);
+  assert.equal(plugin.runtime.attention.taskName, "A");
+
+  await clock.run(() => plugin.onRibbonClick());
+  assert.equal(plugin.runtime.status, "running");
+  assert.equal(plugin.runtime.stage, "focus");
+  assert.equal(plugin.runtime.currentTaskName, "A");
+});
+
+test("循环短休的下一槽位在重载后仍可恢复", async () => {
+  const settings = {
+    ...createPlugin().settings,
+    workMode: "cycle",
+    cycleTaskA: "A",
+    cycleTaskB: "B"
+  };
+  const runtime = PomodoroAIO.normalizeRuntime({
+    status: "settling",
+    stage: "break",
+    mode: "cycle",
+    cycleSlot: 0,
+    durationMs: 60_000,
+    startedAtMs: 1_000,
+    pendingBreakTransition: {
+      schemaVersion: 1,
+      status: "break-completing",
+      autoNext: false,
+      durationMs: 60_000,
+      createdAtMs: 2_000,
+      mode: "cycle",
+      cycleSlot: 0,
+      taskName: "A"
+    }
+  }, settings, 3_000);
+  const plugin = createPlugin({ settings, runtime });
+
+  await plugin.recoverPendingBreakTransition();
+  assert.equal(plugin.runtime.status, "awaiting");
+  assert.equal(plugin.runtime.attention.type, "focus");
+  assert.equal(plugin.runtime.attention.cycleSlot, 0);
+  assert.equal(plugin.runtime.attention.taskName, "A");
+  assert.equal(plugin.runtime.attention.durationMs, 60_000);
+  assert.equal(plugin.runtime.pendingBreakTransition, null);
+
+  const pendingRestRuntime = PomodoroAIO.normalizeRuntime({
+    status: "awaiting",
+    mode: "cycle",
+    cycleSlot: 0,
+    attention: {
+      type: "break",
+      isLong: false,
+      cycleSlot: 0,
+      nextStarted: false,
+      durationMs: 60_000,
+      taskName: "A"
+    },
+    breakContinuation: {
+      mode: "cycle",
+      cycleSlot: 0,
+      taskName: "A",
+      durationMs: 60_000
+    }
+  }, settings, 3_000);
+  const pendingRest = createPlugin({ settings, runtime: pendingRestRuntime });
+  assert.equal(pendingRest.runtime.breakContinuation.taskName, "A");
+  await pendingRest.startPendingStage();
+  assert.equal(pendingRest.runtime.status, "running");
+  assert.equal(pendingRest.runtime.stage, "break");
+  assert.equal(pendingRest.runtime.mode, "cycle");
+  assert.equal(pendingRest.runtime.breakContinuation.taskName, "A");
+});
+
 test("待确认休息使用持久化时长，不受设置修改影响", async () => {
   const clock = new FakeClock(150_000);
   const plugin = createPlugin({
@@ -317,6 +440,10 @@ test("设置和运行态迁移会拒绝非法值并移除旧字段", () => {
   assert.equal(runtime.plannedTomatoCredit, 1);
   assert.equal(runtime.phase, undefined);
   assert.equal(runtime.startedAt, undefined);
+
+  const migratedCycleBreak = PomodoroAIO.normalizeSettings({ cycleBreakEnabled: true });
+  assert.equal(migratedCycleBreak.cycleBreakEvery, 1);
+  assert.equal(migratedCycleBreak.cycleBreakEnabled, undefined);
 });
 
 test("损坏 journal 在加载时隔离并允许重置", async () => {

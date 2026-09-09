@@ -52,7 +52,8 @@ function clearedStage(runtime, status, remainingMs = 0) {
     remainingMs: Math.max(0, Number(remainingMs) || 0),
     pausedAtMs: 0,
     sessionId: null,
-    plannedTomatoCredit: 0
+    plannedTomatoCredit: 0,
+    breakContinuation: null
   };
 }
 
@@ -77,6 +78,10 @@ function reduceRuntime(runtime, event) {
         pausedAtMs: 0,
         sessionId: event.sessionId ?? null,
         plannedTomatoCredit: event.stage === TIMER_STAGE.FOCUS ? plannedTomatoAmount(durationMs) : 0,
+        cycleRoundCount: event.mode === "cycle" && Number.isInteger(event.cycleRoundCount)
+          ? Math.max(0, event.cycleRoundCount)
+          : runtime.cycleRoundCount,
+        breakContinuation: event.stage === TIMER_STAGE.BREAK ? (event.breakContinuation ?? null) : null,
         attention: null,
         failure: null
       };
@@ -93,6 +98,7 @@ function reduceRuntime(runtime, event) {
         attention: null,
         failure: null
       }, TIMER_STATUS.AWAITING, event.durationMs);
+      next.breakContinuation = event.breakContinuation ?? null;
       if (event.currentTaskName !== undefined) next.currentTaskName = String(event.currentTaskName || "").trim();
       return result(next, [RUNTIME_EFFECT.ALERT_STOP, RUNTIME_EFFECT.BROADCAST, RUNTIME_EFFECT.RESYNC]);
     }
@@ -125,17 +131,22 @@ function reduceRuntime(runtime, event) {
         ...clearedStage(runtime, TIMER_STATUS.IDLE),
         mode:event.mode,
         cycleSlot:0,
+        cycleRoundCount:0,
         attention:null,
         pendingBreakTransition:null,
+        breakContinuation:null,
         failure:null
       }, [RUNTIME_EFFECT.ALERT_STOP, RUNTIME_EFFECT.BROADCAST, RUNTIME_EFFECT.RESYNC]);
 
     case RUNTIME_EVENT.SET_ATTENTION: {
-      const next = { ...runtime, attention:event.attention };
-      return result(
-        event.attention.nextStarted ? next : clearedStage(next, TIMER_STATUS.AWAITING, event.attention.durationMs),
-        [RUNTIME_EFFECT.ALERT_START, RUNTIME_EFFECT.BROADCAST]
-      );
+      const continuation = event.breakContinuation !== undefined
+        ? event.breakContinuation
+        : event.attention?.type === TIMER_STAGE.BREAK ? (runtime.breakContinuation ?? null) : null;
+      const next = { ...runtime, attention:event.attention, breakContinuation:continuation };
+      if (event.attention.nextStarted) return result(next, [RUNTIME_EFFECT.ALERT_START, RUNTIME_EFFECT.BROADCAST]);
+      const awaiting = clearedStage(next, TIMER_STATUS.AWAITING, event.attention.durationMs);
+      awaiting.breakContinuation = continuation;
+      return result(awaiting, [RUNTIME_EFFECT.ALERT_START, RUNTIME_EFFECT.BROADCAST]);
     }
 
     case RUNTIME_EVENT.CLEAR_ATTENTION:
@@ -169,6 +180,9 @@ function reduceRuntime(runtime, event) {
       return result({
         ...runtime,
         sessionCount:Math.max(runtime.sessionCount || 0, Number(event.journal.sessionCountAfter) || 0),
+        cycleRoundCount:event.journal.transition?.mode === "cycle" && Number.isInteger(event.journal.transition.cycleRoundCountAfter)
+          ? Math.max(runtime.cycleRoundCount || 0, event.journal.transition.cycleRoundCountAfter)
+          : runtime.cycleRoundCount,
         sessionId:event.journal.sessionId
       });
 
@@ -200,7 +214,7 @@ function reduceRuntime(runtime, event) {
       });
 
     case RUNTIME_EVENT.CLEAR_BREAK_TRANSITION:
-      return result({ ...runtime, pendingBreakTransition:null }, [RUNTIME_EFFECT.BROADCAST, RUNTIME_EFFECT.RESYNC]);
+      return result({ ...runtime, pendingBreakTransition:null, breakContinuation:null }, [RUNTIME_EFFECT.BROADCAST, RUNTIME_EFFECT.RESYNC]);
 
     case RUNTIME_EVENT.FAIL:
       return result({

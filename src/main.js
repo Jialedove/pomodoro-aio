@@ -41,6 +41,7 @@ const { PomodoroSettingTab } = require("./ui/settings-tab");
 const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/workspaces-plus");
 /** @typedef {import("../types/contracts").Attention} Attention */
 /** @typedef {import("../types/contracts").BreakTransition} BreakTransition */
+/** @typedef {import("../types/contracts").BreakContinuation} BreakContinuation */
 /** @typedef {import("../types/contracts").ProjectSettlementPlan} ProjectSettlementPlan */
 /** @typedef {import("../types/contracts").Runtime} Runtime */
 /** @typedef {import("../types/contracts").RuntimeEvent} RuntimeEvent */
@@ -49,8 +50,8 @@ const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/
 /** @typedef {import("../types/contracts").StageTransition} StageTransition */
 /** @typedef {import("../types/contracts").TimerStage} TimerStage */
 /** @typedef {Record<string, any>} AnyRecord */
-/** @typedef {{suppressNotify?:boolean, cause?:string, minutes?:number|null, cycle?:boolean, cycleSlot?:0|1, taskName?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean}} StartFocusOptions */
-/** @typedef {{forceRun?:boolean, suppressNotify?:boolean, cause?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean}} StartBreakOptions */
+/** @typedef {{suppressNotify?:boolean, cause?:string, minutes?:number|null, cycle?:boolean, cycleSlot?:0|1, taskName?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean, newCycle?:boolean}} StartFocusOptions */
+/** @typedef {{forceRun?:boolean, suppressNotify?:boolean, cause?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean, breakContinuation?:BreakContinuation}} StartBreakOptions */
 /** @typedef {{type?:string, isLong?:boolean, cycleSlot?:number|null, autoStarted?:boolean, durationMs?:number, taskName?:string}} NextPhase */
 
 /* ========== 默认设置 ========== */
@@ -104,7 +105,7 @@ const DEFAULT_SETTINGS = {
   focusStartCommandId: "",
   breakStartCommandId: "",
 
-  // 循环工作：两项任务交替，无休息阶段
+  // 循环工作：两项任务交替；可选地在若干完整 A→B 轮次后提示短休
   workMode: "standard",
   cycleTaskA: "",
   cycleMinA: 15,
@@ -112,6 +113,7 @@ const DEFAULT_SETTINGS = {
   cycleTaskB: "",
   cycleMinB: 15,
   cycleWorkspaceCommandB: "",
+  cycleBreakEvery: 0,
 
   // 兼容性
   respectModalInputFocus: true
@@ -155,6 +157,8 @@ function createRuntimeDefaults(settings) {
     attention: null,
     pendingSettlement: null,
     pendingBreakTransition: null,
+    breakContinuation: null,
+    cycleRoundCount: 0,
     quarantinedSettlement: null,
     projectQueue: [],
     frontmatterQueue: [],
@@ -190,6 +194,13 @@ function normalizeSettings(raw={}, fallback=DEFAULT_SETTINGS) {
   result.longEvery = integer("longEvery");
   result.strongAlertDelaySec = integer("strongAlertDelaySec");
   result.strongAlertIntervalSec = integer("strongAlertIntervalSec");
+  const cycleBreakEveryFallback = Number.isFinite(Number(base.cycleBreakEvery)) && Number(base.cycleBreakEvery) >= 0
+    ? Math.round(Number(base.cycleBreakEvery)) : 0;
+  const cycleBreakEveryValue = Number(source.cycleBreakEvery);
+  result.cycleBreakEvery = has("cycleBreakEvery") && Number.isFinite(cycleBreakEveryValue) && cycleBreakEveryValue >= 0
+    ? Math.round(cycleBreakEveryValue) : cycleBreakEveryFallback;
+  if (!has("cycleBreakEvery") && has("cycleBreakEnabled")) result.cycleBreakEvery = source.cycleBreakEnabled === true ? 1 : 0;
+  delete result.cycleBreakEnabled;
   result.dayStartHHMM = has("dayStartHHMM") && isValidHHMM(source.dayStartHHMM)
     ? source.dayStartHHMM : (isValidHHMM(base.dayStartHHMM) ? base.dayStartHHMM : DEFAULT_SETTINGS.dayStartHHMM);
   result.workMode = source.workMode === "cycle" || (!has("workMode") && base.workMode === "cycle") ? "cycle" : "standard";
@@ -247,7 +258,22 @@ function normalizeBreakTransition(value) {
   if (record.schemaVersion !== 1 || record.status !== "break-completing") return null;
   if (typeof record.autoNext !== "boolean" || !Number.isFinite(record.durationMs) || record.durationMs <= 0) return null;
   if (!Number.isFinite(record.createdAtMs) || record.createdAtMs <= 0) return null;
+  if (record.mode !== undefined && !["standard", "cycle"].includes(record.mode)) return null;
+  if (record.mode === "cycle" && (![0, 1].includes(record.cycleSlot) || typeof record.taskName !== "string")) return null;
   return /** @type {BreakTransition} */ (cloneValue(record));
+}
+/** @param {unknown} value @returns {BreakContinuation | null} */
+function normalizeBreakContinuation(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = /** @type {AnyRecord} */ (value);
+  if (record.mode !== "cycle" || ![0, 1].includes(record.cycleSlot) || typeof record.taskName !== "string") return null;
+  if (!Number.isFinite(record.durationMs) || record.durationMs <= 0) return null;
+  return {
+    mode: "cycle",
+    cycleSlot: record.cycleSlot === 1 ? 1 : 0,
+    taskName: String(record.taskName || "").trim(),
+    durationMs: Math.round(record.durationMs)
+  };
 }
 /** @param {unknown} value @returns {AnyRecord[]} */
 function normalizeProjectQueue(value) {
@@ -285,6 +311,7 @@ function normalizeRuntime(raw, settings, now=Date.now()) {
   const attention = normalizeAttention(source.attention || legacyPending, settings);
   const settlement = normalizeSettlement(source.pendingSettlement);
   const breakTransition = normalizeBreakTransition(source.pendingBreakTransition);
+  const breakContinuation = normalizeBreakContinuation(source.breakContinuation);
   const mode = source.mode === "cycle" || source.cycleActive || (legacy && settings.workMode === "cycle") ? "cycle" : "standard";
   let status = Object.values(TIMER_STATUS).includes(source.status) ? source.status : TIMER_STATUS.IDLE;
   let stage = source.stage === TIMER_STAGE.FOCUS || source.stage === TIMER_STAGE.BREAK ? source.stage : null;
@@ -326,6 +353,7 @@ function normalizeRuntime(raw, settings, now=Date.now()) {
     attention,
     pendingSettlement: settlement.journal,
     pendingBreakTransition: breakTransition,
+    breakContinuation,
     quarantinedSettlement: settlement.error ? {
       sessionId: String(source.pendingSettlement?.sessionId || "") || null,
       schemaVersion: Number.isFinite(source.pendingSettlement?.schemaVersion) ? source.pendingSettlement.schemaVersion : null,
@@ -335,6 +363,7 @@ function normalizeRuntime(raw, settings, now=Date.now()) {
     projectQueue: normalizeProjectQueue(source.projectQueue),
     frontmatterQueue: normalizeFrontmatterQueue(source.frontmatterQueue),
     sessionCount: Math.max(0, Math.floor(Number(source.sessionCount) || 0)),
+    cycleRoundCount: Math.max(0, Math.floor(Number(source.cycleRoundCount) || 0)),
     currentTaskName: String(source.currentTaskName ?? defaults.currentTaskName),
     longFocusMinutes: Math.max(0.1, Number(source.longFocusMinutes) || defaults.longFocusMinutes),
     dayKey: String(source.dayKey || defaults.dayKey),
@@ -358,6 +387,8 @@ function normalizeRuntime(raw, settings, now=Date.now()) {
     result.sessionId = null;
     result.plannedTomatoCredit = defaults.plannedTomatoCredit;
     result.attention = null;
+    result.breakContinuation = null;
+    result.cycleRoundCount = 0;
     result.failure = null;
   } else if (result.status === TIMER_STATUS.AWAITING) {
     result.stage = null;
@@ -368,6 +399,7 @@ function normalizeRuntime(raw, settings, now=Date.now()) {
     result.remainingMs = result.attention?.durationMs || result.remainingMs;
     result.sessionId = null;
     result.plannedTomatoCredit = 0;
+    result.breakContinuation = result.attention?.type === TIMER_STAGE.BREAK ? breakContinuation : null;
     result.failure = null;
   } else if (![TIMER_STAGE.FOCUS, TIMER_STAGE.BREAK].includes(result.stage)) {
     result.status = TIMER_STATUS.IDLE;
@@ -378,6 +410,8 @@ function normalizeRuntime(raw, settings, now=Date.now()) {
     result.pausedAtMs = 0;
     result.sessionId = null;
     result.plannedTomatoCredit = defaults.plannedTomatoCredit;
+    result.breakContinuation = null;
+    result.cycleRoundCount = 0;
     result.attention = null;
     result.failure = null;
   } else if (result.status === TIMER_STATUS.PAUSED) {
@@ -394,6 +428,7 @@ function normalizeRuntime(raw, settings, now=Date.now()) {
     result.status = TIMER_STATUS.FAILED;
     result.failure = { stage: result.stage, sessionId: result.sessionId || null, atMs: now, message: "运行状态缺少有效开始时间" };
   }
+  if (result.stage !== TIMER_STAGE.BREAK && result.attention?.type !== TIMER_STAGE.BREAK && !result.pendingBreakTransition) result.breakContinuation = null;
   if (result.status === TIMER_STATUS.SETTLING && !result.pendingSettlement && !result.pendingBreakTransition) {
     result.status = TIMER_STATUS.FAILED;
     result.failure = { stage: result.stage, sessionId: result.sessionId || null, atMs: now, message: "转换状态缺少 journal" };
@@ -865,7 +900,13 @@ class PomodoroAIO extends Plugin {
   async startPendingStage(){
     const next = this.runtime.attention;
     if (!next || next.nextStarted) { await this.stopStrongAlert(); return; }
-    if (next.type === TIMER_STAGE.BREAK) await this.startBreak(next.isLong, { forceRun:true, cause:'manual', durationMs:next.durationMs, allowTransition:true });
+    if (next.type === TIMER_STAGE.BREAK) await this.startBreak(next.isLong, {
+      forceRun:true,
+      cause:'manual',
+      durationMs:next.durationMs,
+      allowTransition:true,
+      breakContinuation:this.runtime.breakContinuation || undefined
+    });
     else if (next.type === TIMER_STAGE.FOCUS && Number.isInteger(next.cycleSlot)) {
       /** @type {StartFocusOptions} */
       const options = { cause:'manual', durationMs:next.durationMs, allowTransition:true };
@@ -983,7 +1024,8 @@ class PomodoroAIO extends Plugin {
       mode:opts.cycle ? "cycle" : "standard",
       cycleSlot:opts.cycle ? (opts.cycleSlot === 1 ? 1 : 0) : 0,
       currentTaskName:opts.cycle && opts.taskName !== undefined ? opts.taskName : undefined,
-      longFocusMinutes:opts.minutes != null && !opts.cycle ? minutes : undefined
+      longFocusMinutes:opts.minutes != null && !opts.cycle ? minutes : undefined,
+      cycleRoundCount:opts.cycle && opts.newCycle ? 0 : undefined
     });
     await this.saveTransition(previousRuntime);
     this.runRuntimeEffects(effects);
@@ -1012,6 +1054,7 @@ class PomodoroAIO extends Plugin {
       return false;
     }
     const cycleSlot = slot === 1 ? 1 : 0;
+    const newCycle = !options?.allowTransition && this.runtime.status === TIMER_STATUS.IDLE && !this.runtime.attention;
     const hasTaskSnapshot = Object.prototype.hasOwnProperty.call(options || {}, "taskName");
     const configuredTask = cycleSlot ? this.settings.cycleTaskB : this.settings.cycleTaskA;
     const task = String(hasTaskSnapshot ? options.taskName : configuredTask || "").trim();
@@ -1021,7 +1064,7 @@ class PomodoroAIO extends Plugin {
       : Number(cycleSlot ? this.settings.cycleMinB : this.settings.cycleMinA);
     if (!task) { new Notice(`请先填写任务 ${cycleSlot ? "B" : "A"}`); return; }
     if (!isFinite(minutes) || minutes <= 0) { new Notice(`请设置任务 ${cycleSlot ? "B" : "A"} 的时长`); return; }
-    return this.startFocus(Object.assign({ cause:'manual' }, options, { minutes, cycle:true, cycleSlot, taskName:task }));
+    return this.startFocus(Object.assign({ cause:'manual' }, options, { minutes, cycle:true, cycleSlot, taskName:task, newCycle }));
   }
   /** @param {boolean} [isLong] @param {boolean | StartBreakOptions} [options] */
   async startBreak(isLong=false, options){
@@ -1050,19 +1093,22 @@ class PomodoroAIO extends Plugin {
     const minutes = durationMs / 60_000;
     const forceRun = opts.forceRun ?? true;
     const shouldRun = forceRun !== false && (forceRun || !!this.settings.autoNext);
+    const continuation = normalizeBreakContinuation(opts.breakContinuation);
     const effects = this.applyRuntimeEvent(shouldRun ? {
       type:RUNTIME_EVENT.START_STAGE,
       stage:TIMER_STAGE.BREAK,
       durationMs,
       now:Date.now(),
       sessionId:null,
-      mode:"standard",
-      cycleSlot:0
+      mode:continuation ? "cycle" : "standard",
+      cycleSlot:continuation ? continuation.cycleSlot : 0,
+      breakContinuation:continuation
     } : {
       type:RUNTIME_EVENT.AWAIT_STAGE,
       durationMs,
       mode:"standard",
-      cycleSlot:0
+      cycleSlot:0,
+      breakContinuation:null
     });
     await this.saveTransition(previousRuntime);
     this.runRuntimeEffects(effects);
@@ -1403,7 +1449,11 @@ class PomodoroAIO extends Plugin {
         const nextTask = Object.prototype.hasOwnProperty.call(journal.transition, "taskName")
           ? String(journal.transition.taskName || "").trim()
           : String((journal.transition.cycleSlot === 1 ? this.settings.cycleTaskB : this.settings.cycleTaskA) || "").trim();
-        sysNotify(journal.manual ? "专注完成（手动）" : "专注完成", this.focusCompletionBody(journal.amount, `${nextTask || "下一段专注"}（点击番茄图标开始）`), this.settings.enableNotify);
+        const cycleRestDurationMs = Math.max(0, Number(journal.transition.cycleRestDurationMs) || 0);
+        const next = cycleRestDurationMs
+          ? `本轮完成，短休 ${formatTomatoNumber(cycleRestDurationMs / 60_000)} 分钟（点击番茄图标开始）`
+          : `${nextTask || "下一段专注"}（点击番茄图标开始）`;
+        sysNotify(journal.manual ? "专注完成（手动）" : "专注完成", this.focusCompletionBody(journal.amount, next), this.settings.enableNotify);
       } else {
         const breakMinutes = journal.transition.durationMs / 60 / 1000;
         sysNotify(journal.manual ? "专注完成（手动）" : "专注完成", this.focusCompletionBody(journal.amount, `${journal.transition.isLong ? "长休" : "短休"} ${formatTomatoNumber(breakMinutes)} 分钟${journal.transition.autoNext ? "（已开始）" : "（点击番茄图标开始）"}`), this.settings.enableNotify);
@@ -1414,17 +1464,76 @@ class PomodoroAIO extends Plugin {
 
     if (journal.transition.mode === "cycle") {
       const r = this.runtime;
-      const already = r.status === TIMER_STATUS.AWAITING
-        && r.attention?.type === TIMER_STAGE.FOCUS
-        && r.attention?.cycleSlot === journal.transition.cycleSlot;
-      if (!already) {
-        this.applyRuntimeEvent({
-          type:RUNTIME_EVENT.AWAIT_STAGE,
-          durationMs:journal.transition.durationMs,
-          mode:"cycle",
-          cycleSlot:journal.transition.cycleSlot
-        });
-        await this.beginStrongAlert({ type:TIMER_STAGE.FOCUS, cycleSlot:journal.transition.cycleSlot, taskName:journal.transition.taskName, autoStarted:false, durationMs:journal.transition.durationMs });
+      const cycleRestDurationMs = Math.max(0, Number(journal.transition.cycleRestDurationMs) || 0);
+      if (cycleRestDurationMs > 0) {
+        /** @type {BreakContinuation} */
+        const continuation = {
+          mode: "cycle",
+          cycleSlot: journal.transition.cycleSlot === 1 ? 1 : 0,
+          taskName: String(journal.transition.taskName || "").trim(),
+          durationMs: Math.max(1, Math.round(Number(journal.transition.durationMs) || 1))
+        };
+        const existingRest = r.stage === TIMER_STAGE.BREAK
+          && r.mode === "cycle"
+          && Math.round(Number(r.durationMs) || 0) === Math.round(cycleRestDurationMs)
+          && r.breakContinuation?.mode === "cycle"
+          && r.breakContinuation?.cycleSlot === continuation.cycleSlot
+          && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED]).includes(r.status)
+          && (Number(r.startedAtMs) > 0 || (Number(r.pausedAtMs) > 0 && Number(r.remainingMs) > 0));
+        const alreadyAwaiting = r.status === TIMER_STATUS.AWAITING
+          && r.attention?.type === TIMER_STAGE.BREAK
+          && r.attention?.cycleSlot === continuation.cycleSlot
+          && Math.round(Number(r.attention?.durationMs) || 0) === Math.round(cycleRestDurationMs)
+          && r.breakContinuation?.mode === "cycle";
+        if (!existingRest && !alreadyAwaiting) {
+          this.applyRuntimeEvent({
+            type:RUNTIME_EVENT.AWAIT_STAGE,
+            durationMs: cycleRestDurationMs,
+            mode:"cycle",
+            cycleSlot:continuation.cycleSlot,
+            breakContinuation:continuation
+          });
+          await this.beginStrongAlert({
+            type:TIMER_STAGE.BREAK,
+            isLong:false,
+            autoStarted:false,
+            durationMs:cycleRestDurationMs,
+            cycleSlot:continuation.cycleSlot,
+            taskName:continuation.taskName
+          });
+        } else if (existingRest && r.status === TIMER_STATUS.SETTLING) {
+          this.applyRuntimeEvent({ type:RUNTIME_EVENT.RESTORE_ACTIVE_STAGE });
+          await this.beginStrongAlert({
+            type:TIMER_STAGE.BREAK,
+            isLong:false,
+            autoStarted:true,
+            durationMs:cycleRestDurationMs,
+            cycleSlot:continuation.cycleSlot,
+            taskName:continuation.taskName
+          });
+        } else if (existingRest && !r.attention) {
+          await this.beginStrongAlert({
+            type:TIMER_STAGE.BREAK,
+            isLong:false,
+            autoStarted:true,
+            durationMs:cycleRestDurationMs,
+            cycleSlot:continuation.cycleSlot,
+            taskName:continuation.taskName
+          });
+        }
+      } else {
+        const already = r.status === TIMER_STATUS.AWAITING
+          && r.attention?.type === TIMER_STAGE.FOCUS
+          && r.attention?.cycleSlot === journal.transition.cycleSlot;
+        if (!already) {
+          this.applyRuntimeEvent({
+            type:RUNTIME_EVENT.AWAIT_STAGE,
+            durationMs:journal.transition.durationMs,
+            mode:"cycle",
+            cycleSlot:journal.transition.cycleSlot
+          });
+          await this.beginStrongAlert({ type:TIMER_STAGE.FOCUS, cycleSlot:journal.transition.cycleSlot, taskName:journal.transition.taskName, autoStarted:false, durationMs:journal.transition.durationMs });
+        }
       }
     } else {
       const r = this.runtime;
@@ -1488,6 +1597,7 @@ class PomodoroAIO extends Plugin {
   /** @param {BreakTransition} transition */
   async advanceBreakTransition(transition){
     const r = this.runtime;
+    const isCycle = transition.mode === "cycle";
     const focusStarted = transition.autoNext
       && r.stage === TIMER_STAGE.FOCUS
       && Math.round(Number(r.durationMs) || 0) === Math.round(transition.durationMs)
@@ -1497,18 +1607,31 @@ class PomodoroAIO extends Plugin {
       this.applyRuntimeEvent({ type:RUNTIME_EVENT.RESTORE_FOCUS });
     }
     if (transition.autoNext && !focusStarted) {
-      await this.startFocus({
-        suppressNotify:true,
-        cause:'auto',
-        allowTransition:true,
-        allowPendingBreakTransition:true,
-        durationMs:transition.durationMs
-      });
+      if (isCycle && Number.isInteger(transition.cycleSlot)) {
+        await this.startCycle(transition.cycleSlot === 1 ? 1 : 0, {
+          suppressNotify:true,
+          cause:'auto',
+          allowTransition:true,
+          allowPendingBreakTransition:true,
+          durationMs:transition.durationMs,
+          taskName:transition.taskName
+        });
+      } else {
+        await this.startFocus({
+          suppressNotify:true,
+          cause:'auto',
+          allowTransition:true,
+          allowPendingBreakTransition:true,
+          durationMs:transition.durationMs
+        });
+      }
     }
     await this.beginStrongAlert({
       type:TIMER_STAGE.FOCUS,
       autoStarted:transition.autoNext,
-      durationMs:transition.durationMs
+      durationMs:transition.durationMs,
+      cycleSlot:isCycle && Number.isInteger(transition.cycleSlot) ? transition.cycleSlot : null,
+      taskName:isCycle ? transition.taskName : undefined
     });
     const previousRuntime = this.runtime;
     const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.CLEAR_BREAK_TRANSITION });
@@ -1531,20 +1654,31 @@ class PomodoroAIO extends Plugin {
     const r = this.runtime;
     if (this._completionInFlight || r.status !== TIMER_STATUS.RUNNING || r.stage !== TIMER_STAGE.BREAK) return;
     this._completionInFlight = true;
+    /** @type {BreakContinuation | null} */
+    const cycleContinuation = r.breakContinuation?.mode === "cycle" ? r.breakContinuation : null;
     /** @type {BreakTransition} */
     const transition = {
       schemaVersion:1,
       status:"break-completing",
-      autoNext:!!this.settings.autoNext,
-      durationMs:configuredStageDurationMs(this.settings, TIMER_STAGE.FOCUS),
+      autoNext:cycleContinuation ? false : !!this.settings.autoNext,
+      durationMs:cycleContinuation
+        ? cycleContinuation.durationMs
+        : configuredStageDurationMs(this.settings, TIMER_STAGE.FOCUS),
       createdAtMs:Date.now()
     };
+    if (cycleContinuation) {
+      transition.mode = "cycle";
+      transition.cycleSlot = cycleContinuation.cycleSlot;
+      transition.taskName = cycleContinuation.taskName;
+    }
     const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.BEGIN_BREAK_TRANSITION, transition });
     try {
       await this.saveState({ critical:true });
       this.runRuntimeEffects(effects);
       playBeep(this.settings.breakEndSound, this.settings.enableSound, this.settings.soundWaveform);
-      const task = String(this.runtime.currentTaskName || this.settings.defaultTaskName || "").trim();
+      const task = transition.mode === "cycle"
+        ? String(transition.taskName || "").trim()
+        : String(this.runtime.currentTaskName || this.settings.defaultTaskName || "").trim();
       sysNotify("休息结束", `下一步：${transition.autoNext ? "已开始" : "点击番茄图标开始"}专注${task ? ` · 任务：${task}` : ""}`, this.settings.enableNotify);
       await this.advanceBreakTransition(transition);
     } catch (error) {

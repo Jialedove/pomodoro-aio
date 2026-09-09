@@ -50,6 +50,9 @@ function validateSettlementJournal(value) {
   if (!positive(transition.durationMs) || typeof transition.autoNext !== "boolean") return "journal transition 字段非法";
   if (transition.mode === "standard" && typeof transition.isLong !== "boolean") return "journal standard transition 非法";
   if (transition.mode === "cycle" && (![0, 1].includes(transition.cycleSlot) || typeof transition.taskName !== "string")) return "journal cycle transition 非法";
+  if (transition.cycleRoundCountAfter !== undefined
+    && (!Number.isInteger(transition.cycleRoundCountAfter) || transition.cycleRoundCountAfter < 0)) return "journal cycle round count 非法";
+  if (transition.cycleRestDurationMs !== undefined && !positive(transition.cycleRestDurationMs)) return "journal cycle rest 非法";
 
   const project = value.project;
   if (!record(project) || !PROJECT_STATUSES.has(project.status)) return "journal project 非法";
@@ -66,13 +69,21 @@ function buildNextStageTransition(settings, runtime, sessionCountAfter) {
   if (runtime?.mode === "cycle") {
     const cycleSlot = runtime.cycleSlot === 1 ? 0 : 1;
     const taskName = cycleSlot === 1 ? settings.cycleTaskB : settings.cycleTaskA;
-    return {
+    /** @type {StageTransition} */
+    const transition = {
       mode: "cycle",
       cycleSlot,
       taskName: String(taskName || "").trim(),
       autoNext: false,
       durationMs: configuredStageDurationMs(settings, TIMER_STAGE.FOCUS, false, cycleSlot)
     };
+    if (runtime.cycleSlot === 1) {
+      transition.cycleRoundCountAfter = Math.max(0, Math.floor(Number(runtime.cycleRoundCount) || 0)) + 1;
+      if (settings.cycleBreakEvery > 0 && transition.cycleRoundCountAfter % settings.cycleBreakEvery === 0) {
+        transition.cycleRestDurationMs = configuredStageDurationMs(settings, TIMER_STAGE.BREAK, false);
+      }
+    }
+    return transition;
   }
   const isLong = settings.longEvery > 0 && sessionCountAfter % settings.longEvery === 0;
   return {

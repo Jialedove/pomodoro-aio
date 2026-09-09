@@ -18,7 +18,9 @@ const BASE_RUNTIME = {
   attention:null,
   pendingSettlement:null,
   pendingBreakTransition:null,
+  breakContinuation:null,
   sessionCount:0,
+  cycleRoundCount:0,
   currentTaskName:"任务",
   longFocusMinutes:50,
   failure:null

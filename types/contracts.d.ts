@@ -48,6 +48,7 @@ export interface Settings {
   cycleTaskB: string;
   cycleMinB: number;
   cycleWorkspaceCommandB: string;
+  cycleBreakEvery: number;
   respectModalInputFocus: boolean;
   schemaVersion?: number;
 }
@@ -88,10 +89,12 @@ export interface Runtime {
   attention: Attention | null;
   pendingSettlement: SettlementJournal | null;
   pendingBreakTransition: BreakTransition | null;
+  breakContinuation: BreakContinuation | null;
   quarantinedSettlement: Record<string, any> | null;
   projectQueue: Array<Record<string, any>>;
   frontmatterQueue: Array<Record<string, any>>;
   sessionCount: number;
+  cycleRoundCount: number;
   currentTaskName: string;
   longFocusMinutes: number;
   dayKey: string;
@@ -105,6 +108,16 @@ export interface BreakTransition {
   autoNext: boolean;
   durationMs: number;
   createdAtMs: number;
+  mode?: WorkMode;
+  cycleSlot?: CycleSlot;
+  taskName?: string;
+}
+
+export interface BreakContinuation {
+  mode: "cycle";
+  cycleSlot: CycleSlot;
+  taskName: string;
+  durationMs: number;
 }
 
 export interface TaskMutationPlan {
@@ -135,6 +148,8 @@ export interface StageTransition {
   isLong?: boolean;
   cycleSlot?: CycleSlot;
   taskName?: string;
+  cycleRoundCountAfter?: number;
+  cycleRestDurationMs?: number;
 }
 
 export interface ProjectSettlementPlan {

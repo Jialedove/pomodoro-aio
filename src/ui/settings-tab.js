@@ -44,9 +44,11 @@ class PomodoroSettingTab extends PluginSettingTab {
     new Setting(c).setName("完成后自动进入下一段").setDesc("仅普通模式；循环工作每段结束后需点击 Ribbon 确认下一段")
       .addToggle(t=>t.setValue(s.autoNext).onChange(v=>set({autoNext:v})));
 
-    c.createEl("h3", { text:"循环工作（无休息）" });
+    c.createEl("h3", { text:"循环工作" });
     new Setting(c).setName("任务 A 默认时长（分钟）").addText(t=>t.setValue(String(s.cycleMinA || 15)).onChange(v=>this.plugin.setCycleConfig({cycleMinA:Math.max(1, Number(v)||15)})));
     new Setting(c).setName("任务 B 默认时长（分钟）").addText(t=>t.setValue(String(s.cycleMinB || 15)).onChange(v=>this.plugin.setCycleConfig({cycleMinB:Math.max(1, Number(v)||15)})));
+    new Setting(c).setName("完成多少轮后提示短休").setDesc("以 A→B 为一轮；达到次数后只等待你点击开始短休，0 表示关闭，时长使用上方的“短休时长”")
+      .addText(t=>t.setValue(String(s.cycleBreakEvery || 0)).onChange(v=>this.plugin.setCycleConfig({cycleBreakEvery:Math.max(0, Math.round(Number(v) || 0))})));
 
     c.createEl("h3", { text:"一天起止 & 当日日记" });
     new Setting(c).setName("一天开始时间（HH:MM）").setDesc("例：04:00；在 04:00 前完成的番茄记在前一天")

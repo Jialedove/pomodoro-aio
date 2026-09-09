@@ -15,6 +15,7 @@ const settings = {
   autoNext: true,
   cycleMinA: 15,
   cycleMinB: 30,
+  cycleBreakEvery: 0,
   fmKey: "番茄数"
 };
 
@@ -36,8 +37,26 @@ test("settlement 纯函数计算循环模式的下一槽位", () => {
   );
   assert.deepEqual(
     buildNextStageTransition(settings, { mode: "cycle", cycleSlot: 1 }, 1),
-    { mode: "cycle", cycleSlot: 0, taskName: "", autoNext: false, durationMs: 900_000 }
+    { mode: "cycle", cycleSlot: 0, taskName: "", autoNext: false, durationMs: 900_000, cycleRoundCountAfter: 1 }
   );
+});
+
+test("循环模式按完整轮次阈值快照短休时长", () => {
+  const cycleSettings = { ...settings, cycleBreakEvery: 2, breakMin: 3 };
+  const beforeThreshold = buildNextStageTransition(cycleSettings, { mode: "cycle", cycleSlot: 1, cycleRoundCount: 0 }, 2);
+  assert.equal(beforeThreshold.cycleRoundCountAfter, 1);
+  assert.equal(beforeThreshold.cycleRestDurationMs, undefined);
+
+  const atThreshold = buildNextStageTransition(cycleSettings, { mode: "cycle", cycleSlot: 1, cycleRoundCount: 1 }, 4);
+  assert.deepEqual(atThreshold, {
+    mode: "cycle",
+    cycleSlot: 0,
+    taskName: "",
+    autoNext: false,
+    durationMs: 900_000,
+    cycleRoundCountAfter: 2,
+    cycleRestDurationMs: 180_000
+  });
 });
 
 test("settlement 纯函数组装日记计划和可恢复 journal", () => {

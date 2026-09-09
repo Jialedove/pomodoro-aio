@@ -251,7 +251,8 @@ const BASE_SETTINGS = {
   cycleWorkspaceCommandA: "",
   cycleTaskB: "",
   cycleMinB: 15,
-  cycleWorkspaceCommandB: ""
+  cycleWorkspaceCommandB: "",
+  cycleBreakEvery: 0
 };
 
 const BASE_RUNTIME = {
@@ -273,6 +274,7 @@ const BASE_RUNTIME = {
   projectQueue: [],
   frontmatterQueue: [],
   sessionCount: 0,
+  cycleRoundCount: 0,
   currentTaskName: "",
   longFocusMinutes: 50,
   dayKey: "",
