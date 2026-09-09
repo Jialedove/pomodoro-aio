@@ -961,6 +961,45 @@ test("恢复时缺失的日记文件只按 journal 固定路径创建", async ()
   assert.equal(vault.getAbstractFileByPath("Daily/today.md"), null);
 });
 
+test("插入型结算遇到后来出现的日记时先持久化重算计划再写入", async () => {
+  const task = "稍后出现的任务";
+  const path = "Daily/today.md";
+  const vault = new FakeVault();
+  const store = new FailureStore();
+  const plugin = createPlugin({
+    vault,
+    stateStore:store,
+    runtime:{ sessionId:"late-daily", durationMs:35 * 60 * 1000, currentTaskName:task }
+  });
+  const journal = await plugin.prepareSettlement(
+    1.4,
+    { mode:"cycle", cycleSlot:1, taskName:"下一段", autoNext:false, durationMs:10 * 60 * 1000 },
+    1
+  );
+  plugin.runtime.pendingSettlement = journal;
+  const file = vault.addFile(path, `# 任务\n- [ ] ${task}\n- [ ] 已有任务 2.5🍅\n`);
+  const process = vault.process.bind(vault);
+  let processCalls = 0;
+  vault.process = async (target, callback) => {
+    processCalls += 1;
+    if (processCalls === 2) {
+      assert.equal(store.value.pendingSettlement.daily.kind, "line");
+      assert.equal(store.value.pendingSettlement.daily.lineBefore, `- [ ] ${task}`);
+      assert.equal(store.value.pendingSettlement.daily.rowStatus, "pending");
+    }
+    return process(target, callback);
+  };
+
+  await plugin.applyDailySettlement(journal);
+
+  assert.equal(processCalls, 2);
+  assert.equal(file.content.match(new RegExp(task, "g")).length, 1);
+  assert.match(file.content, new RegExp(`- \\[ \\] ${task} 1\\.4🍅`));
+  assert.match(file.content, /- \[ \] 已有任务 2\.5🍅/);
+  assert.equal(file.frontmatter.番茄数, 3.9);
+  assert.equal(journal.daily.rowStatus, "applied");
+});
+
 test("休息已启动但提醒尚未落盘时恢复不会重置休息计时", async () => {
   const clock = new FakeClock(4_250_000);
   const vault = new FakeVault({ "Daily/today.md": "- [ ] 休息恢复 0🍅\n" });

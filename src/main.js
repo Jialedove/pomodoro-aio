@@ -1271,7 +1271,23 @@ class PomodoroAIO extends Plugin {
 
     let currentText = "";
     if (daily.rowStatus !== "applied") {
-      const mutation = await dailyRepository.applyPlannedMutation(file, daily);
+      let mutation;
+      try {
+        mutation = await dailyRepository.applyPlannedMutation(file, daily);
+      } catch (error) {
+        if (daily.kind !== "insert"
+          || !error || typeof error !== "object" || !("code" in error) || error.code !== "SETTLEMENT_CONFLICT") throw error;
+        const rebased = buildDailySettlementPlan(await dailyRepository.read(file), {
+          path:daily.path,
+          taskName:daily.taskName,
+          frontmatterKey:daily.frontmatterKey,
+          amount:journal.amount,
+          settings:{ ...this.settings, allowAutoCreateTask:true, tasksHeading:daily.heading || "" }
+        });
+        Object.assign(daily, rebased);
+        await this.saveState({ critical:true });
+        mutation = await dailyRepository.applyPlannedMutation(file, daily);
+      }
       currentText = mutation.text;
       daily.rowStatus = "applied";
       daily.alreadyApplied = mutation.alreadyApplied;
