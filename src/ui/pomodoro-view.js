@@ -226,6 +226,60 @@ class PomodoroView extends ItemView {
       cycleWorkspaceA.onfocus = ()=> fillWorkspaceList(cycleWorkspaceA, cycleWorkspaceListA, cycleWorkspaceA.dataset.commandId || "");
       cycleWorkspaceB.onfocus = ()=> fillWorkspaceList(cycleWorkspaceB, cycleWorkspaceListB, cycleWorkspaceB.dataset.commandId || "");
 
+      // AI 异质性检查：独立于计时状态，仅分析用户手动选中的两件事。
+      const aiAdvisor = container.createDiv({ cls:"pmd-ai-advisor" });
+      aiAdvisor.createEl("h3", { text:"AI 异质性检查", cls:"pmd-ai-heading" });
+      aiAdvisor.createDiv({ cls:"pmd-ai-hint", text:"只发送下面两件事的文字；结果不会自动改变计时或循环。" });
+      const aiInputs = aiAdvisor.createDiv({ cls:"pmd-row pmd-row-inline pmd-ai-inputs" });
+      const aiTaskA = aiInputs.createEl("input", {
+        type:"text", cls:"pmd-input",
+        attr:{ list:"pmdAiTaskList", placeholder:"选择或输入事情 A", "aria-label":"AI 检查事情 A" }
+      });
+      const aiTaskB = aiInputs.createEl("input", {
+        type:"text", cls:"pmd-input",
+        attr:{ list:"pmdAiTaskList", placeholder:"选择或输入事情 B", "aria-label":"AI 检查事情 B" }
+      });
+      const aiTaskList = aiAdvisor.createEl("datalist", { attr:{ id:"pmdAiTaskList" } });
+      const aiCheckBtn = aiInputs.createEl("button", { text:"判断是否异质", cls:"pmd-btn pmd-btn-secondary", attr:{ type:"button" } });
+      const aiResult = aiAdvisor.createDiv({ cls:"pmd-ai-result", attr:{ role:"status", "aria-live":"polite" } });
+      const cycleModeAtOpen = this.plugin.settings.workMode === "cycle";
+      aiTaskA.value = cycleModeAtOpen ? this.plugin.settings.cycleTaskA || "" : this.plugin.runtime.currentTaskName || "";
+      aiTaskB.value = cycleModeAtOpen ? this.plugin.settings.cycleTaskB || "" : "";
+      let aiRequestInFlight = false;
+      const clearAiResult = ()=> aiResult.setText("");
+      aiTaskA.addEventListener("input", clearAiResult);
+      aiTaskB.addEventListener("input", clearAiResult);
+      const runAiHeterogeneityCheck = async()=> {
+        if (aiRequestInFlight) return;
+        const taskA = aiTaskA.value.trim();
+        const taskB = aiTaskB.value.trim();
+        if (!taskA || !taskB) {
+          aiResult.setText("请先选择或输入两件事。");
+          return;
+        }
+        aiRequestInFlight = true;
+        aiCheckBtn.disabled = true;
+        aiCheckBtn.setText("判断中…");
+        aiResult.setText("正在请求模型…");
+        try {
+          const assessment = await this.plugin.assessTaskHeterogeneity(taskA, taskB);
+          const label = assessment.verdict === "heterogeneous"
+            ? "较异质"
+            : assessment.verdict === "not_heterogeneous" ? "不太异质" : "信息不足";
+          aiResult.setText(`判断：${label}。${assessment.reason}`);
+        } catch (error) {
+          logViewError(this.plugin, "ai-heterogeneity", error, "request");
+          const message = error instanceof Error && /^(请先|AI |无法|模型|事情)/.test(error.message)
+            ? error.message : "AI 判断失败，请检查接口、模型和网络。";
+          aiResult.setText(message);
+        } finally {
+          aiRequestInFlight = false;
+          aiCheckBtn.disabled = false;
+          aiCheckBtn.setText("判断是否异质");
+        }
+      };
+      aiCheckBtn.onclick = event=> this.plugin.runUserCommand(runAiHeterogeneityCheck, event);
+
       // 操作按钮
       const actions = container.createDiv({ cls:"pmd-actions" });
       const startBtn = actions.createEl("button", { text:"开始专注", cls:"pmd-btn pmd-btn-primary", attr:{ type:"button" } });
@@ -368,6 +422,7 @@ class PomodoroView extends ItemView {
         this._fillTaskOptions(taskList, snap.unchecked);
         this._fillTaskOptions(cycleTaskListA, snap.unchecked);
         this._fillTaskOptions(cycleTaskListB, snap.unchecked);
+        this._fillTaskOptions(aiTaskList, snap.unchecked);
         sumEl.setText(`今日累计：${formatTomatoNumber(snap.sum)}🍅`);
         this.plugin.broadcast();
       };

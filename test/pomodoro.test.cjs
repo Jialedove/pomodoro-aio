@@ -248,6 +248,37 @@ test("循环短休的下一槽位在重载后仍可恢复", async () => {
   assert.equal(pendingRest.runtime.breakContinuation.taskName, "A");
 });
 
+test("AI 异质性检查只委托顾问，不改变计时运行态", async () => {
+  const plugin = createPlugin({
+    settings: {
+      aiAdvisorEndpoint: "https://example.test/v1/chat/completions",
+      aiAdvisorApiKey: "secret",
+      aiAdvisorModel: "test-model"
+    }
+  });
+  const runtimeBefore = JSON.parse(JSON.stringify(plugin.runtime));
+  let received;
+  plugin.complementarityAdvisor = {
+    assess: async (...args) => {
+      received = args;
+      return { verdict: "not_heterogeneous", reason: "两件事都需要连续屏幕研究。" };
+    }
+  };
+
+  const result = await plugin.assessTaskHeterogeneity("查论文", "整理参考文献");
+  assert.deepEqual(result, { verdict: "not_heterogeneous", reason: "两件事都需要连续屏幕研究。" });
+  assert.deepEqual(received, [
+    {
+      endpoint: "https://example.test/v1/chat/completions",
+      apiKey: "secret",
+      model: "test-model"
+    },
+    "查论文",
+    "整理参考文献"
+  ]);
+  assert.deepEqual(plugin.runtime, runtimeBefore);
+});
+
 test("待确认休息使用持久化时长，不受设置修改影响", async () => {
   const clock = new FakeClock(150_000);
   const plugin = createPlugin({

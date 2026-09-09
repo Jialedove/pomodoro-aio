@@ -2,7 +2,7 @@
 // 变更点：项目下拉在任务上方；项目下拉后有“打开项目”；右上角新增“打开当日日记”按钮；左侧 Ribbon 加图标。
 
 const {
-  Plugin, Notice, TFile, getFrontMatterInfo, parseYaml, normalizePath
+  Plugin, Notice, TFile, getFrontMatterInfo, parseYaml, normalizePath, requestUrl
 } = require('obsidian');
 const {
   parseHHMMToMinutes,
@@ -36,6 +36,7 @@ const {
 } = require("./core/settlement");
 const { RuntimeStore, cloneValue } = require("./services/runtime-store");
 const { DailyRepository, ProjectRepository } = require("./services/repositories");
+const { ComplementarityAdvisor } = require("./services/complementarity-advisor");
 const { PomodoroView } = require("./ui/pomodoro-view");
 const { PomodoroSettingTab } = require("./ui/settings-tab");
 const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/workspaces-plus");
@@ -114,6 +115,11 @@ const DEFAULT_SETTINGS = {
   cycleMinB: 15,
   cycleWorkspaceCommandB: "",
   cycleBreakEvery: 0,
+
+  // AI 异质性顾问：使用用户配置的 OpenAI 兼容 Chat Completions 接口
+  aiAdvisorEndpoint: "",
+  aiAdvisorApiKey: "",
+  aiAdvisorModel: "",
 
   // 兼容性
   respectModalInputFocus: true
@@ -201,6 +207,9 @@ function normalizeSettings(raw={}, fallback=DEFAULT_SETTINGS) {
     ? Math.round(cycleBreakEveryValue) : cycleBreakEveryFallback;
   if (!has("cycleBreakEvery") && has("cycleBreakEnabled")) result.cycleBreakEvery = source.cycleBreakEnabled === true ? 1 : 0;
   delete result.cycleBreakEnabled;
+  for (const key of ["aiAdvisorEndpoint", "aiAdvisorApiKey", "aiAdvisorModel"]) {
+    result[key] = String(has(key) ? source[key] : base[key] || "").trim();
+  }
   result.dayStartHHMM = has("dayStartHHMM") && isValidHHMM(source.dayStartHHMM)
     ? source.dayStartHHMM : (isValidHHMM(base.dayStartHHMM) ? base.dayStartHHMM : DEFAULT_SETTINGS.dayStartHHMM);
   result.workMode = source.workMode === "cycle" || (!has("workMode") && base.workMode === "cycle") ? "cycle" : "standard";
@@ -537,6 +546,8 @@ class PomodoroAIO extends Plugin {
     this.projectRepository = null;
     /** @type {InstanceType<typeof WorkspacesPlusAdapter> | null} */
     this.workspacesPlus = null;
+    /** @type {InstanceType<typeof ComplementarityAdvisor> | null} */
+    this.complementarityAdvisor = null;
     /** @type {ObsidianElement | null} */
     this.ribbon = null;
     /** @type {ObsidianElement | null} */
@@ -1834,6 +1845,18 @@ class PomodoroAIO extends Plugin {
       statusKey: this.settings.projectStatusKey,
       statusWhitelist: this.settings.projectStatusWhitelist
     });
+  }
+  _getComplementarityAdvisor(){
+    if (!this.complementarityAdvisor) this.complementarityAdvisor = new ComplementarityAdvisor({ requestUrl });
+    return this.complementarityAdvisor;
+  }
+  /** @param {unknown} taskA @param {unknown} taskB */
+  async assessTaskHeterogeneity(taskA, taskB){
+    return this._getComplementarityAdvisor().assess({
+      endpoint:this.settings.aiAdvisorEndpoint,
+      apiKey:this.settings.aiAdvisorApiKey,
+      model:this.settings.aiAdvisorModel
+    }, taskA, taskB);
   }
   /** @param {unknown} name */
   setCurrentTaskName(name){

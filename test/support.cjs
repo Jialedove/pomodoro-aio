@@ -204,6 +204,7 @@ function loadPomodoro() {
         getFrontMatterInfo,
         parseYaml,
         normalizePath,
+        requestUrl: async () => { throw new Error("requestUrl 未配置"); },
         ItemView: FakeItemView,
         PluginSettingTab: FakePluginSettingTab,
         Setting: FakeSetting
@@ -252,7 +253,10 @@ const BASE_SETTINGS = {
   cycleTaskB: "",
   cycleMinB: 15,
   cycleWorkspaceCommandB: "",
-  cycleBreakEvery: 0
+  cycleBreakEvery: 0,
+  aiAdvisorEndpoint: "",
+  aiAdvisorApiKey: "",
+  aiAdvisorModel: ""
 };
 
 const BASE_RUNTIME = {

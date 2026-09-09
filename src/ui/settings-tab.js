@@ -50,6 +50,17 @@ class PomodoroSettingTab extends PluginSettingTab {
     new Setting(c).setName("完成多少轮后提示短休").setDesc("以 A→B 为一轮；达到次数后只等待你点击开始短休，0 表示关闭，时长使用上方的“短休时长”")
       .addText(t=>t.setValue(String(s.cycleBreakEvery || 0)).onChange(v=>this.plugin.setCycleConfig({cycleBreakEvery:Math.max(0, Math.round(Number(v) || 0))})));
 
+    c.createEl("h3", { text:"AI 异质性检查" });
+    new Setting(c).setName("AI 接口地址").setDesc("OpenAI 兼容的 Chat Completions 完整 URL；只会发送你在侧栏选择的两件事")
+      .addText(t=>t.setPlaceholder("https://…/v1/chat/completions").setValue(s.aiAdvisorEndpoint || "").onChange(v=>set({aiAdvisorEndpoint:v})));
+    new Setting(c).setName("AI 模型名")
+      .addText(t=>t.setPlaceholder("你的模型名").setValue(s.aiAdvisorModel || "").onChange(v=>set({aiAdvisorModel:v})));
+    new Setting(c).setName("AI API 密钥").setDesc("可留空以支持本地无鉴权服务；密钥保存在本插件的本地设置文件中")
+      .addText(t=>{
+        t.inputEl.type = "password";
+        t.setValue(s.aiAdvisorApiKey || "").onChange(v=>set({aiAdvisorApiKey:v}));
+      });
+
     c.createEl("h3", { text:"一天起止 & 当日日记" });
     new Setting(c).setName("一天开始时间（HH:MM）").setDesc("例：04:00；在 04:00 前完成的番茄记在前一天")
       .addText(t=>t.setValue(s.dayStartHHMM).onChange(v=>set({dayStartHHMM: v || "00:00"})));

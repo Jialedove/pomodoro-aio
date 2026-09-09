@@ -82,6 +82,10 @@
 .pmd-cycle-duration { align-self: start; display: flex; align-items: center; gap: 4px; min-width: 0; }
 .pmd-cycle-min { width: 64px; min-width: 0; }
 .pmd-cycle-unit { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.pmd-ai-advisor { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--background-modifier-border); }
+.pmd-ai-heading { margin: 0 0 4px; font-size: 13px; }
+.pmd-ai-hint, .pmd-ai-result { margin-top: 6px; color: var(--text-muted); font-size: 12px; line-height: 1.45; white-space: pre-wrap; }
+.pmd-ai-result { min-height: 18px; color: var(--text-normal); }
 .pmd-hidden { display: none; }
 @container (max-width: 320px) {
   .pmd-head .pmd-btn { margin-left: 0; width: 100%; }

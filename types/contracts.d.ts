@@ -2,6 +2,7 @@ export type TimerStatus = "idle" | "running" | "paused" | "awaiting" | "settling
 export type TimerStage = "focus" | "break";
 export type WorkMode = "standard" | "cycle";
 export type CycleSlot = 0 | 1;
+export type HeterogeneityVerdict = "heterogeneous" | "not_heterogeneous" | "uncertain";
 
 export interface Settings {
   [key: string]: any;
@@ -49,8 +50,22 @@ export interface Settings {
   cycleMinB: number;
   cycleWorkspaceCommandB: string;
   cycleBreakEvery: number;
+  aiAdvisorEndpoint: string;
+  aiAdvisorApiKey: string;
+  aiAdvisorModel: string;
   respectModalInputFocus: boolean;
   schemaVersion?: number;
+}
+
+export interface AiAdvisorConfig {
+  endpoint: string;
+  apiKey: string;
+  model: string;
+}
+
+export interface HeterogeneityAssessment {
+  verdict: HeterogeneityVerdict;
+  reason: string;
 }
 
 export interface Attention {

@@ -28,6 +28,22 @@ declare module "obsidian" {
 
   export function normalizePath(path: string): string;
 
+  export interface RequestUrlParam {
+    url: string;
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    throw?: boolean;
+  }
+
+  export interface RequestUrlResponse {
+    status: number;
+    text: string;
+    json: any;
+  }
+
+  export function requestUrl(param: RequestUrlParam): Promise<RequestUrlResponse>;
+
   export class ItemView {
     app: any;
     containerEl: ObsidianElement;
@@ -53,6 +69,7 @@ declare module "obsidian" {
   export class TextComponent {
     inputEl: HTMLInputElement;
     setValue(value: string): this;
+    setPlaceholder(value: string): this;
     onChange(callback: (value: string) => any): this;
   }
 
