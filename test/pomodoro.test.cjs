@@ -111,6 +111,23 @@ test("同名未完成日记任务时不会猜测勾选或清空选择", async ()
   assert.equal(plugin.settings.taskBlackoutEnabled, true);
 });
 
+test("重复任务行会在结束运行中的专注前被拒绝", async () => {
+  const clock = new FakeClock(1_000_000);
+  const vault = new FakeVault({ "Daily/today.md": "- [ ] 重复 0🍅\n- [ ] 重复 1🍅\n" });
+  const plugin = createPlugin({
+    vault,
+    runtime: {
+      status:"running", stage:"focus", startedAtMs:clock.now() - 5 * 60 * 1000,
+      durationMs:25 * 60 * 1000, currentTaskName:"重复"
+    }
+  });
+
+  assert.equal(await clock.run(() => silenceConsoleError(() => plugin.completeTask())), false);
+  assert.equal(plugin.runtime.status, "running");
+  assert.equal(plugin.runtime.stage, "focus");
+  assert.equal(vault.getAbstractFileByPath("Daily/today.md").content, "- [ ] 重复 0🍅\n- [ ] 重复 1🍅\n");
+});
+
 test("日记外部勾选会清空关联普通与循环任务选择", async () => {
   const vault = new FakeVault({ "Daily/today.md": "- [x] 普通 0🍅\n- [x] A 0🍅\n- [ ] B 0🍅\n" });
   const plugin = createPlugin({

@@ -15,6 +15,7 @@ const {
 const {
   getTomatoSum,
   stripBaseName,
+  planTaskLineCompletion,
   settlementConflict
 } = require("./core/task-lines");
 const {
@@ -1287,11 +1288,17 @@ class PomodoroAIO extends Plugin {
       new Notice("当前正在执行另一循环项，无法完成同名任务");
       return false;
     }
-    if (!(await this.settleOrEndActiveTaskForCompletion(task, cycleSlot))) {
-      new Notice("当前专注尚未安全结算，任务没有标记完成");
-      return false;
-    }
     try {
+      const daily = this._getDailyRepository();
+      const current = await daily.readPath(this.todayFilePath());
+      if (!daily.isFile(current.file)) throw new Error("找不到当天任务文件");
+      // Reject missing or ambiguous checkboxes before ending a running focus.
+      // The atomic write below checks again in case the note changes meanwhile.
+      planTaskLineCompletion(current.text, task);
+      if (!(await this.settleOrEndActiveTaskForCompletion(task, cycleSlot))) {
+        new Notice("当前专注尚未安全结算，任务没有标记完成");
+        return false;
+      }
       await this._getDailyRepository().completeTask({ taskName:task, path:this.todayFilePath() });
       await this.clearCompletedTaskSelection(task, cycleSlot);
       new Notice("任务已完成，日记与任务选择已同步");

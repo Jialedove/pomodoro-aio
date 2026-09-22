@@ -161,7 +161,7 @@
 }
 .pmd-blackout-content { display: grid; justify-items: center; gap: 12px; max-width: min(88vw, 720px); text-align: center; }
 .pmd-blackout-label { color: rgba(255,255,255,.72); font-size: 14px; letter-spacing: .08em; text-wrap: pretty; }
-.pmd-blackout-title { color: #fff; font-size: clamp(48px, 10vw, 112px); font-weight: 700; letter-spacing: -.04em; line-height: 1; text-wrap: balance; }
+.pmd-blackout-title { color: #fff; font-size: clamp(48px, 10vw, 112px); font-weight: 700; letter-spacing: -.04em; line-height: 1; text-wrap: balance; overflow-wrap: anywhere; }
 .pmd-blackout-time { color: rgba(255,255,255,.86); font-size: clamp(32px, 8vw, 72px); font-variant-numeric: tabular-nums; }
 .pmd-blackout-exit {
   padding: 7px 12px;

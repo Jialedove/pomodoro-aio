@@ -367,11 +367,15 @@ class PomodoroView extends ItemView {
         const taskInput = cycleSlot === 0 ? cycleTaskA : cycleTaskB;
         const workspaceInput = cycleSlot === 0 ? cycleWorkspaceA : cycleWorkspaceB;
         if (!isCompletedTaskDraft(taskInput.value, completion?.taskName)) return;
+        const hadPendingCycleSave = cycleSaveTimer !== null;
         if (cycleSaveTimer) window.clearTimeout(cycleSaveTimer);
         cycleSaveTimer = null;
         taskInput.value = "";
         workspaceInput.value = "";
         workspaceInput.dataset.commandId = "";
+        // Preserve edits queued for the other cycle slot while preventing the
+        // completed task from being written back by the pending debounce.
+        if (hadPendingCycleSave) saveCycleConfig();
       };
       this.app.workspace.on("pomodoro:aio-task-selection-cleared", onTaskSelectionCleared);
       this.disposers.push(()=> this.app.workspace.off("pomodoro:aio-task-selection-cleared", onTaskSelectionCleared));

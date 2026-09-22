@@ -44,6 +44,16 @@ function formatBlackoutTime(seconds) {
   return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
 }
 
+/** @param {Record<string, any>} runtime @param {Record<string, any> | null | undefined} settings */
+function blackoutPrompt(runtime, settings) {
+  if (runtime.stage === TIMER_STAGE.BREAK) return { label:"现在应该做什么", title:"休息一下" };
+  const configuredTask = runtime.mode === "cycle"
+    ? (runtime.cycleSlot === 1 ? settings?.cycleTaskB : settings?.cycleTaskA)
+    : settings?.defaultTaskName;
+  const task = String(runtime.currentTaskName || configuredTask || "").trim();
+  return { label:"现在应该做什么", title:task || "专注当前任务" };
+}
+
 class BreakBlackoutController {
   /** @param {{document:Document, onDismiss?:()=>void, now?:()=>number, finishDurationMs?:number}} options */
   constructor({ document, onDismiss, now=()=>Date.now(), finishDurationMs=320 }) {
@@ -55,6 +65,10 @@ class BreakBlackoutController {
     this.overlay = null;
     /** @type {HTMLElement | null} */
     this.timeEl = null;
+    /** @type {HTMLElement | null} */
+    this.labelEl = null;
+    /** @type {HTMLElement | null} */
+    this.titleEl = null;
     this.dismissedKey = "";
     this.finishedKey = "";
     this.fullscreenRequested = false;
@@ -68,8 +82,8 @@ class BreakBlackoutController {
     };
   }
 
-  /** @param {Record<string, any>} runtime @param {number} leftSec */
-  show(runtime, leftSec) {
+  /** @param {Record<string, any>} runtime @param {Record<string, any> | null | undefined} settings @param {number} leftSec */
+  show(runtime, settings, leftSec) {
     if (!this.overlay) {
       const overlay = this.document.createElement("div");
       overlay.className = "pmd-blackout-overlay";
@@ -80,12 +94,10 @@ class BreakBlackoutController {
       content.className = "pmd-blackout-content";
       const label = this.document.createElement("div");
       label.className = "pmd-blackout-label";
-      label.textContent = "现在离开电脑，做一件不看屏幕的事";
       const time = this.document.createElement("div");
       time.className = "pmd-blackout-time";
       const title = this.document.createElement("div");
       title.className = "pmd-blackout-title";
-      title.textContent = "离开电脑";
       const exit = this.document.createElement("button");
       exit.className = "pmd-blackout-exit";
       exit.type = "button";
@@ -103,8 +115,13 @@ class BreakBlackoutController {
       this.document.body.appendChild(overlay);
       this.document.addEventListener("keydown", this._onKeydown, true);
       this.overlay = overlay;
+      this.labelEl = label;
+      this.titleEl = title;
       this.timeEl = time;
     }
+    const prompt = blackoutPrompt(runtime, settings);
+    if (this.labelEl) this.labelEl.textContent = prompt.label;
+    if (this.titleEl) this.titleEl.textContent = prompt.title;
     if (this.timeEl) this.timeEl.textContent = formatBlackoutTime(leftSec);
     const key = blackoutKey(runtime);
     if (leftSec <= 0 && this.finishedKey !== key) {
@@ -126,6 +143,8 @@ class BreakBlackoutController {
     if (this.overlay) this.overlay.remove();
     this.document.removeEventListener("keydown", this._onKeydown, true);
     this.overlay = null;
+    this.labelEl = null;
+    this.titleEl = null;
     this.timeEl = null;
   }
 
@@ -200,7 +219,7 @@ class BreakBlackoutController {
       this.hide();
       return false;
     }
-    this.show(/** @type {Record<string, any>} */ (runtime), leftSec);
+    this.show(/** @type {Record<string, any>} */ (runtime), settings, leftSec);
     return true;
   }
 
@@ -222,6 +241,7 @@ function shouldShowBreakBlackout(runtime, enabled) {
 module.exports = {
   BreakBlackoutController,
   formatBlackoutTime,
+  blackoutPrompt,
   shouldShowBlackout,
   shouldShowBreakBlackout,
   getBlackoutCapability

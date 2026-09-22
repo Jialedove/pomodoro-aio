@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const {
   BreakBlackoutController,
   formatBlackoutTime,
+  blackoutPrompt,
   shouldShowBreakBlackout,
   shouldShowBlackout,
   getBlackoutCapability
@@ -71,6 +72,20 @@ test("专注黑屏按普通任务和循环任务的独立开关显示", () => {
   assert.equal(shouldShowBlackout(breakRuntime({ stage:"focus", mode:"cycle", cycleSlot:0 }), { cycleTaskBlackoutA:true }), true);
   assert.equal(shouldShowBlackout(breakRuntime({ stage:"focus", mode:"cycle", cycleSlot:1 }), { cycleTaskBlackoutB:true }), true);
   assert.equal(shouldShowBlackout(breakRuntime({ stage:"focus", mode:"cycle", cycleSlot:1 }), { cycleTaskBlackoutA:true }), false);
+});
+
+test("黑屏显示当前任务名，而不是固定的离开电脑提示", () => {
+  const document = new FakeDocument();
+  const controller = new BreakBlackoutController({ document });
+  const standard = breakRuntime({ stage:"focus", currentTaskName:"写研究提纲", sessionId:"focus-1" });
+  assert.deepEqual(blackoutPrompt(standard, {}), { label:"现在应该做什么", title:"写研究提纲" });
+  controller.sync(standard, { taskBlackoutEnabled:true }, 90);
+  assert.equal(controller.labelEl.textContent, "现在应该做什么");
+  assert.equal(controller.titleEl.textContent, "写研究提纲");
+  controller.sync(breakRuntime({ stage:"focus", mode:"cycle", cycleSlot:1, currentTaskName:"", sessionId:"focus-2" }), { cycleTaskBlackoutB:true, cycleTaskB:"阅读材料" }, 80);
+  assert.equal(controller.titleEl.textContent, "阅读材料");
+  controller.sync(breakRuntime(), { breakBlackoutEnabled:true }, 60);
+  assert.equal(controller.titleEl.textContent, "休息一下");
 });
 
 test("结束倒计时只闪烁一次，并探测当前显示器全屏能力", async () => {
