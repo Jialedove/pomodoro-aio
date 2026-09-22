@@ -87,6 +87,25 @@
 .pmd-cycle-duration { align-self: start; display: flex; align-items: center; gap: 4px; min-width: 0; }
 .pmd-cycle-min { width: 64px; min-width: 0; }
 .pmd-cycle-unit { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.pmd-task-blackout-toggle {
+  align-self: start;
+  min-height: 28px;
+  padding: 4px 7px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.15;
+  cursor: pointer;
+}
+.pmd-task-blackout-toggle[aria-pressed="true"] {
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+}
+.pmd-task-blackout-toggle:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+.pmd-task-blackout-toggle:active { transform: scale(.96); }
 .pmd-hidden { display: none; }
 @container (max-width: 320px) {
   .pmd-head .pmd-btn { margin-left: 0; width: 100%; }
@@ -132,13 +151,15 @@
   z-index: 10000;
   display: grid;
   place-items: center;
-  color: rgba(255, 255, 255, 0.32);
+  color: #fff;
   background: #000;
   cursor: pointer;
+  -webkit-font-smoothing: antialiased;
 }
-.pmd-blackout-content { display: grid; justify-items: center; gap: 12px; }
-.pmd-blackout-label { font-size: 14px; letter-spacing: .12em; }
-.pmd-blackout-time { font-size: clamp(32px, 8vw, 72px); font-variant-numeric: tabular-nums; }
+.pmd-blackout-content { display: grid; justify-items: center; gap: 12px; max-width: min(88vw, 720px); text-align: center; }
+.pmd-blackout-label { color: rgba(255,255,255,.72); font-size: 14px; letter-spacing: .08em; text-wrap: pretty; }
+.pmd-blackout-title { color: #fff; font-size: clamp(48px, 10vw, 112px); font-weight: 700; letter-spacing: -.04em; line-height: 1; text-wrap: balance; }
+.pmd-blackout-time { color: rgba(255,255,255,.86); font-size: clamp(32px, 8vw, 72px); font-variant-numeric: tabular-nums; }
 .pmd-blackout-exit {
   padding: 7px 12px;
   color: rgba(255, 255, 255, 0.4);
@@ -149,6 +170,9 @@
 }
 .pmd-blackout-exit:hover,
 .pmd-blackout-exit:focus-visible { color: rgba(255, 255, 255, 0.8); border-color: rgba(255, 255, 255, 0.5); }
+.pmd-blackout-finished { animation: pmd-blackout-finish-flash 320ms ease-out 1; }
+@keyframes pmd-blackout-finish-flash { 0%, 100% { opacity: 1; } 45% { opacity: .84; } }
+@media (prefers-reduced-motion: reduce) { .pmd-blackout-finished { animation: none; } }
 @keyframes pomodoro-ribbon-pulse {
   0%,100% { opacity: 0.25; }
   50% { opacity: 1; }

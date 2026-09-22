@@ -120,6 +120,10 @@ class PomodoroView extends ItemView {
       let _suppressTaskSyncUntil = 0;
       // 内嵌清空（×）
       const clearTaskBtn = taskBox.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空任务名", 'aria-label':"清空任务名", type:"button" } });
+      const taskBlackoutBtn = taskWrap.createEl("button", {
+        text:"执行时黑屏", cls:"pmd-task-blackout-toggle",
+        attr:{ type:"button", "aria-label":"当前任务执行时黑屏", "aria-pressed":"false", title:"此任务执行时显示黑屏" }
+      });
       // Esc 清空
       taskInput.onkeydown = (e)=>{
         if (this.plugin.shouldBlockHotkeys(e, { allowInPluginInput:true })) return;
@@ -158,6 +162,10 @@ class PomodoroView extends ItemView {
       });
       const cycleTaskListA = cycleTaskWrapA.createEl("datalist", { attr:{ id:"pmdCycleTaskListA" } });
       const clearCycleTaskA = cycleTaskWrapA.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空任务名", "aria-label":"清空任务名", type:"button" } });
+      const cycleTaskBlackoutA = cycleFieldsA.createEl("button", {
+        text:"执行时黑屏", cls:"pmd-task-blackout-toggle",
+        attr:{ type:"button", "aria-label":"任务 A 执行时黑屏", "aria-pressed":"false", title:"任务 A 执行时显示黑屏" }
+      });
       const cycleWorkspaceWrapA = cycleFieldsA.createDiv({ cls:"pmd-input-wrap" });
       const cycleWorkspaceA = cycleWorkspaceWrapA.createEl("input", {
         type:"text",
@@ -183,6 +191,10 @@ class PomodoroView extends ItemView {
       });
       const cycleTaskListB = cycleTaskWrapB.createEl("datalist", { attr:{ id:"pmdCycleTaskListB" } });
       const clearCycleTaskB = cycleTaskWrapB.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空任务名", "aria-label":"清空任务名", type:"button" } });
+      const cycleTaskBlackoutB = cycleFieldsB.createEl("button", {
+        text:"执行时黑屏", cls:"pmd-task-blackout-toggle",
+        attr:{ type:"button", "aria-label":"任务 B 执行时黑屏", "aria-pressed":"false", title:"任务 B 执行时显示黑屏" }
+      });
       const cycleWorkspaceWrapB = cycleFieldsB.createDiv({ cls:"pmd-input-wrap" });
       const cycleWorkspaceB = cycleWorkspaceWrapB.createEl("input", {
         type:"text",
@@ -304,6 +316,7 @@ class PomodoroView extends ItemView {
         taskSaveTimer = window.setTimeout(saveTask, 180);
       };
       taskInput.onchange = saveTask;
+      taskBlackoutBtn.onclick = ()=> this.plugin.setTaskBlackoutEnabled(this.plugin.settings.taskBlackoutEnabled !== true);
       modeButton.onclick = ()=> {
         const next = this.plugin.settings.workMode === 'cycle' ? 'standard' : 'cycle';
         this.plugin.setWorkMode(next);
@@ -338,6 +351,8 @@ class PomodoroView extends ItemView {
         input.addEventListener('focus', ()=> _openDatalist(input));
         input.addEventListener('click', ()=> _openDatalist(input));
       });
+      cycleTaskBlackoutA.onclick = ()=> this.plugin.setCycleConfig({ cycleTaskBlackoutA: this.plugin.settings.cycleTaskBlackoutA !== true });
+      cycleTaskBlackoutB.onclick = ()=> this.plugin.setCycleConfig({ cycleTaskBlackoutB: this.plugin.settings.cycleTaskBlackoutB !== true });
       cycleRowA.ondblclick = (event)=> { if (!(event.target instanceof Element && event.target.closest("input, button, select"))) this.plugin.selectCycleSlot(0); };
       cycleRowB.ondblclick = (event)=> { if (!(event.target instanceof Element && event.target.closest("input, button, select"))) this.plugin.selectCycleSlot(1); };
       /** @param {Event | null | undefined} event */
@@ -392,6 +407,7 @@ class PomodoroView extends ItemView {
       openTodayBtn.onclick = event=> this.plugin.runUserCommand(() => this.plugin.openToday(), event);
       longBtn.onclick = event=> this.plugin.runUserCommand(() => {
         const minutes = ensureLongValue();
+        this.plugin.requestTaskBlackoutFullscreen();
         return this.plugin.startFocus({ cause:'manual', minutes });
       }, event);
 
@@ -399,13 +415,16 @@ class PomodoroView extends ItemView {
         const snap = this.plugin.snapshot();
         if (snap.runtime.status === TIMER_STATUS.PAUSED) return this.plugin.togglePause(true);
         if (snap.runtime.attention && !snap.runtime.attention.nextStarted) {
+          if (snap.runtime.attention.type === TIMER_STAGE.BREAK) this.plugin.requestBreakBlackoutFullscreen();
           return this.plugin.startPendingStage();
         }
         if (this.plugin.settings.workMode === 'cycle') {
           saveCycleConfig();
+          this.plugin.requestTaskBlackoutFullscreen({ cycle:true, cycleSlot:snap.runtime.cycleSlot });
           return this.plugin.startCycle();
         } else {
           saveTask();
+          this.plugin.requestTaskBlackoutFullscreen();
           return this.plugin.startFocus({ cause:'manual' });
         }
       }, event);
@@ -437,8 +456,11 @@ class PomodoroView extends ItemView {
 
         const renderKey = [
           cycleMode, s.showProjectSelector, s.currentProjectPath, s.dailyGoal,
+          s.taskBlackoutEnabled,
           s.cycleTaskA, s.cycleMinA, s.cycleWorkspaceCommandA,
+          s.cycleTaskBlackoutA,
           s.cycleTaskB, s.cycleMinB, s.cycleWorkspaceCommandB,
+          s.cycleTaskBlackoutB,
           r.status, r.stage, JSON.stringify(r.attention), r.mode, r.cycleSlot,
           r.sessionCount, r.currentTaskName,
           r.longFocusMinutes, this._todaySumCache
@@ -459,6 +481,14 @@ class PomodoroView extends ItemView {
         taskWrap.classList.toggle('pmd-hidden', cycleMode);
         longWrap.classList.toggle('pmd-hidden', cycleMode);
         cycleWrap.classList.toggle('pmd-hidden', !cycleMode);
+        /** @param {HTMLElement} button @param {boolean} enabled */
+        const setBlackoutPressed = (button, enabled)=> {
+          button.setAttribute("aria-pressed", String(enabled));
+          button.setAttribute("title", enabled ? "执行时会显示黑屏；点击关闭" : "执行时不显示黑屏；点击开启");
+        };
+        setBlackoutPressed(taskBlackoutBtn, s.taskBlackoutEnabled === true);
+        setBlackoutPressed(cycleTaskBlackoutA, s.cycleTaskBlackoutA === true);
+        setBlackoutPressed(cycleTaskBlackoutB, s.cycleTaskBlackoutB === true);
         const modeLocked = r.status !== TIMER_STATUS.IDLE || !!r.attention;
         modeButton.disabled = modeLocked;
         modeButton.setText(cycleMode ? "循环工作" : "普通专注");

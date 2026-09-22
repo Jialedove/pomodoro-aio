@@ -111,15 +111,18 @@ const DEFAULT_SETTINGS = {
   focusStartCommandId: "",
   breakStartCommandId: "",
   breakBlackoutEnabled: false,
+  taskBlackoutEnabled: false,
 
   // 循环工作：两项任务交替；可选地在若干完整 A→B 轮次后提示短休
   workMode: "standard",
   cycleTaskA: "",
   cycleMinA: 15,
   cycleWorkspaceCommandA: "",
+  cycleTaskBlackoutA: false,
   cycleTaskB: "",
   cycleMinB: 15,
   cycleWorkspaceCommandB: "",
+  cycleTaskBlackoutB: false,
   cycleBreakEvery: 0,
 
   // 兼容性
@@ -224,7 +227,7 @@ function normalizeSettings(raw={}, fallback=DEFAULT_SETTINGS) {
     ? (tryNormalizeMarkdownPath(projectPath) || "")
     : "";
   result.captureHeading = normalizeCaptureHeading(has("captureHeading") ? source.captureHeading : base.captureHeading);
-  for (const key of ["autoNext", "projectEnable", "showProjectSelector", "enableSound", "enableNotify", "persistentAlertSound", "ribbonClickAutoNext", "allowCreateDaily", "allowAutoCreateTask", "respectModalInputFocus", "breakBlackoutEnabled"]) {
+  for (const key of ["autoNext", "projectEnable", "showProjectSelector", "enableSound", "enableNotify", "persistentAlertSound", "ribbonClickAutoNext", "allowCreateDaily", "allowAutoCreateTask", "respectModalInputFocus", "breakBlackoutEnabled", "taskBlackoutEnabled", "cycleTaskBlackoutA", "cycleTaskBlackoutB"]) {
     if (typeof source[key] !== "boolean") result[key] = base[key];
   }
   return result;
@@ -852,7 +855,18 @@ class PomodoroAIO extends Plugin {
     const controller = this._getBreakBlackoutController();
     if (!controller) return false;
     const snap = snapshot || this.snapshot();
-    return controller.sync(snap.runtime, snap.settings.breakBlackoutEnabled, snap.runtime.leftSec ?? this.getLeftSec());
+    return controller.sync(snap.runtime, snap.settings, snap.runtime.leftSec ?? this.getLeftSec());
+  }
+  /** @param {{cycle?:boolean, cycleSlot?:number}} [options] */
+  requestTaskBlackoutFullscreen(options={}){
+    const enabled = options.cycle
+      ? (options.cycleSlot === 1 ? this.settings.cycleTaskBlackoutB : this.settings.cycleTaskBlackoutA)
+      : this.settings.taskBlackoutEnabled;
+    return enabled === true && this._getBreakBlackoutController()?.requestCurrentDisplayFullscreen() === true;
+  }
+  requestBreakBlackoutFullscreen(){
+    return this.settings.breakBlackoutEnabled === true
+      && this._getBreakBlackoutController()?.requestCurrentDisplayFullscreen() === true;
   }
   snapshot(){
     const leftMs = this.getLeftMs();
@@ -1931,6 +1945,11 @@ class PomodoroAIO extends Plugin {
   /** @param {Partial<Settings>} patch */
   setCycleConfig(patch){
     this.settings = normalizeSettings({ ...this.settings, ...patch }, this.settings);
+    this.saveSettings(); this.broadcast();
+  }
+  /** @param {unknown} enabled */
+  setTaskBlackoutEnabled(enabled){
+    this.settings = normalizeSettings({ ...this.settings, taskBlackoutEnabled: enabled === true }, this.settings);
     this.saveSettings(); this.broadcast();
   }
   /** @param {unknown} slot */

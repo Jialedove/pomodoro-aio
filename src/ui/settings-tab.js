@@ -85,7 +85,7 @@ class PomodoroSettingTab extends PluginSettingTab {
       .addToggle(t=>t.setValue(s.respectModalInputFocus !== false).onChange(v=>set({ respectModalInputFocus: v })));
 
     c.createEl("h3", { text:"提醒与可视化" });
-    new Setting(c).setName("休息时黑屏").setDesc("休息真正开始后遮住 Obsidian 主窗口；Esc 或点击可退出遮罩，计时仍继续")
+    new Setting(c).setName("休息时黑屏").setDesc("休息真正开始后遮住 Obsidian 窗口；Esc 或点击可退出遮罩，计时仍继续")
       .addToggle(t=>t.setValue(s.breakBlackoutEnabled === true).onChange(v=>set({breakBlackoutEnabled:v})));
     new Setting(c).setName("启用系统通知").addToggle(t=>t.setValue(s.enableNotify).onChange(v=>set({enableNotify:v})));
     new Setting(c).setName("启用蜂鸣音").addToggle(t=>t.setValue(s.enableSound).onChange(v=>{

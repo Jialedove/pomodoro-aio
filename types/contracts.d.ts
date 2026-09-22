@@ -44,13 +44,16 @@ export interface Settings {
   focusStartCommandId: string;
   breakStartCommandId: string;
   breakBlackoutEnabled: boolean;
+  taskBlackoutEnabled: boolean;
   workMode: WorkMode;
   cycleTaskA: string;
   cycleMinA: number;
   cycleWorkspaceCommandA: string;
+  cycleTaskBlackoutA: boolean;
   cycleTaskB: string;
   cycleMinB: number;
   cycleWorkspaceCommandB: string;
+  cycleTaskBlackoutB: boolean;
   cycleBreakEvery: number;
   respectModalInputFocus: boolean;
   schemaVersion?: number;

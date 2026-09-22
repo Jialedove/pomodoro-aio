@@ -1,10 +1,41 @@
 const { TIMER_STATUS, TIMER_STAGE } = require("../core/timer");
 
-/** @param {Record<string, any> | null | undefined} runtime @param {unknown} enabled */
-function shouldShowBreakBlackout(runtime, enabled) {
-  return enabled === true
-    && runtime?.stage === TIMER_STAGE.BREAK
-    && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(runtime?.status);
+/**
+ * Obsidian plugins run in Electron's renderer process. BrowserWindow is a main
+ * process API and Obsidian exposes no supported bridge for a plugin to create
+ * another always-on-top window. Keep the limitation explicit rather than
+ * attempting an unsupported `require("electron").BrowserWindow` call.
+ */
+/** @param {Document | null | undefined} document */
+function getBlackoutCapability(document) {
+  return {
+    scope: "obsidian-window",
+    canCoverOtherApps: false,
+    canRequestCurrentDisplayFullscreen: typeof document?.documentElement?.requestFullscreen === "function",
+    reason: "Obsidian 插件只能安全操作当前渲染窗口，不能创建独立的置顶全屏 Electron 窗口。"
+  };
+}
+
+/** @param {Record<string, any> | null | undefined} runtime @param {Record<string, any> | null | undefined} settings */
+function shouldShowBlackout(runtime, settings) {
+  const active = /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(runtime?.status);
+  if (!active) return false;
+  if (runtime?.stage === TIMER_STAGE.BREAK) return settings?.breakBlackoutEnabled === true;
+  if (runtime?.stage !== TIMER_STAGE.FOCUS) return false;
+  if (runtime?.mode === "cycle") return runtime?.cycleSlot === 1
+    ? settings?.cycleTaskBlackoutB === true
+    : settings?.cycleTaskBlackoutA === true;
+  return settings?.taskBlackoutEnabled === true;
+}
+
+/** @param {Record<string, any> | null | undefined} runtime */
+function blackoutKey(runtime) {
+  if (!runtime?.stage) return "";
+  // A break has no persisted session id. Its phase stays the same across
+  // pause/resume while startedAtMs is deliberately reset, so do not use that
+  // mutable timestamp to decide whether a dismissed screen may reappear.
+  if (runtime.stage === TIMER_STAGE.BREAK) return "break:active";
+  return `${runtime.stage}:${runtime.sessionId || runtime.startedAtMs || "pending"}`;
 }
 
 /** @param {number} seconds */
@@ -22,7 +53,9 @@ class BreakBlackoutController {
     this.overlay = null;
     /** @type {HTMLElement | null} */
     this.timeEl = null;
-    this.dismissed = false;
+    this.dismissedKey = "";
+    this.finishedKey = "";
+    this.fullscreenRequested = false;
     this._onKeydown = (/** @type {KeyboardEvent} */ event) => {
       if (event.key !== "Escape" || !this.overlay) return;
       event.preventDefault();
@@ -37,23 +70,27 @@ class BreakBlackoutController {
       overlay.className = "pmd-blackout-overlay";
       overlay.setAttribute("role", "dialog");
       overlay.setAttribute("aria-modal", "true");
-      overlay.setAttribute("aria-label", "休息黑屏");
+      overlay.setAttribute("aria-label", "全屏专注提示");
       const content = this.document.createElement("div");
       content.className = "pmd-blackout-content";
       const label = this.document.createElement("div");
       label.className = "pmd-blackout-label";
-      label.textContent = "休息一下";
+      label.textContent = "现在离开电脑，做一件不看屏幕的事";
       const time = this.document.createElement("div");
       time.className = "pmd-blackout-time";
+      const title = this.document.createElement("div");
+      title.className = "pmd-blackout-title";
+      title.textContent = "离开电脑";
       const exit = this.document.createElement("button");
       exit.className = "pmd-blackout-exit";
       exit.type = "button";
-      exit.textContent = "退出黑屏（休息继续）";
+      exit.textContent = "立即退出（计时继续）";
       exit.onclick = event => {
         event.stopPropagation();
         this.dismiss();
       };
       content.appendChild(label);
+      content.appendChild(title);
       content.appendChild(time);
       content.appendChild(exit);
       overlay.appendChild(content);
@@ -64,12 +101,18 @@ class BreakBlackoutController {
       this.timeEl = time;
     }
     if (this.timeEl) this.timeEl.textContent = formatBlackoutTime(leftSec);
+    const key = blackoutKey(runtime);
+    if (leftSec <= 0 && this.finishedKey !== key) {
+      this.finishedKey = key;
+      this.overlay?.classList?.add?.("pmd-blackout-finished");
+    }
   }
 
   dismiss() {
     if (!this.overlay) return;
-    this.dismissed = true;
+    this.dismissedKey = blackoutKey(this.runtime);
     this.hide();
+    this.exitCurrentDisplayFullscreen();
     this.onDismiss();
   }
 
@@ -80,15 +123,49 @@ class BreakBlackoutController {
     this.timeEl = null;
   }
 
-  /** @param {Record<string, any> | null | undefined} runtime @param {unknown} enabled @param {number} leftSec */
-  sync(runtime, enabled, leftSec) {
-    const remainsBreakStage = runtime?.stage === TIMER_STAGE.BREAK;
-    if (!remainsBreakStage) this.dismissed = false;
-    if (!shouldShowBreakBlackout(runtime, enabled)) {
+  /**
+   * Must be called synchronously from a direct user gesture. It only makes the
+   * current Obsidian window fullscreen; it cannot cover another application.
+   */
+  requestCurrentDisplayFullscreen() {
+    const root = this.document?.documentElement;
+    if (!root || typeof root.requestFullscreen !== "function") return false;
+    try {
+      const requested = root.requestFullscreen({ navigationUI: "hide" });
+      requested?.catch?.(() => {});
+      this.fullscreenRequested = true;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  exitCurrentDisplayFullscreen() {
+    if (!this.fullscreenRequested) return false;
+    this.fullscreenRequested = false;
+    if (typeof this.document?.exitFullscreen !== "function") return false;
+    try {
+      const exited = this.document.exitFullscreen();
+      exited?.catch?.(() => {});
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** @param {Record<string, any> | null | undefined} runtime @param {Record<string, any> | null | undefined} settings @param {number} leftSec */
+  sync(runtime, settings, leftSec) {
+    this.runtime = runtime || null;
+    const key = blackoutKey(runtime);
+    if (!key || this.dismissedKey !== key) {
+      this.dismissedKey = "";
+      if (this.finishedKey && this.finishedKey !== key) this.finishedKey = "";
+    }
+    if (!shouldShowBlackout(runtime, settings)) {
       this.hide();
       return false;
     }
-    if (this.dismissed) {
+    if (this.dismissedKey === key) {
       this.hide();
       return false;
     }
@@ -98,8 +175,22 @@ class BreakBlackoutController {
 
   destroy() {
     this.hide();
-    this.dismissed = false;
+    this.exitCurrentDisplayFullscreen();
+    this.dismissedKey = "";
+    this.finishedKey = "";
+    this.runtime = null;
   }
 }
 
-module.exports = { BreakBlackoutController, formatBlackoutTime, shouldShowBreakBlackout };
+/** @param {Record<string, any> | null | undefined} runtime @param {unknown} enabled */
+function shouldShowBreakBlackout(runtime, enabled) {
+  return shouldShowBlackout(runtime, { breakBlackoutEnabled: enabled });
+}
+
+module.exports = {
+  BreakBlackoutController,
+  formatBlackoutTime,
+  shouldShowBlackout,
+  shouldShowBreakBlackout,
+  getBlackoutCapability
+};
