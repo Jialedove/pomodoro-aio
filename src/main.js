@@ -565,6 +565,11 @@ class PomodoroAIO extends Plugin {
     /** @type {unknown} */
     this._lastPersistenceError = null;
     this._completionInFlight = false;
+    /** @type {number | null} */
+    this._dailyCompletionSyncTimer = null;
+    this._dailyCompletionSyncBusy = false;
+    /** @type {any} */
+    this._dailyCompletionSyncRef = null;
     this._unloading = false;
     this._scheduleTick = () => {};
   }
@@ -618,8 +623,10 @@ class PomodoroAIO extends Plugin {
     this.addCommand({ id: 'pause-resume', name: '暂停/继续', callback: (evt)=> this.runUserCommand(()=> this.togglePause(), evt) });
     this.addCommand({ id: 'reset', name: '重置', callback: (evt)=> this.runUserCommand(()=> this.reset(), evt) });
     this.addCommand({ id: 'complete-now', name: '立刻结算当前专注（按实际时长）', callback: (evt)=> this.runUserCommand(()=> this.forceCompleteFocusOnce(), evt) });
+    this.addCommand({ id: 'complete-task', name: '完成当前任务并勾选日记待办', callback: (evt)=> this.runUserCommand(()=> this.completeTask(), evt) });
     this.addCommand({ id: 'open-today', name: '打开当日日记', callback: (evt)=> this.runUserCommand(()=> this.openToday(), evt) });
     this.addCommand({ id: 'quick-capture', name: '快速记录', callback: (evt)=> this.runUserCommand(()=> this.openQuickCaptureModal(), evt) });
+    this._registerDailyTaskCompletionSync();
 
     // 设置页
     this.addSettingTab(new PomodoroSettingTab(this.app, this, normalizeSettings));
@@ -656,6 +663,10 @@ class PomodoroAIO extends Plugin {
   }
   async onunload(){
     this._unloading = true;
+    if (this._dailyCompletionSyncTimer) window.clearTimeout(this._dailyCompletionSyncTimer);
+    this._dailyCompletionSyncTimer = null;
+    if (this._dailyCompletionSyncRef) this.app?.vault?.offref?.(this._dailyCompletionSyncRef);
+    this._dailyCompletionSyncRef = null;
     this.breakBlackout?.destroy();
     this.stopPersistentAlertSound();
     if (this._tickTimeout) window.clearTimeout(this._tickTimeout);
@@ -1237,6 +1248,84 @@ class PomodoroAIO extends Plugin {
     if (this._completionInFlight) { new Notice("正在结算当前专注"); return; }
     if (this.getElapsedMs() <= 0) { new Notice("尚未产生有效专注时长"); return; }
     await this.settleFocus(true);
+  }
+
+  /** @param {{cycleSlot?:0|1} | 0 | 1 | undefined} [options] */
+  async completeTask(options){
+    const cycleSlot = typeof options === "number"
+      ? (options === 1 ? 1 : 0)
+      : (options?.cycleSlot === 1 ? 1 : (options?.cycleSlot === 0 ? 0 : null));
+    const taskName = cycleSlot === 0
+      ? this.settings.cycleTaskA
+      : cycleSlot === 1
+        ? this.settings.cycleTaskB
+        : (this.runtime.currentTaskName || this.settings.defaultTaskName);
+    const task = String(taskName || "").trim();
+    if (!task) {
+      new Notice("请先选择要完成的任务");
+      return false;
+    }
+    const activeSameTask = this.runtime.stage === TIMER_STAGE.FOCUS
+      && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(this.runtime.status)
+      && String(this.runtime.currentTaskName || "").trim().toLowerCase() === task.toLowerCase();
+    if (activeSameTask && this.getElapsedMs() > 0) {
+      if (this._completionInFlight) {
+        new Notice("正在结算当前专注");
+        return false;
+      }
+      await this.settleFocus(true);
+      if (this.runtime.pendingSettlement || this.runtime.status === TIMER_STATUS.FAILED) {
+        new Notice("当前专注尚未安全结算，任务没有标记完成");
+        return false;
+      }
+    }
+    try {
+      await this._getDailyRepository().completeTask({ taskName:task, path:this.todayFilePath() });
+      await this.clearCompletedTaskSelection(task, cycleSlot);
+      new Notice("任务已完成，日记与任务选择已同步");
+      return true;
+    } catch (error) {
+      logPluginError("complete-task", error, { target:this.todayFilePath(), step:"daily-checkbox" });
+      const message = String(error instanceof Error ? error.message : error);
+      new Notice(message.includes("多个同名") ? message : "完成任务失败，请检查当日日记");
+      return false;
+    }
+  }
+
+  /** @param {string} task @param {0|1|null} cycleSlot */
+  async clearCompletedTaskSelection(task, cycleSlot){
+    const normalized = String(task || "").trim();
+    if (!normalized) return false;
+    /** @param {unknown} value */
+    const isSameTask = value => String(value || "").trim().toLowerCase() === normalized.toLowerCase();
+    let settingsChanged = false;
+    let runtimeChanged = false;
+    if (cycleSlot === 0 && isSameTask(this.settings.cycleTaskA)) {
+      Object.assign(this.settings, { cycleTaskA:"", cycleWorkspaceCommandA:"", cycleTaskBlackoutA:false });
+      settingsChanged = true;
+    } else if (cycleSlot === 1 && isSameTask(this.settings.cycleTaskB)) {
+      Object.assign(this.settings, { cycleTaskB:"", cycleWorkspaceCommandB:"", cycleTaskBlackoutB:false });
+      settingsChanged = true;
+    } else if (cycleSlot === null) {
+      if (isSameTask(this.settings.defaultTaskName)) {
+        this.settings.defaultTaskName = "";
+        settingsChanged = true;
+      }
+      if (this.settings.taskBlackoutEnabled) {
+        this.settings.taskBlackoutEnabled = false;
+        settingsChanged = true;
+      }
+      runtimeChanged = isSameTask(this.runtime.currentTaskName);
+    }
+    if (settingsChanged) await this.saveSettings();
+    if (runtimeChanged) {
+      const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.SET_TASK, name:"" });
+      await this.saveState({ critical:true });
+      this.runRuntimeEffects(effects);
+    } else if (settingsChanged) {
+      this.broadcast();
+    }
+    return settingsChanged || runtimeChanged;
   }
 
   /** @param {boolean} [manual] */
@@ -1877,6 +1966,46 @@ class PomodoroAIO extends Plugin {
     const sum = getTomatoSum(text);
     const unchecked = await this.listUncheckedTasksFromText(text);
     return { file, sum, unchecked };
+  }
+  _registerDailyTaskCompletionSync(){
+    if (this._dailyCompletionSyncRef || typeof this.app?.vault?.on !== "function") return;
+    /** @param {any} file */
+    const onModify = file => this.queueDailyTaskCompletionSync(file);
+    this._dailyCompletionSyncRef = this.app.vault.on("modify", onModify);
+  }
+  /** @param {{path?:unknown} | null | undefined} file */
+  queueDailyTaskCompletionSync(file){
+    if (this._unloading || String(file?.path || "") !== this.todayFilePath()) return;
+    if (this._dailyCompletionSyncTimer) window.clearTimeout(this._dailyCompletionSyncTimer);
+    this._dailyCompletionSyncTimer = window.setTimeout(() => {
+      this._dailyCompletionSyncTimer = null;
+      this.syncCompletedTaskSelections().catch(error => logPluginError("task-completion-sync", error, {
+        target:this.todayFilePath(), step:"read"
+      }));
+    }, 180);
+  }
+  async syncCompletedTaskSelections(){
+    if (this._dailyCompletionSyncBusy) return false;
+    this._dailyCompletionSyncBusy = true;
+    try {
+      const daily = this._getDailyRepository();
+      const file = daily.getFile(this.todayFilePath());
+      if (!daily.isFile(file)) return false;
+      const unchecked = new Set(daily.listUncheckedTasksFromText(await daily.read(file)).map(name => name.toLowerCase()));
+      /** @param {unknown} value */
+      const isCompleted = value => {
+        const task = String(value || "").trim();
+        return !!task && !unchecked.has(task.toLowerCase());
+      };
+      let changed = false;
+      if (isCompleted(this.runtime.currentTaskName)) changed = (await this.clearCompletedTaskSelection(this.runtime.currentTaskName, null)) || changed;
+      else if (isCompleted(this.settings.defaultTaskName)) changed = (await this.clearCompletedTaskSelection(this.settings.defaultTaskName, null)) || changed;
+      if (isCompleted(this.settings.cycleTaskA)) changed = (await this.clearCompletedTaskSelection(this.settings.cycleTaskA, 0)) || changed;
+      if (isCompleted(this.settings.cycleTaskB)) changed = (await this.clearCompletedTaskSelection(this.settings.cycleTaskB, 1)) || changed;
+      return changed;
+    } finally {
+      this._dailyCompletionSyncBusy = false;
+    }
   }
   /** @param {unknown} text @param {"todo"|"idea"} [kind] */
   async quickCapture(text, kind="todo"){

@@ -1,6 +1,7 @@
 const {
   getTomatoSum,
   stripBaseName,
+  planTaskLineCompletion,
   planTaskLineMutation,
   applyTaskLineMutation,
   settlementConflict
@@ -142,6 +143,21 @@ class DailyRepository {
       frontmatterError = error;
     }
     return { file, text, sum, frontmatterError };
+  }
+
+  /** @param {{taskName:unknown, path?:unknown}} input */
+  async completeTask({ taskName, path }) {
+    const targetPath = path ? normalizeMarkdownPath(path, normalizePath) : this._todayPath();
+    const file = this.getFile(targetPath);
+    if (!this.isFile(file)) throw new Error("找不到当天任务文件");
+    /** @type {{text:string, alreadyApplied:boolean}} */
+    let mutation = { text:"", alreadyApplied:false };
+    await this.process(file, current => {
+      const plan = planTaskLineCompletion(current, taskName);
+      mutation = applyTaskLineMutation(current, plan);
+      return mutation.text;
+    });
+    return { file, ...mutation };
   }
 
   /** @param {any} file @param {TaskMutationPlan} plan */

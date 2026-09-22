@@ -155,7 +155,7 @@ class PomodoroView extends ItemView {
       const cycleRowA = cycleWrap.createDiv({ cls:"pmd-cycle-row" });
       const cycleRoleA = cycleRowA.createSpan({ cls:"pmd-cycle-role", text:"当前" });
       const cycleFieldsA = cycleRowA.createDiv({ cls:"pmd-cycle-fields" });
-      const cycleTaskWrapA = cycleFieldsA.createDiv({ cls:"pmd-input-wrap" });
+      const cycleTaskWrapA = cycleFieldsA.createDiv({ cls:"pmd-input-wrap pmd-cycle-task-input" });
       const cycleTaskA = cycleTaskWrapA.createEl("input", {
         type:"text", cls:"pmd-input",
         attr:{ list:"pmdCycleTaskListA", placeholder:"任务 A", "aria-label":"循环任务 A" }
@@ -166,6 +166,7 @@ class PomodoroView extends ItemView {
         text:"执行时黑屏", cls:"pmd-task-blackout-toggle",
         attr:{ type:"button", "aria-label":"任务 A 执行时黑屏", "aria-pressed":"false", title:"任务 A 执行时显示黑屏" }
       });
+      const completeCycleTaskA = cycleTaskWrapA.createEl("button", { text:"完成", cls:"pmd-clear pmd-complete-cycle", attr:{ title:"完成任务 A", "aria-label":"完成任务 A", type:"button" } });
       const cycleWorkspaceWrapA = cycleFieldsA.createDiv({ cls:"pmd-input-wrap" });
       const cycleWorkspaceA = cycleWorkspaceWrapA.createEl("input", {
         type:"text",
@@ -184,7 +185,7 @@ class PomodoroView extends ItemView {
       const cycleRowB = cycleWrap.createDiv({ cls:"pmd-cycle-row" });
       const cycleRoleB = cycleRowB.createSpan({ cls:"pmd-cycle-role", text:"下一段" });
       const cycleFieldsB = cycleRowB.createDiv({ cls:"pmd-cycle-fields" });
-      const cycleTaskWrapB = cycleFieldsB.createDiv({ cls:"pmd-input-wrap" });
+      const cycleTaskWrapB = cycleFieldsB.createDiv({ cls:"pmd-input-wrap pmd-cycle-task-input" });
       const cycleTaskB = cycleTaskWrapB.createEl("input", {
         type:"text", cls:"pmd-input",
         attr:{ list:"pmdCycleTaskListB", placeholder:"任务 B", "aria-label":"循环任务 B" }
@@ -195,6 +196,7 @@ class PomodoroView extends ItemView {
         text:"执行时黑屏", cls:"pmd-task-blackout-toggle",
         attr:{ type:"button", "aria-label":"任务 B 执行时黑屏", "aria-pressed":"false", title:"任务 B 执行时显示黑屏" }
       });
+      const completeCycleTaskB = cycleTaskWrapB.createEl("button", { text:"完成", cls:"pmd-clear pmd-complete-cycle", attr:{ title:"完成任务 B", "aria-label":"完成任务 B", type:"button" } });
       const cycleWorkspaceWrapB = cycleFieldsB.createDiv({ cls:"pmd-input-wrap" });
       const cycleWorkspaceB = cycleWorkspaceWrapB.createEl("input", {
         type:"text",
@@ -244,6 +246,7 @@ class PomodoroView extends ItemView {
       const pauseBtn = actions.createEl("button", { text:"暂停", cls:"pmd-btn", attr:{ type:"button" } });
       const resetBtn = actions.createEl("button", { text:"重置", cls:"pmd-btn", attr:{ type:"button" } });
       const doneBtn  = actions.createEl("button", { text:"完成本段", cls:"pmd-btn", attr:{ type:"button" } });
+      const completeTaskBtn = actions.createEl("button", { text:"完成任务", cls:"pmd-btn", attr:{ type:"button" } });
       const refreshBtn = actions.createEl("button", { text:"刷新", cls:"pmd-btn pmd-btn-secondary", attr:{ type:"button" } });
       const quickCaptureBtn = actions.createEl("button", { text:"快速捕捉", cls:"pmd-btn pmd-btn-secondary", attr:{ type:"button", "aria-expanded":"false", "aria-controls":"pmd-quick-capture" } });
       const capturePanel = container.createDiv({ cls:"pmd-capture-panel pmd-hidden", attr:{ id:"pmd-quick-capture" } });
@@ -386,6 +389,8 @@ class PomodoroView extends ItemView {
       clearCycleTaskA.onclick = (event)=> { if (event.detail === 0) clearCycleTask(cycleTaskA, event); };
       clearCycleTaskB.onpointerdown = (event)=> clearCycleTask(cycleTaskB, event);
       clearCycleTaskB.onclick = (event)=> { if (event.detail === 0) clearCycleTask(cycleTaskB, event); };
+      completeCycleTaskA.onclick = event=> this.plugin.runUserCommand(() => this.plugin.completeTask({ cycleSlot:0 }), event);
+      completeCycleTaskB.onclick = event=> this.plugin.runUserCommand(() => this.plugin.completeTask({ cycleSlot:1 }), event);
       clearCycleWorkspaceA.onpointerdown = (event)=> clearCycleWorkspace(cycleWorkspaceA, event);
       clearCycleWorkspaceA.onclick = (event)=> { if (event.detail === 0) clearCycleWorkspace(cycleWorkspaceA, event); };
       clearCycleWorkspaceB.onpointerdown = (event)=> clearCycleWorkspace(cycleWorkspaceB, event);
@@ -431,6 +436,7 @@ class PomodoroView extends ItemView {
       pauseBtn.onclick = event=> this.plugin.runUserCommand(() => this.plugin.togglePause(), event);
       resetBtn.onclick = event=> this.plugin.runUserCommand(() => this.plugin.reset(), event);
       doneBtn.onclick  = event=> this.plugin.runUserCommand(() => this.plugin.forceCompleteFocusOnce(), event);
+      completeTaskBtn.onclick = event=> this.plugin.runUserCommand(() => this.plugin.completeTask(), event);
       const refreshTodayUI = async ()=>{
         const snap = await this._safeRefreshTodaySnapshot();
         this._todaySumCache = snap.sum;
@@ -500,6 +506,8 @@ class PomodoroView extends ItemView {
         const lockCycleB = cycleRunning && r.cycleSlot === 1;
         [cycleTaskA, cycleMinA, clearCycleTaskA, cycleWorkspaceA, clearCycleWorkspaceA].forEach(input=> input.disabled = lockCycleA);
         [cycleTaskB, cycleMinB, clearCycleTaskB, cycleWorkspaceB, clearCycleWorkspaceB].forEach(input=> input.disabled = lockCycleB);
+        completeCycleTaskA.disabled = !String(s.cycleTaskA || "").trim();
+        completeCycleTaskB.disabled = !String(s.cycleTaskB || "").trim();
         if (document.activeElement !== cycleWorkspaceA && cycleWorkspaceA.dataset.commandId !== (s.cycleWorkspaceCommandA || "")) {
           fillWorkspaceList(cycleWorkspaceA, cycleWorkspaceListA, s.cycleWorkspaceCommandA || "");
         }
@@ -543,6 +551,7 @@ class PomodoroView extends ItemView {
         show(pauseBtn, r.status === TIMER_STATUS.RUNNING);
         show(resetBtn, r.status !== TIMER_STATUS.IDLE || !!r.attention);
         show(doneBtn, r.stage === TIMER_STAGE.FOCUS && active);
+        show(completeTaskBtn, !cycleMode && !!String(r.currentTaskName || s.defaultTaskName || "").trim());
 
         if (r.status === TIMER_STATUS.PAUSED) startBtn.setText("继续");
         else if (r.attention?.type === TIMER_STAGE.BREAK) startBtn.setText("开始休息");

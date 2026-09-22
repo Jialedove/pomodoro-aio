@@ -20,6 +20,9 @@
 .pmd-input-wrap { position: relative; flex: 1 1 160px; min-width: 0; }
 .pmd-input-wrap .pmd-input { width: 100%; padding-right: 28px; }
 .pmd-clear { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); width: 20px; height: 20px; border: none; background: transparent; color: var(--text-muted); cursor: pointer; border-radius: 4px; }
+.pmd-cycle-task-input .pmd-input { padding-right: 58px; }
+.pmd-cycle-task-input .pmd-clear:not(.pmd-complete-cycle) { right: 30px; }
+.pmd-cycle-task-input .pmd-complete-cycle { width: 28px; font-size: 11px; }
 .pmd-clear:hover { background: var(--background-modifier-hover); }
 .pmd-clear:active { background: var(--background-modifier-border); }
 /* 当输入为空且显示占位符时，隐藏清空按钮 */

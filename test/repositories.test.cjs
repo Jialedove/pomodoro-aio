@@ -47,6 +47,20 @@ test("DailyRepository 保留任务行、CRLF 和 frontmatter 汇总行为", asyn
   assert.equal(vault.getAbstractFileByPath("Daily/today.md").frontmatter["番茄数"], 0.2);
 });
 
+test("DailyRepository 原子完成任务并保留番茄与行格式", async () => {
+  const vault = new FakeVault({ "Daily/today.md": "- [ ] 写报告 1.2🍅\r\n" });
+  const repository = createRepository(vault);
+
+  const result = await repository.completeTask({ taskName:"写报告" });
+
+  assert.equal(result.alreadyApplied, false);
+  assert.equal(vault.getAbstractFileByPath("Daily/today.md").content, "- [x] 写报告 1.2🍅\r\n");
+  await assert.rejects(
+    () => repository.completeTask({ taskName:"写报告" }),
+    error => error.code === "TASK_COMPLETION_CONFLICT"
+  );
+});
+
 test("DailyRepository 可按设置创建当天文件并列出未完成任务", async () => {
   const vault = new FakeVault();
   const repository = createRepository(vault);

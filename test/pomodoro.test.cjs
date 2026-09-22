@@ -28,6 +28,102 @@ test("计时基线：剩余时间由绝对开始时间计算", () => {
   assert.equal(clock.runSync(() => plugin.getLeftMs()), 1_498_750);
 });
 
+test("完成任务先结算运行中的实际时长，再勾选并清空普通选择", async () => {
+  const clock = new FakeClock(1_000_000);
+  const vault = new FakeVault({ "Daily/today.md": "- [ ] 写报告 0🍅\n" });
+  const plugin = createPlugin({
+    vault,
+    settings: { defaultTaskName:"写报告", taskBlackoutEnabled:true },
+    runtime: {
+      status:"running",
+      stage:"focus",
+      startedAtMs:clock.now() - 5 * 60 * 1000,
+      durationMs:25 * 60 * 1000,
+      currentTaskName:"写报告"
+    }
+  });
+
+  assert.equal(await clock.run(() => plugin.completeTask()), true);
+  assert.match(vault.getAbstractFileByPath("Daily/today.md").content, /- \[x\] 写报告 0\.2🍅/);
+  assert.equal(plugin.runtime.currentTaskName, "");
+  assert.equal(plugin.settings.defaultTaskName, "");
+  assert.equal(plugin.settings.taskBlackoutEnabled, false);
+  assert.equal(plugin.runtime.stage, "break");
+});
+
+test("完成循环任务清空对应工作区与逐项黑屏开关", async () => {
+  const vault = new FakeVault({ "Daily/today.md": "- [ ] A 1🍅\n- [ ] B 0🍅\n" });
+  const plugin = createPlugin({
+    vault,
+    settings: {
+      workMode:"cycle",
+      cycleTaskA:"A",
+      cycleWorkspaceCommandA:"workspaces-plus:A",
+      cycleTaskBlackoutA:true,
+      cycleTaskB:"B",
+      cycleWorkspaceCommandB:"workspaces-plus:B",
+      cycleTaskBlackoutB:true
+    }
+  });
+
+  assert.equal(await plugin.completeTask({ cycleSlot:0 }), true);
+  assert.match(vault.getAbstractFileByPath("Daily/today.md").content, /- \[x\] A 1🍅/);
+  assert.equal(plugin.settings.cycleTaskA, "");
+  assert.equal(plugin.settings.cycleWorkspaceCommandA, "");
+  assert.equal(plugin.settings.cycleTaskBlackoutA, false);
+  assert.equal(plugin.settings.cycleTaskB, "B");
+  assert.equal(plugin.settings.cycleWorkspaceCommandB, "workspaces-plus:B");
+  assert.equal(plugin.settings.cycleTaskBlackoutB, true);
+});
+
+test("同名未完成日记任务时不会猜测勾选或清空选择", async () => {
+  const vault = new FakeVault({ "Daily/today.md": "- [ ] 重复 0🍅\n- [ ] 重复 1🍅\n" });
+  const plugin = createPlugin({ vault, runtime:{ currentTaskName:"重复" }, settings:{ taskBlackoutEnabled:true } });
+
+  assert.equal(await silenceConsoleError(() => plugin.completeTask()), false);
+  assert.match(vault.getAbstractFileByPath("Daily/today.md").content, /- \[ \] 重复 0🍅/);
+  assert.equal(plugin.runtime.currentTaskName, "重复");
+  assert.equal(plugin.settings.taskBlackoutEnabled, true);
+});
+
+test("日记外部勾选会清空关联普通与循环任务选择", async () => {
+  const vault = new FakeVault({ "Daily/today.md": "- [x] 普通 0🍅\n- [x] A 0🍅\n- [ ] B 0🍅\n" });
+  const plugin = createPlugin({
+    vault,
+    settings: {
+      defaultTaskName:"普通",
+      taskBlackoutEnabled:true,
+      cycleTaskA:"A",
+      cycleWorkspaceCommandA:"workspaces-plus:A",
+      cycleTaskBlackoutA:true,
+      cycleTaskB:"B",
+      cycleWorkspaceCommandB:"workspaces-plus:B",
+      cycleTaskBlackoutB:true
+    },
+    runtime: { currentTaskName:"普通" }
+  });
+
+  assert.equal(await plugin.syncCompletedTaskSelections(), true);
+  assert.equal(plugin.runtime.currentTaskName, "");
+  assert.equal(plugin.settings.defaultTaskName, "");
+  assert.equal(plugin.settings.taskBlackoutEnabled, false);
+  assert.equal(plugin.settings.cycleTaskA, "");
+  assert.equal(plugin.settings.cycleWorkspaceCommandA, "");
+  assert.equal(plugin.settings.cycleTaskBlackoutA, false);
+  assert.equal(plugin.settings.cycleTaskB, "B");
+  assert.equal(plugin.settings.cycleWorkspaceCommandB, "workspaces-plus:B");
+  assert.equal(plugin.settings.cycleTaskBlackoutB, true);
+});
+
+test("日记保留同名未完成任务时不会清空选择", async () => {
+  const vault = new FakeVault({ "Daily/today.md": "- [x] 重复 0🍅\n- [ ] 重复 1🍅\n" });
+  const plugin = createPlugin({ vault, runtime:{ currentTaskName:"重复" }, settings:{ taskBlackoutEnabled:true } });
+
+  assert.equal(await plugin.syncCompletedTaskSelections(), false);
+  assert.equal(plugin.runtime.currentTaskName, "重复");
+  assert.equal(plugin.settings.taskBlackoutEnabled, true);
+});
+
 test("快速记录复用逻辑当日日记并区分待办与想法", async () => {
   const vault = new FakeVault({ "Daily/today.md": "# 日记\n" });
   const plugin = createPlugin({ vault, settings:{ captureHeading:"收集箱" } });

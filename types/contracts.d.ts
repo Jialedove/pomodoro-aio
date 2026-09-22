@@ -127,7 +127,7 @@ export interface BreakContinuation {
 }
 
 export interface TaskMutationPlan {
-  kind: "line" | "insert";
+  kind: "line" | "insert" | "complete";
   targetIndex: number | null;
   lineBefore: string | null;
   lineAfter: string;

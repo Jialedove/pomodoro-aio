@@ -11,6 +11,7 @@ const {
 const {
   getTomatoSum,
   insertUnderHeading,
+  planTaskLineCompletion,
   planTaskLineMutation,
   applyTaskLineMutation,
   settlementConflict
@@ -51,6 +52,20 @@ test("task-lines 纯函数按完整任务名规划并应用变更", () => {
   assert.equal(result.text, "- [x] A+B 1🍅\r\n  - [ ] A+B (测试) ✅ 2.5🍅\r\n- [ ] A+B extra 9🍅");
   assert.equal(getTomatoSum(result.text), 12.5);
   assert.equal(applyTaskLineMutation(result.text, plan).alreadyApplied, true);
+});
+
+test("task-lines 完成任务只切换复选框并拒绝同名歧义", () => {
+  const source = "  - [ ] 写报告 1.2🍅\r\n- [x] 已完成 2🍅";
+  const plan = planTaskLineCompletion(source, "写报告");
+  const result = applyTaskLineMutation(source, plan);
+
+  assert.equal(result.text, "  - [x] 写报告 1.2🍅\r\n- [x] 已完成 2🍅");
+  assert.equal(getTomatoSum(result.text), 3.2);
+  assert.equal(applyTaskLineMutation(result.text, plan).alreadyApplied, true);
+  assert.throws(
+    () => planTaskLineCompletion("- [ ] 重复 0🍅\n- [ ] 重复 2🍅", "重复"),
+    error => error.code === "TASK_COMPLETION_CONFLICT"
+  );
 });
 
 test("task-lines 插入保留标题和换行约定，并检测外部冲突", () => {
