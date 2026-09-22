@@ -53,8 +53,8 @@ const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/
 /** @typedef {import("../types/contracts").StageTransition} StageTransition */
 /** @typedef {import("../types/contracts").TimerStage} TimerStage */
 /** @typedef {Record<string, any>} AnyRecord */
-/** @typedef {{suppressNotify?:boolean, cause?:string, minutes?:number|null, cycle?:boolean, cycleSlot?:0|1, taskName?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean, newCycle?:boolean}} StartFocusOptions */
-/** @typedef {{forceRun?:boolean, suppressNotify?:boolean, cause?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean, breakContinuation?:BreakContinuation}} StartBreakOptions */
+/** @typedef {{suppressNotify?:boolean, cause?:string, minutes?:number|null, cycle?:boolean, cycleSlot?:0|1, taskName?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean, newCycle?:boolean, requestFullscreen?:boolean}} StartFocusOptions */
+/** @typedef {{forceRun?:boolean, suppressNotify?:boolean, cause?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean, breakContinuation?:BreakContinuation, requestFullscreen?:boolean}} StartBreakOptions */
 /** @typedef {{type?:string, isLong?:boolean, cycleSlot?:number|null, autoStarted?:boolean, durationMs?:number, taskName?:string}} NextPhase */
 
 /* ========== 默认设置 ========== */
@@ -873,11 +873,12 @@ class PomodoroAIO extends Plugin {
     const enabled = options.cycle
       ? (options.cycleSlot === 1 ? this.settings.cycleTaskBlackoutB : this.settings.cycleTaskBlackoutA)
       : this.settings.taskBlackoutEnabled;
-    return enabled === true && this._getBreakBlackoutController()?.requestCurrentDisplayFullscreen() === true;
+    if (enabled !== true) return Promise.resolve(false);
+    return this._getBreakBlackoutController()?.requestCurrentDisplayFullscreen() || Promise.resolve(false);
   }
   requestBreakBlackoutFullscreen(){
-    return this.settings.breakBlackoutEnabled === true
-      && this._getBreakBlackoutController()?.requestCurrentDisplayFullscreen() === true;
+    if (this.settings.breakBlackoutEnabled !== true) return Promise.resolve(false);
+    return this._getBreakBlackoutController()?.requestCurrentDisplayFullscreen() || Promise.resolve(false);
   }
   snapshot(){
     const leftMs = this.getLeftMs();
@@ -953,7 +954,8 @@ class PomodoroAIO extends Plugin {
     }
     await this.startPendingStage();
   }
-  async startPendingStage(){
+  /** @param {{requestFullscreen?:boolean}} [options] */
+  async startPendingStage(options={}){
     const next = this.runtime.attention;
     if (!next || next.nextStarted) { await this.stopStrongAlert(); return; }
     if (next.type === TIMER_STAGE.BREAK) await this.startBreak(next.isLong, {
@@ -961,15 +963,16 @@ class PomodoroAIO extends Plugin {
       cause:'manual',
       durationMs:next.durationMs,
       allowTransition:true,
-      breakContinuation:this.runtime.breakContinuation || undefined
+      breakContinuation:this.runtime.breakContinuation || undefined,
+      requestFullscreen:options.requestFullscreen === true
     });
     else if (next.type === TIMER_STAGE.FOCUS && Number.isInteger(next.cycleSlot)) {
       /** @type {StartFocusOptions} */
-      const options = { cause:'manual', durationMs:next.durationMs, allowTransition:true };
-      if (next.taskName !== undefined) options.taskName = next.taskName;
-      await this.startCycle(next.cycleSlot === 1 ? 1 : 0, options);
+      const startOptions = { cause:'manual', durationMs:next.durationMs, allowTransition:true, requestFullscreen:options.requestFullscreen === true };
+      if (next.taskName !== undefined) startOptions.taskName = next.taskName;
+      await this.startCycle(next.cycleSlot === 1 ? 1 : 0, startOptions);
     }
-    else if (next.type === TIMER_STAGE.FOCUS) await this.startFocus({ cause:'manual', durationMs:next.durationMs, allowTransition:true });
+    else if (next.type === TIMER_STAGE.FOCUS) await this.startFocus({ cause:'manual', durationMs:next.durationMs, allowTransition:true, requestFullscreen:options.requestFullscreen === true });
     else await this.stopStrongAlert();
   }
   /** @param {NextPhase} nextPhase */
@@ -1065,6 +1068,7 @@ class PomodoroAIO extends Plugin {
       new Notice("当前已有计时，请先完成或重置当前阶段");
       return false;
     }
+    if (opts.requestFullscreen) this.requestTaskBlackoutFullscreen({ cycle:opts.cycle, cycleSlot:opts.cycleSlot });
     const previousRuntime = this.runtime;
     this.ensureDayFreshness(false);
     const requestedDurationMs = Number(opts.durationMs);
@@ -1150,6 +1154,7 @@ class PomodoroAIO extends Plugin {
     const forceRun = opts.forceRun ?? true;
     const shouldRun = forceRun !== false && (forceRun || !!this.settings.autoNext);
     const continuation = normalizeBreakContinuation(opts.breakContinuation);
+    if (opts.requestFullscreen && shouldRun) this.requestBreakBlackoutFullscreen();
     const effects = this.applyRuntimeEvent(shouldRun ? {
       type:RUNTIME_EVENT.START_STAGE,
       stage:TIMER_STAGE.BREAK,
@@ -1236,6 +1241,7 @@ class PomodoroAIO extends Plugin {
 
     const leftMs = this.getLeftMs();
     if (leftMs > 0) return;
+    if (this.breakBlackout?.isFinishing()) return;
 
     if (r.stage === TIMER_STAGE.FOCUS) await this.settleFocus(false);
     else if (r.stage === TIMER_STAGE.BREAK) await this.settleBreak();

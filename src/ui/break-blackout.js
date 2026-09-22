@@ -45,10 +45,12 @@ function formatBlackoutTime(seconds) {
 }
 
 class BreakBlackoutController {
-  /** @param {{document:Document, onDismiss?:()=>void}} options */
-  constructor({ document, onDismiss }) {
+  /** @param {{document:Document, onDismiss?:()=>void, now?:()=>number, finishDurationMs?:number}} options */
+  constructor({ document, onDismiss, now=()=>Date.now(), finishDurationMs=320 }) {
     this.document = document;
     this.onDismiss = onDismiss || (() => {});
+    this.now = now;
+    this.finishDurationMs = Math.max(0, Number(finishDurationMs) || 320);
     /** @type {HTMLElement | null} */
     this.overlay = null;
     /** @type {HTMLElement | null} */
@@ -56,6 +58,9 @@ class BreakBlackoutController {
     this.dismissedKey = "";
     this.finishedKey = "";
     this.fullscreenRequested = false;
+    this.fullscreenRequest = null;
+    this.fullscreenRequestId = 0;
+    this.finishUntilMs = 0;
     this._onKeydown = (/** @type {KeyboardEvent} */ event) => {
       if (event.key !== "Escape" || !this.overlay) return;
       event.preventDefault();
@@ -104,6 +109,7 @@ class BreakBlackoutController {
     const key = blackoutKey(runtime);
     if (leftSec <= 0 && this.finishedKey !== key) {
       this.finishedKey = key;
+      this.finishUntilMs = this.now() + this.finishDurationMs;
       this.overlay?.classList?.add?.("pmd-blackout-finished");
     }
   }
@@ -129,20 +135,40 @@ class BreakBlackoutController {
    */
   requestCurrentDisplayFullscreen() {
     const root = this.document?.documentElement;
-    if (!root || typeof root.requestFullscreen !== "function") return false;
+    if (!root || typeof root.requestFullscreen !== "function" || this.document?.fullscreenElement || this.fullscreenRequested) return Promise.resolve(false);
+    if (this.fullscreenRequest) return this.fullscreenRequest;
+    const requestId = ++this.fullscreenRequestId;
+    /** @type {Promise<boolean>} */
+    let pending;
     try {
-      const requested = root.requestFullscreen({ navigationUI: "hide" });
-      requested?.catch?.(() => {});
-      this.fullscreenRequested = true;
-      return true;
+      pending = Promise.resolve(root.requestFullscreen({ navigationUI: "hide" }))
+        .then(() => {
+          if (requestId !== this.fullscreenRequestId) {
+            this._exitFullscreenDocument();
+            return false;
+          }
+          this.fullscreenRequested = true;
+          return true;
+        })
+        .catch(() => false)
+        .finally(() => {
+          if (this.fullscreenRequest === pending) this.fullscreenRequest = null;
+        });
+      this.fullscreenRequest = pending;
+      return pending;
     } catch {
-      return false;
+      return Promise.resolve(false);
     }
   }
 
   exitCurrentDisplayFullscreen() {
+    this.fullscreenRequestId += 1;
     if (!this.fullscreenRequested) return false;
     this.fullscreenRequested = false;
+    return this._exitFullscreenDocument();
+  }
+
+  _exitFullscreenDocument() {
     if (typeof this.document?.exitFullscreen !== "function") return false;
     try {
       const exited = this.document.exitFullscreen();
@@ -151,6 +177,10 @@ class BreakBlackoutController {
     } catch {
       return false;
     }
+  }
+
+  isFinishing() {
+    return this.finishUntilMs > this.now();
   }
 
   /** @param {Record<string, any> | null | undefined} runtime @param {Record<string, any> | null | undefined} settings @param {number} leftSec */
@@ -163,6 +193,7 @@ class BreakBlackoutController {
     }
     if (!shouldShowBlackout(runtime, settings)) {
       this.hide();
+      this.exitCurrentDisplayFullscreen();
       return false;
     }
     if (this.dismissedKey === key) {
@@ -178,6 +209,7 @@ class BreakBlackoutController {
     this.exitCurrentDisplayFullscreen();
     this.dismissedKey = "";
     this.finishedKey = "";
+    this.finishUntilMs = 0;
     this.runtime = null;
   }
 }

@@ -426,25 +426,21 @@ class PomodoroView extends ItemView {
       openTodayBtn.onclick = event=> this.plugin.runUserCommand(() => this.plugin.openToday(), event);
       longBtn.onclick = event=> this.plugin.runUserCommand(() => {
         const minutes = ensureLongValue();
-        this.plugin.requestTaskBlackoutFullscreen();
-        return this.plugin.startFocus({ cause:'manual', minutes });
+        return this.plugin.startFocus({ cause:'manual', minutes, requestFullscreen:true });
       }, event);
 
       startBtn.onclick = event=> this.plugin.runUserCommand(() => {
         const snap = this.plugin.snapshot();
         if (snap.runtime.status === TIMER_STATUS.PAUSED) return this.plugin.togglePause(true);
         if (snap.runtime.attention && !snap.runtime.attention.nextStarted) {
-          if (snap.runtime.attention.type === TIMER_STAGE.BREAK) this.plugin.requestBreakBlackoutFullscreen();
-          return this.plugin.startPendingStage();
+          return this.plugin.startPendingStage({ requestFullscreen:true });
         }
         if (this.plugin.settings.workMode === 'cycle') {
           saveCycleConfig();
-          this.plugin.requestTaskBlackoutFullscreen({ cycle:true, cycleSlot:snap.runtime.cycleSlot });
-          return this.plugin.startCycle();
+          return this.plugin.startCycle(snap.runtime.cycleSlot, { requestFullscreen:true });
         } else {
           saveTask();
-          this.plugin.requestTaskBlackoutFullscreen();
-          return this.plugin.startFocus({ cause:'manual' });
+          return this.plugin.startFocus({ cause:'manual', requestFullscreen:true });
         }
       }, event);
       pauseBtn.onclick = event=> this.plugin.runUserCommand(() => this.plugin.togglePause(), event);
