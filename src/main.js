@@ -14,6 +14,7 @@ const {
 } = require("./core/validation");
 const {
   getTomatoSum,
+  stripBaseName,
   settlementConflict
 } = require("./core/task-lines");
 const {
@@ -598,6 +599,11 @@ class PomodoroAIO extends Plugin {
       await this.drainProjectQueue();
     } catch (error) {
       logPluginError("startup-project-retry", error, { step:"drain" });
+    }
+    try {
+      await this.syncCompletedTaskSelections();
+    } catch (error) {
+      logPluginError("startup-task-completion-sync", error, { target:this.todayFilePath(), step:"reconcile" });
     }
 
     // 视图
@@ -1258,9 +1264,12 @@ class PomodoroAIO extends Plugin {
 
   /** @param {{cycleSlot?:0|1} | 0 | 1 | undefined} [options] */
   async completeTask(options){
-    const cycleSlot = typeof options === "number"
+    const requestedCycleSlot = typeof options === "number"
       ? (options === 1 ? 1 : 0)
       : (options?.cycleSlot === 1 ? 1 : (options?.cycleSlot === 0 ? 0 : null));
+    const cycleSlot = requestedCycleSlot === null && this.runtime.mode === "cycle"
+      ? (this.runtime.cycleSlot === 1 ? 1 : 0)
+      : requestedCycleSlot;
     const taskName = cycleSlot === 0
       ? this.settings.cycleTaskA
       : cycleSlot === 1
@@ -1271,19 +1280,16 @@ class PomodoroAIO extends Plugin {
       new Notice("请先选择要完成的任务");
       return false;
     }
-    const activeSameTask = this.runtime.stage === TIMER_STAGE.FOCUS
+    const activeSameName = this.runtime.stage === TIMER_STAGE.FOCUS
       && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(this.runtime.status)
       && String(this.runtime.currentTaskName || "").trim().toLowerCase() === task.toLowerCase();
-    if (activeSameTask && this.getElapsedMs() > 0) {
-      if (this._completionInFlight) {
-        new Notice("正在结算当前专注");
-        return false;
-      }
-      await this.settleFocus(true);
-      if (this.runtime.pendingSettlement || this.runtime.status === TIMER_STATUS.FAILED) {
-        new Notice("当前专注尚未安全结算，任务没有标记完成");
-        return false;
-      }
+    if (activeSameName && !this.isActiveFocusTask(task, cycleSlot)) {
+      new Notice("当前正在执行另一循环项，无法完成同名任务");
+      return false;
+    }
+    if (!(await this.settleOrEndActiveTaskForCompletion(task, cycleSlot))) {
+      new Notice("当前专注尚未安全结算，任务没有标记完成");
+      return false;
     }
     try {
       await this._getDailyRepository().completeTask({ taskName:task, path:this.todayFilePath() });
@@ -1296,6 +1302,27 @@ class PomodoroAIO extends Plugin {
       new Notice(message.includes("多个同名") ? message : "完成任务失败，请检查当日日记");
       return false;
     }
+  }
+
+  /** @param {string} task @param {0|1|null} cycleSlot */
+  isActiveFocusTask(task, cycleSlot){
+    const isCycle = cycleSlot !== null;
+    return this.runtime.stage === TIMER_STAGE.FOCUS
+      && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(this.runtime.status)
+      && this.runtime.mode === (isCycle ? "cycle" : "standard")
+      && (!isCycle || this.runtime.cycleSlot === cycleSlot)
+      && String(this.runtime.currentTaskName || "").trim().toLowerCase() === String(task || "").trim().toLowerCase();
+  }
+
+  /** @param {string} task @param {0|1|null} cycleSlot */
+  async settleOrEndActiveTaskForCompletion(task, cycleSlot){
+    if (!this.isActiveFocusTask(task, cycleSlot)) return true;
+    if (this._completionInFlight) return false;
+    if (this.getElapsedMs() > 0) {
+      await this.settleFocus(true);
+      return !this.runtime.pendingSettlement && this.runtime.status !== TIMER_STATUS.FAILED;
+    }
+    return this.reset(false);
   }
 
   /** @param {string} task @param {0|1|null} cycleSlot */
@@ -1991,23 +2018,36 @@ class PomodoroAIO extends Plugin {
     }, 180);
   }
   async syncCompletedTaskSelections(){
-    if (this._dailyCompletionSyncBusy) return false;
+    if (this._dailyCompletionSyncBusy || this._completionInFlight || this.runtime.pendingSettlement || this.runtime.status === TIMER_STATUS.FAILED || !this.app?.vault) return false;
     this._dailyCompletionSyncBusy = true;
     try {
       const daily = this._getDailyRepository();
       const file = daily.getFile(this.todayFilePath());
       if (!daily.isFile(file)) return false;
-      const unchecked = new Set(daily.listUncheckedTasksFromText(await daily.read(file)).map(name => name.toLowerCase()));
+      const lines = String(await daily.read(file)).split(/\r?\n/);
       /** @param {unknown} value */
       const isCompleted = value => {
         const task = String(value || "").trim();
-        return !!task && !unchecked.has(task.toLowerCase());
+        if (!task) return false;
+        let checked = 0;
+        let unchecked = 0;
+        for (const line of lines) {
+          if (stripBaseName(line).toLowerCase() !== task.toLowerCase()) continue;
+          if (/^\s*-\s*\[x\]\s+/i.test(line)) checked += 1;
+          else if (/^\s*-\s*\[\s\]\s+/.test(line)) unchecked += 1;
+        }
+        return checked === 1 && unchecked === 0;
       };
       let changed = false;
-      if (isCompleted(this.runtime.currentTaskName)) changed = (await this.clearCompletedTaskSelection(this.runtime.currentTaskName, null)) || changed;
-      else if (isCompleted(this.settings.defaultTaskName)) changed = (await this.clearCompletedTaskSelection(this.settings.defaultTaskName, null)) || changed;
-      if (isCompleted(this.settings.cycleTaskA)) changed = (await this.clearCompletedTaskSelection(this.settings.cycleTaskA, 0)) || changed;
-      if (isCompleted(this.settings.cycleTaskB)) changed = (await this.clearCompletedTaskSelection(this.settings.cycleTaskB, 1)) || changed;
+      const currentTask = String(this.runtime.currentTaskName || "").trim();
+      const currentSlot = this.runtime.mode === "cycle" ? (this.runtime.cycleSlot === 1 ? 1 : 0) : null;
+      if (isCompleted(currentTask) && await this.settleOrEndActiveTaskForCompletion(currentTask, currentSlot)) {
+        changed = (await this.clearCompletedTaskSelection(currentTask, currentSlot)) || changed;
+      } else if (isCompleted(this.settings.defaultTaskName) && await this.settleOrEndActiveTaskForCompletion(this.settings.defaultTaskName, null)) {
+        changed = (await this.clearCompletedTaskSelection(this.settings.defaultTaskName, null)) || changed;
+      }
+      if (isCompleted(this.settings.cycleTaskA) && await this.settleOrEndActiveTaskForCompletion(this.settings.cycleTaskA, 0)) changed = (await this.clearCompletedTaskSelection(this.settings.cycleTaskA, 0)) || changed;
+      if (isCompleted(this.settings.cycleTaskB) && await this.settleOrEndActiveTaskForCompletion(this.settings.cycleTaskB, 1)) changed = (await this.clearCompletedTaskSelection(this.settings.cycleTaskB, 1)) || changed;
       return changed;
     } finally {
       this._dailyCompletionSyncBusy = false;

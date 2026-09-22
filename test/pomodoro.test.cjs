@@ -51,6 +51,21 @@ test("完成任务先结算运行中的实际时长，再勾选并清空普通�
   assert.equal(plugin.runtime.stage, "break");
 });
 
+test("零时长完成任务会先安全结束计时，不留下运行阶段", async () => {
+  const clock = new FakeClock(1_000_000);
+  const vault = new FakeVault({ "Daily/today.md": "- [ ] 零时长任务 0🍅\n" });
+  const plugin = createPlugin({
+    vault,
+    runtime: { status:"running", stage:"focus", startedAtMs:clock.now(), durationMs:25 * 60 * 1000, currentTaskName:"零时长任务" }
+  });
+
+  assert.equal(await clock.run(() => plugin.completeTask()), true);
+  assert.match(vault.getAbstractFileByPath("Daily/today.md").content, /- \[x\] 零时长任务 0🍅/);
+  assert.equal(plugin.runtime.status, "idle");
+  assert.equal(plugin.runtime.stage, null);
+  assert.equal(plugin.runtime.currentTaskName, "");
+});
+
 test("完成循环任务清空对应工作区与逐项黑屏开关", async () => {
   const vault = new FakeVault({ "Daily/today.md": "- [ ] A 1🍅\n- [ ] B 0🍅\n" });
   const plugin = createPlugin({
@@ -115,8 +130,46 @@ test("日记外部勾选会清空关联普通与循环任务选择", async () =>
   assert.equal(plugin.settings.cycleTaskBlackoutB, true);
 });
 
+test("日记中不存在的任务不会被当作外部完成", async () => {
+  const vault = new FakeVault({ "Daily/today.md": "- [x] 其他任务 0🍅\n" });
+  const plugin = createPlugin({ vault, runtime:{ currentTaskName:"不存在" }, settings:{ taskBlackoutEnabled:true } });
+
+  assert.equal(await plugin.syncCompletedTaskSelections(), false);
+  assert.equal(plugin.runtime.currentTaskName, "不存在");
+  assert.equal(plugin.settings.taskBlackoutEnabled, true);
+});
+
+test("日记外部勾选运行中的任务会先按实际时长结算", async () => {
+  const clock = new FakeClock(1_000_000);
+  const vault = new FakeVault({ "Daily/today.md": "- [x] 外部完成 0🍅\n" });
+  const plugin = createPlugin({
+    vault,
+    runtime: {
+      status:"running",
+      stage:"focus",
+      startedAtMs:clock.now() - 5 * 60 * 1000,
+      durationMs:25 * 60 * 1000,
+      currentTaskName:"外部完成"
+    }
+  });
+
+  assert.equal(await clock.run(() => plugin.syncCompletedTaskSelections()), true);
+  assert.match(vault.getAbstractFileByPath("Daily/today.md").content, /- \[x\] 外部完成 0\.2🍅/);
+  assert.equal(plugin.runtime.currentTaskName, "");
+  assert.equal(plugin.runtime.stage, "break");
+});
+
 test("日记保留同名未完成任务时不会清空选择", async () => {
   const vault = new FakeVault({ "Daily/today.md": "- [x] 重复 0🍅\n- [ ] 重复 1🍅\n" });
+  const plugin = createPlugin({ vault, runtime:{ currentTaskName:"重复" }, settings:{ taskBlackoutEnabled:true } });
+
+  assert.equal(await plugin.syncCompletedTaskSelections(), false);
+  assert.equal(plugin.runtime.currentTaskName, "重复");
+  assert.equal(plugin.settings.taskBlackoutEnabled, true);
+});
+
+test("日记中有多条同名已勾选任务时不会清空选择", async () => {
+  const vault = new FakeVault({ "Daily/today.md": "- [x] 重复 0🍅\n- [x] 重复 1🍅\n" });
   const plugin = createPlugin({ vault, runtime:{ currentTaskName:"重复" }, settings:{ taskBlackoutEnabled:true } });
 
   assert.equal(await plugin.syncCompletedTaskSelections(), false);
@@ -1206,7 +1259,7 @@ test("休息已启动但提醒尚未落盘时恢复不会重置休息计时", as
   assert.equal(restored.runtime.pendingSettlement, null);
 });
 
-test("插件启动先恢复结算与重试队列，再启动调度器", async () => {
+test("插件启动先恢复结算与重试队列并对账离线完成，再启动调度器", async () => {
   const plugin = new PomodoroAIO();
   const order = [];
   const ribbon = {
@@ -1228,6 +1281,7 @@ test("插件启动先恢复结算与重试队列，再启动调度器", async ()
   plugin.recoverPendingBreakTransition = async () => { order.push("break-recover"); };
   plugin.repairFrontmatterQueue = async () => { order.push("frontmatter"); };
   plugin.drainProjectQueue = async () => { order.push("project"); };
+  plugin.syncCompletedTaskSelections = async () => { order.push("completion-sync"); };
   plugin.registerView = () => { order.push("view"); };
   plugin.addCommand = () => {};
   plugin.addRibbonIcon = () => ribbon;
@@ -1258,7 +1312,8 @@ test("插件启动先恢复结算与重试队列，再启动调度器", async ()
     assert.ok(schedulerIndex > order.indexOf("break-recover"));
     assert.ok(schedulerIndex > order.indexOf("frontmatter"));
     assert.ok(schedulerIndex > order.indexOf("project"));
-    assert.deepEqual(order.slice(0, 7), ["settings", "state", "save", "recover", "break-recover", "frontmatter", "project"]);
+    assert.ok(schedulerIndex > order.indexOf("completion-sync"));
+    assert.deepEqual(order.slice(0, 8), ["settings", "state", "save", "recover", "break-recover", "frontmatter", "project", "completion-sync"]);
   } finally {
     await plugin.onunload();
     if (previousWindow === undefined) delete globalThis.window;
