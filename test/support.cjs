@@ -180,6 +180,11 @@ function loadPomodoro() {
   }
   class FakePlugin {}
   class FakeItemView {}
+  class FakeModal {
+    constructor(app) { this.app = app; }
+    open() {}
+    close() {}
+  }
   class FakePluginSettingTab {}
   class FakeSetting {}
   const getFrontMatterInfo = content => {
@@ -205,6 +210,7 @@ function loadPomodoro() {
         parseYaml,
         normalizePath,
         ItemView: FakeItemView,
+        Modal: FakeModal,
         PluginSettingTab: FakePluginSettingTab,
         Setting: FakeSetting
       }
@@ -233,6 +239,7 @@ const BASE_SETTINGS = {
   allowAutoCreateTask: true,
   tasksHeading: "",
   defaultTaskName: "",
+  captureHeading: "Inbox",
   projectEnable: true,
   projectTag: "#project",
   projectStatusKey: "项目状态",
@@ -245,6 +252,7 @@ const BASE_SETTINGS = {
   ribbonClickAutoNext: true,
   focusStartCommandId: "",
   breakStartCommandId: "",
+  breakBlackoutEnabled: false,
   workMode: "standard",
   cycleTaskA: "",
   cycleMinA: 15,

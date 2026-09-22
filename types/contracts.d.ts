@@ -17,6 +17,7 @@ export interface Settings {
   allowAutoCreateTask: boolean;
   tasksHeading: string;
   defaultTaskName: string;
+  captureHeading: string;
   projectEnable: boolean;
   projectTag: string;
   projectStatusKey: string;
@@ -41,6 +42,7 @@ export interface Settings {
   ribbonClickAutoNext: boolean;
   focusStartCommandId: string;
   breakStartCommandId: string;
+  breakBlackoutEnabled: boolean;
   workMode: WorkMode;
   cycleTaskA: string;
   cycleMinA: number;

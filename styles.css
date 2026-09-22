@@ -27,6 +27,11 @@
 .pmd-input-wrap .pmd-cycle-workspace:placeholder-shown ~ .pmd-clear { opacity: 0; pointer-events: none; }
 .pmd-input-wrap.pmd-datalist-opening .pmd-clear { opacity: 0; pointer-events: none; }
 .pmd-input { flex: 1 1 auto; display: block; width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--background-modifier-border); border-radius: 8px; }
+.pmd-capture { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.pmd-capture-actions { display: flex; gap: 6px; }
+.pmd-capture-actions .pmd-btn { padding-inline: 8px; }
+.pmd-capture-modal-input { width: 100%; resize: vertical; }
+.pmd-capture-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .pmd-actions { display:flex; gap:8px; margin-top: 12px; flex-wrap: wrap; }
 .pmd-btn { padding: 6px 10px; border: 1px solid var(--background-modifier-border); border-radius: 8px; flex-shrink: 0; }
 .pmd-btn-primary { color: var(--text-on-accent); background: var(--interactive-accent); border-color: var(--interactive-accent); }
@@ -87,6 +92,8 @@
   .pmd-head .pmd-btn { margin-left: 0; width: 100%; }
   .pmd-time { min-width: 0; }
   .pmd-row-inline > .pmd-btn { width: 100%; }
+  .pmd-capture { grid-template-columns: 1fr; }
+  .pmd-capture-actions .pmd-btn { flex: 1; }
   .pmd-cycle-row { grid-template-columns: 48px minmax(0, 1fr) 72px; gap: 6px; padding: 3px; }
   .pmd-cycle-unit { display: none; }
   .pmd-cycle-min { width: 100%; }
@@ -119,6 +126,29 @@
   animation: pomodoro-ribbon-pulse 1s ease-in-out infinite;
   pointer-events: none;
 }
+.pmd-blackout-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.32);
+  background: #000;
+  cursor: pointer;
+}
+.pmd-blackout-content { display: grid; justify-items: center; gap: 12px; }
+.pmd-blackout-label { font-size: 14px; letter-spacing: .12em; }
+.pmd-blackout-time { font-size: clamp(32px, 8vw, 72px); font-variant-numeric: tabular-nums; }
+.pmd-blackout-exit {
+  padding: 7px 12px;
+  color: rgba(255, 255, 255, 0.4);
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.pmd-blackout-exit:hover,
+.pmd-blackout-exit:focus-visible { color: rgba(255, 255, 255, 0.8); border-color: rgba(255, 255, 255, 0.5); }
 @keyframes pomodoro-ribbon-pulse {
   0%,100% { opacity: 0.25; }
   50% { opacity: 1; }

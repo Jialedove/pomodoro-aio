@@ -126,6 +126,47 @@ class PomodoroView extends ItemView {
         if (e.key === "Escape") { e.preventDefault(); _suppressTaskSyncUntil = Date.now() + 1200; taskInput.value = ""; this.plugin.setCurrentTaskName(""); }
       };
 
+      // —— 快速记录：Enter 默认待办，也可明确记为想法 ——
+      const captureWrap = container.createDiv({ cls:"pmd-row pmd-capture" });
+      const captureInput = captureWrap.createEl("input", {
+        type:"text",
+        cls:"pmd-input pmd-capture-input",
+        attr:{ placeholder:"快速记下稍后处理的事…", "aria-label":"快速记录内容" }
+      });
+      const captureActions = captureWrap.createDiv({ cls:"pmd-capture-actions" });
+      const captureTodoBtn = captureActions.createEl("button", { text:"记待办", cls:"pmd-btn", attr:{ type:"button" } });
+      const captureIdeaBtn = captureActions.createEl("button", { text:"记想法", cls:"pmd-btn pmd-btn-secondary", attr:{ type:"button" } });
+      let captureSubmitting = false;
+      /** @param {"todo"|"idea"} kind */
+      const submitCapture = async kind => {
+        if (captureSubmitting) return;
+        captureSubmitting = true;
+        captureTodoBtn.disabled = true;
+        captureIdeaBtn.disabled = true;
+        try {
+          await this.plugin.quickCapture(captureInput.value, kind);
+          captureInput.value = "";
+        } catch (error) {
+          logViewError(this.plugin, "quick-capture", error, "write");
+        } finally {
+          captureSubmitting = false;
+          captureTodoBtn.disabled = false;
+          captureIdeaBtn.disabled = false;
+          captureInput.focus();
+        }
+      };
+      captureTodoBtn.onclick = () => submitCapture("todo");
+      captureIdeaBtn.onclick = () => submitCapture("idea");
+      captureInput.onkeydown = event => {
+        if (event.key === "Enter" && !event.isComposing) {
+          event.preventDefault();
+          submitCapture("todo");
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          captureInput.value = "";
+        }
+      };
+
       // —— 长专注控制 ——
       const longWrap = container.createDiv({ cls:"pmd-row pmd-row-inline pmd-long-row" });
       longWrap.createSpan({ cls:"pmd-long-label", text:"长专注（分钟）" });

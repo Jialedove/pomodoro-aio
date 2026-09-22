@@ -36,7 +36,10 @@ const {
 } = require("./core/settlement");
 const { RuntimeStore, cloneValue } = require("./services/runtime-store");
 const { DailyRepository, ProjectRepository } = require("./services/repositories");
+const { normalizeCaptureHeading, normalizeCaptureText } = require("./core/quick-capture");
 const { PomodoroView } = require("./ui/pomodoro-view");
+const { QuickCaptureModal } = require("./ui/quick-capture-modal");
+const { BreakBlackoutController } = require("./ui/break-blackout");
 const { PomodoroSettingTab } = require("./ui/settings-tab");
 const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/workspaces-plus");
 /** @typedef {import("../types/contracts").Attention} Attention */
@@ -76,6 +79,7 @@ const DEFAULT_SETTINGS = {
   allowAutoCreateTask: true,
   tasksHeading: "",
   defaultTaskName: "",
+  captureHeading: "Inbox",
 
   // 项目同步
   projectEnable: true,
@@ -104,6 +108,7 @@ const DEFAULT_SETTINGS = {
   ribbonClickAutoNext: true,
   focusStartCommandId: "",
   breakStartCommandId: "",
+  breakBlackoutEnabled: false,
 
   // 循环工作：两项任务交替；可选地在若干完整 A→B 轮次后提示短休
   workMode: "standard",
@@ -214,7 +219,8 @@ function normalizeSettings(raw={}, fallback=DEFAULT_SETTINGS) {
   result.currentProjectPath = String(projectPath || "").trim()
     ? (tryNormalizeMarkdownPath(projectPath) || "")
     : "";
-  for (const key of ["autoNext", "projectEnable", "showProjectSelector", "enableSound", "enableNotify", "persistentAlertSound", "ribbonClickAutoNext", "allowCreateDaily", "allowAutoCreateTask", "respectModalInputFocus"]) {
+  result.captureHeading = normalizeCaptureHeading(has("captureHeading") ? source.captureHeading : base.captureHeading);
+  for (const key of ["autoNext", "projectEnable", "showProjectSelector", "enableSound", "enableNotify", "persistentAlertSound", "ribbonClickAutoNext", "allowCreateDaily", "allowAutoCreateTask", "respectModalInputFocus", "breakBlackoutEnabled"]) {
     if (typeof source[key] !== "boolean") result[key] = base[key];
   }
   return result;
@@ -537,6 +543,8 @@ class PomodoroAIO extends Plugin {
     this.projectRepository = null;
     /** @type {InstanceType<typeof WorkspacesPlusAdapter> | null} */
     this.workspacesPlus = null;
+    /** @type {InstanceType<typeof BreakBlackoutController> | null} */
+    this.breakBlackout = null;
     /** @type {ObsidianElement | null} */
     this.ribbon = null;
     /** @type {ObsidianElement | null} */
@@ -561,6 +569,7 @@ class PomodoroAIO extends Plugin {
     this._alertEscalationTimeout = null;
     this._completionInFlight = false;
     this.ribbonBadge = null;
+    this._getBreakBlackoutController();
     if (!this.runtime.dayKey) this.runtime = reduceRuntime(this.runtime, {
       type:RUNTIME_EVENT.DAY_ROLLOVER,
       dayKey:this.logicalTodayKey()
@@ -603,6 +612,7 @@ class PomodoroAIO extends Plugin {
     this.addCommand({ id: 'reset', name: '重置', callback: (evt)=> this.runUserCommand(()=> this.reset(), evt) });
     this.addCommand({ id: 'complete-now', name: '立刻结算当前专注（按实际时长）', callback: (evt)=> this.runUserCommand(()=> this.forceCompleteFocusOnce(), evt) });
     this.addCommand({ id: 'open-today', name: '打开当日日记', callback: (evt)=> this.runUserCommand(()=> this.openToday(), evt) });
+    this.addCommand({ id: 'quick-capture', name: '快速记录', callback: (evt)=> this.runUserCommand(()=> this.openQuickCaptureModal(), evt) });
 
     // 设置页
     this.addSettingTab(new PomodoroSettingTab(this.app, this, normalizeSettings));
@@ -635,9 +645,11 @@ class PomodoroAIO extends Plugin {
     this._scheduleTick();
     this.applyStrongAlertStateFromRuntime();
     this.updateRibbonVisuals();
+    this.syncBreakBlackout();
   }
   async onunload(){
     this._unloading = true;
+    this.breakBlackout?.destroy();
     this.stopPersistentAlertSound();
     if (this._tickTimeout) window.clearTimeout(this._tickTimeout);
     await this.flushPendingSaves();
@@ -752,7 +764,8 @@ class PomodoroAIO extends Plugin {
       const selectors = [
         ".modal", ".modal-container", ".modal-bg",
         ".prompt", ".suggestion-container", ".popover",
-        ".quick-switcher", ".command-palette", ".mod-command-palette"
+        ".quick-switcher", ".command-palette", ".mod-command-palette",
+        ".pmd-blackout-overlay"
       ];
       const nodes = root?.querySelectorAll?.(selectors.join(", ")) || [];
       for (const el of nodes) {
@@ -821,7 +834,21 @@ class PomodoroAIO extends Plugin {
   broadcast() {
     const snap = this.snapshot();
     this.updateRibbonVisuals(snap.runtime);
+    this.syncBreakBlackout(snap);
     this.app.workspace.trigger('pomodoro:aio-state', snap);
+  }
+  _getBreakBlackoutController(){
+    if (this.breakBlackout) return this.breakBlackout;
+    if (typeof document === "undefined" || !document.body) return null;
+    this.breakBlackout = new BreakBlackoutController({ document });
+    return this.breakBlackout;
+  }
+  /** @param {{settings:Settings, runtime:Runtime & {leftSec?:number}} | null} [snapshot] */
+  syncBreakBlackout(snapshot=null){
+    const controller = this._getBreakBlackoutController();
+    if (!controller) return false;
+    const snap = snapshot || this.snapshot();
+    return controller.sync(snap.runtime, snap.settings.breakBlackoutEnabled, snap.runtime.leftSec ?? this.getLeftSec());
   }
   snapshot(){
     const leftMs = this.getLeftMs();
@@ -1827,6 +1854,35 @@ class PomodoroAIO extends Plugin {
     const sum = getTomatoSum(text);
     const unchecked = await this.listUncheckedTasksFromText(text);
     return { file, sum, unchecked };
+  }
+  /** @param {unknown} text @param {"todo"|"idea"} [kind] */
+  async quickCapture(text, kind="todo"){
+    const content = normalizeCaptureText(text);
+    if (!content) {
+      new Notice("请输入要记录的内容");
+      throw new Error("记录内容为空");
+    }
+    try {
+      const result = await this._getDailyRepository().appendCapture({
+        text:content,
+        kind:kind === "idea" ? "idea" : "todo",
+        heading:this.settings.captureHeading
+      });
+      new Notice(kind === "idea" ? "想法已记入当日日记" : "待办已记入当日日记");
+      this.broadcast();
+      return result;
+    } catch (error) {
+      if (String(error instanceof Error ? error.message : error) !== "记录内容为空") {
+        logPluginError("quick-capture", error, { target:this.todayFilePath(), step:"write" });
+        new Notice("快速记录失败，请检查当日日记设置");
+      }
+      throw error;
+    }
+  }
+  openQuickCaptureModal(){
+    const modal = new QuickCaptureModal(this.app, (text, kind)=> this.quickCapture(text, kind));
+    modal.open();
+    return modal;
   }
   projectCandidates(){
     return this._getProjectRepository().listCandidates({

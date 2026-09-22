@@ -29,6 +29,7 @@ Module._load = (request, parent, isMain) => request === "obsidian"
       Notice: class {},
       TFile: FakeTFile,
       ItemView: class {},
+      Modal: class {},
       PluginSettingTab: class {},
       Setting: class {},
       normalizePath: path => String(path || "").replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "")

@@ -7,6 +7,7 @@ const {
 } = require("../core/task-lines");
 const { normalizePath } = require("obsidian");
 const { normalizeTag, normalizeTomatoValue, normalizeMarkdownPath } = require("../core/validation");
+const { appendCaptureToHeading } = require("../core/quick-capture");
 /** @typedef {import("../../types/contracts").Settings} Settings */
 /** @typedef {import("../../types/contracts").TaskMutationPlan} TaskMutationPlan */
 /** @typedef {import("../../types/contracts").ProjectSettlementPlan} ProjectSettlementPlan */
@@ -77,6 +78,19 @@ class DailyRepository {
   async readToday() {
     const file = await this.ensureTodayFile();
     return { file, text: await this.read(file) };
+  }
+
+  /** @param {{text:unknown, kind?:"todo"|"idea", heading?:unknown}} input */
+  async appendCapture(input) {
+    const file = await this.ensureTodayFile();
+    /** @type {{text:string, heading:string, line:string, createdHeading:boolean} | null} */
+    let capture = null;
+    await this.process(file, current => {
+      capture = appendCaptureToHeading(current, input);
+      return capture.text;
+    });
+    if (!capture) throw new Error("快速记录写入失败");
+    return { file, .../** @type {{text:string, heading:string, line:string, createdHeading:boolean}} */ (capture) };
   }
 
   /** @param {any} file @param {(text:string)=>string} callback */
