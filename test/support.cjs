@@ -240,6 +240,7 @@ const BASE_SETTINGS = {
   tasksHeading: "",
   defaultTaskName: "",
   captureHeading: "Inbox",
+  capturePathPattern: "",
   projectEnable: true,
   projectTag: "#project",
   projectStatusKey: "项目状态",

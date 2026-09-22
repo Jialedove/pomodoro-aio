@@ -126,47 +126,6 @@ class PomodoroView extends ItemView {
         if (e.key === "Escape") { e.preventDefault(); _suppressTaskSyncUntil = Date.now() + 1200; taskInput.value = ""; this.plugin.setCurrentTaskName(""); }
       };
 
-      // —— 快速记录：Enter 默认待办，也可明确记为想法 ——
-      const captureWrap = container.createDiv({ cls:"pmd-row pmd-capture" });
-      const captureInput = captureWrap.createEl("input", {
-        type:"text",
-        cls:"pmd-input pmd-capture-input",
-        attr:{ placeholder:"快速记下稍后处理的事…", "aria-label":"快速记录内容" }
-      });
-      const captureActions = captureWrap.createDiv({ cls:"pmd-capture-actions" });
-      const captureTodoBtn = captureActions.createEl("button", { text:"记待办", cls:"pmd-btn", attr:{ type:"button" } });
-      const captureIdeaBtn = captureActions.createEl("button", { text:"记想法", cls:"pmd-btn pmd-btn-secondary", attr:{ type:"button" } });
-      let captureSubmitting = false;
-      /** @param {"todo"|"idea"} kind */
-      const submitCapture = async kind => {
-        if (captureSubmitting) return;
-        captureSubmitting = true;
-        captureTodoBtn.disabled = true;
-        captureIdeaBtn.disabled = true;
-        try {
-          await this.plugin.quickCapture(captureInput.value, kind);
-          captureInput.value = "";
-        } catch (error) {
-          logViewError(this.plugin, "quick-capture", error, "write");
-        } finally {
-          captureSubmitting = false;
-          captureTodoBtn.disabled = false;
-          captureIdeaBtn.disabled = false;
-          captureInput.focus();
-        }
-      };
-      captureTodoBtn.onclick = () => submitCapture("todo");
-      captureIdeaBtn.onclick = () => submitCapture("idea");
-      captureInput.onkeydown = event => {
-        if (event.key === "Enter" && !event.isComposing) {
-          event.preventDefault();
-          submitCapture("todo");
-        } else if (event.key === "Escape") {
-          event.preventDefault();
-          captureInput.value = "";
-        }
-      };
-
       // —— 长专注控制 ——
       const longWrap = container.createDiv({ cls:"pmd-row pmd-row-inline pmd-long-row" });
       longWrap.createSpan({ cls:"pmd-long-label", text:"长专注（分钟）" });
@@ -274,6 +233,56 @@ class PomodoroView extends ItemView {
       const resetBtn = actions.createEl("button", { text:"重置", cls:"pmd-btn", attr:{ type:"button" } });
       const doneBtn  = actions.createEl("button", { text:"完成本段", cls:"pmd-btn", attr:{ type:"button" } });
       const refreshBtn = actions.createEl("button", { text:"刷新", cls:"pmd-btn pmd-btn-secondary", attr:{ type:"button" } });
+      const quickCaptureBtn = actions.createEl("button", { text:"快速捕捉", cls:"pmd-btn pmd-btn-secondary", attr:{ type:"button", "aria-expanded":"false", "aria-controls":"pmd-quick-capture" } });
+      const capturePanel = container.createDiv({ cls:"pmd-capture-panel pmd-hidden", attr:{ id:"pmd-quick-capture" } });
+      const captureInput = capturePanel.createEl("input", {
+        type:"text",
+        cls:"pmd-input pmd-capture-input",
+        attr:{ placeholder:"输入后按 Enter 保存为待办", "aria-label":"快速捕捉内容" }
+      });
+      const captureStatus = capturePanel.createDiv({ cls:"pmd-capture-status", attr:{ role:"status", "aria-live":"polite" } });
+      let captureSubmitting = false;
+      const closeCapturePanel = ()=> {
+        capturePanel.addClass("pmd-hidden");
+        quickCaptureBtn.setAttribute("aria-expanded", "false");
+        captureStatus.setText("");
+      };
+      const openCapturePanel = ()=> {
+        capturePanel.removeClass("pmd-hidden");
+        quickCaptureBtn.setAttribute("aria-expanded", "true");
+        window.setTimeout(()=> captureInput.focus(), 0);
+      };
+      const submitCapture = async ()=> {
+        if (captureSubmitting) return;
+        captureSubmitting = true;
+        captureInput.disabled = true;
+        captureStatus.setText("正在保存…");
+        try {
+          await this.plugin.quickCapture(captureInput.value, "todo");
+          captureInput.value = "";
+          captureStatus.setText("已保存");
+          window.setTimeout(closeCapturePanel, 700);
+        } catch (error) {
+          captureStatus.setText("保存失败，请检查设置");
+          logViewError(this.plugin, "quick-capture", error, "write");
+        } finally {
+          captureSubmitting = false;
+          captureInput.disabled = false;
+          if (!capturePanel.classList.contains("pmd-hidden")) captureInput.focus();
+        }
+      };
+      quickCaptureBtn.onclick = ()=> capturePanel.classList.contains("pmd-hidden") ? openCapturePanel() : closeCapturePanel();
+      captureInput.onkeydown = event => {
+        if (event.key === "Enter" && !event.isComposing && event.keyCode !== 229) {
+          event.preventDefault();
+          submitCapture();
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          captureInput.value = "";
+          closeCapturePanel();
+          quickCaptureBtn.focus();
+        }
+      };
 
       // 底部信息
       const meta = container.createDiv({ cls:"pmd-meta" });

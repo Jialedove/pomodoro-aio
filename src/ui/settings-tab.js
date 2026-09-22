@@ -23,6 +23,7 @@ class PomodoroSettingTab extends PluginSettingTab {
       const next = this.normalizeSettings({ ...this.plugin.settings, ...patch }, this.plugin.settings);
       if (patch.dayStartHHMM !== undefined && next.dayStartHHMM !== patch.dayStartHHMM) new Notice("一天开始时间格式无效，已保留原值");
       if (patch.fallbackPattern !== undefined && next.fallbackPattern !== String(patch.fallbackPattern || "").trim()) new Notice("当日路径必须是规范的 Markdown 路径，已保留原值");
+      if (patch.capturePathPattern !== undefined && String(patch.capturePathPattern || "").trim() && !next.capturePathPattern) new Notice("快速记录目标路径必须是规范的 Markdown 路径，已清空为当日日记");
       Object.assign(this.plugin.settings, next);
       await this.plugin.saveSettings();
       this.plugin.broadcast();
@@ -58,6 +59,11 @@ class PomodoroSettingTab extends PluginSettingTab {
     new Setting(c).setName("找不到当天文件时自动创建").addToggle(t=>t.setValue(s.allowCreateDaily).onChange(v=>set({allowCreateDaily:v})));
     new Setting(c).setName("快速记录区域标题").setDesc("待办与想法写入当日日记的这个标题下；默认 Inbox")
       .addText(t=>t.setValue(s.captureHeading || "Inbox").onChange(v=>set({captureHeading:v || "Inbox"})));
+    new Setting(c).setName("快速记录目标路径模板").setDesc("留空即写入当日日记；可使用 {{date:YYYY-MM-DD}}，例如 Inbox/{{date:YYYY-MM-DD}}.md")
+      .addText(t=>{
+        t.setValue(s.capturePathPattern || "");
+        t.onChange(/** @param {string} v */ v=>set({capturePathPattern:v}));
+      });
 
     c.createEl("h3", { text:"任务与写入" });
     new Setting(c).setName("默认任务名（可空）").addText(t=>t.setValue(s.defaultTaskName).onChange(v=>set({defaultTaskName:v})));

@@ -80,9 +80,9 @@ class DailyRepository {
     return { file, text: await this.read(file) };
   }
 
-  /** @param {{text:unknown, kind?:"todo"|"idea", heading?:unknown}} input */
+  /** @param {{text:unknown, kind?:"todo"|"idea", heading?:unknown, path?:unknown}} input */
   async appendCapture(input) {
-    const file = await this.ensureTodayFile();
+    const file = input?.path === undefined ? await this.ensureTodayFile() : await this.ensureFileAtPath(input.path);
     /** @type {{text:string, heading:string, line:string, createdHeading:boolean} | null} */
     let capture = null;
     await this.process(file, current => {

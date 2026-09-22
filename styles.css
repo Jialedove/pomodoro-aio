@@ -27,9 +27,9 @@
 .pmd-input-wrap .pmd-cycle-workspace:placeholder-shown ~ .pmd-clear { opacity: 0; pointer-events: none; }
 .pmd-input-wrap.pmd-datalist-opening .pmd-clear { opacity: 0; pointer-events: none; }
 .pmd-input { flex: 1 1 auto; display: block; width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--background-modifier-border); border-radius: 8px; }
-.pmd-capture { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
-.pmd-capture-actions { display: flex; gap: 6px; }
-.pmd-capture-actions .pmd-btn { padding-inline: 8px; }
+.pmd-capture-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; margin-top: 8px; padding: 8px; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); border-radius: 10px; }
+.pmd-capture-panel .pmd-input { min-height: 36px; }
+.pmd-capture-status { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 .pmd-capture-modal-input { width: 100%; resize: vertical; }
 .pmd-capture-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .pmd-actions { display:flex; gap:8px; margin-top: 12px; flex-wrap: wrap; }
@@ -92,8 +92,8 @@
   .pmd-head .pmd-btn { margin-left: 0; width: 100%; }
   .pmd-time { min-width: 0; }
   .pmd-row-inline > .pmd-btn { width: 100%; }
-  .pmd-capture { grid-template-columns: 1fr; }
-  .pmd-capture-actions .pmd-btn { flex: 1; }
+  .pmd-capture-panel { grid-template-columns: 1fr; }
+  .pmd-capture-status { white-space: normal; }
   .pmd-cycle-row { grid-template-columns: 48px minmax(0, 1fr) 72px; gap: 6px; padding: 3px; }
   .pmd-cycle-unit { display: none; }
   .pmd-cycle-min { width: 100%; }

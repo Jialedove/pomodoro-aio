@@ -80,6 +80,8 @@ const DEFAULT_SETTINGS = {
   tasksHeading: "",
   defaultTaskName: "",
   captureHeading: "Inbox",
+  // 留空时复用“当日路径模板”；也可写入另一个按日期归档的 Markdown 文件。
+  capturePathPattern: "",
 
   // 项目同步
   projectEnable: true,
@@ -215,6 +217,8 @@ function normalizeSettings(raw={}, fallback=DEFAULT_SETTINGS) {
   result.fallbackPattern = has("fallbackPattern")
     ? (tryNormalizeMarkdownPath(source.fallbackPattern) || fallbackPattern)
     : fallbackPattern;
+  const capturePathPattern = has("capturePathPattern") ? String(source.capturePathPattern || "").trim() : String(base.capturePathPattern || "").trim();
+  result.capturePathPattern = capturePathPattern ? (tryNormalizeMarkdownPath(capturePathPattern) || "") : "";
   const projectPath = has("currentProjectPath") ? source.currentProjectPath : base.currentProjectPath;
   result.currentProjectPath = String(projectPath || "").trim()
     ? (tryNormalizeMarkdownPath(projectPath) || "")
@@ -1762,6 +1766,11 @@ class PomodoroAIO extends Plugin {
       normalizePath
     );
   }
+  quickCaptureFilePath(){
+    if (!this.settings.capturePathPattern) return this.todayFilePath();
+    const pattern = this.settings.capturePathPattern;
+    return normalizeMarkdownPath(renderPattern(pattern, this.logicalTodayKey()), normalizePath);
+  }
   _getDailyRepository(){
     if (this.dailyRepository) return this.dailyRepository;
     this.dailyRepository = new DailyRepository({
@@ -1866,15 +1875,16 @@ class PomodoroAIO extends Plugin {
       const result = await this._getDailyRepository().appendCapture({
         text:content,
         kind:kind === "idea" ? "idea" : "todo",
-        heading:this.settings.captureHeading
+        heading:this.settings.captureHeading,
+        path:this.quickCaptureFilePath()
       });
-      new Notice(kind === "idea" ? "想法已记入当日日记" : "待办已记入当日日记");
+      new Notice(kind === "idea" ? "想法已保存" : "待办已保存");
       this.broadcast();
       return result;
     } catch (error) {
       if (String(error instanceof Error ? error.message : error) !== "记录内容为空") {
-        logPluginError("quick-capture", error, { target:this.todayFilePath(), step:"write" });
-        new Notice("快速记录失败，请检查当日日记设置");
+        logPluginError("quick-capture", error, { target:this.quickCaptureFilePath(), step:"write" });
+        new Notice("快速记录失败，请检查目标路径和自动创建设置");
       }
       throw error;
     }

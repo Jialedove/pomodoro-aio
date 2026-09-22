@@ -39,7 +39,26 @@ test("快速记录复用逻辑当日日记并区分待办与想法", async () =>
     vault.getAbstractFileByPath("Daily/today.md").content,
     "# 日记\n\n## 收集箱\n\n- [ ] 稍后处理 第二部分\n- 新的方向\n"
   );
-  assert.deepEqual(plugin.notices.slice(-2), ["待办已记入当日日记", "想法已记入当日日记"]);
+  assert.deepEqual(plugin.notices.slice(-2), ["待办已保存", "想法已保存"]);
+});
+
+test("快速记录可写入独立的按日期目标路径，且不创建当日日记", async () => {
+  const vault = new FakeVault();
+  const plugin = createPlugin({ vault, settings:{ capturePathPattern:"Inbox/{{date:YYYY-MM-DD}}.md", captureHeading:"稍后处理" } });
+  plugin.logicalTodayKey = () => "2026-09-22";
+
+  await plugin.quickCapture("整理发票");
+
+  assert.equal(vault.getAbstractFileByPath("Daily/today.md"), null);
+  assert.equal(
+    vault.getAbstractFileByPath("Inbox/2026-09-22.md").content,
+    "## 稍后处理\n\n- [ ] 整理发票\n"
+  );
+});
+
+test("快速记录目标路径模板非法时回退为当日日记", () => {
+  const settings = PomodoroAIO.normalizeSettings({ capturePathPattern:"../escape.md" });
+  assert.equal(settings.capturePathPattern, "");
 });
 
 test("空的快速记录不会创建当日日记", async () => {

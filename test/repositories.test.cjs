@@ -72,6 +72,17 @@ test("DailyRepository 原子追加快速记录到当日日记", async () => {
   );
 });
 
+test("DailyRepository 可原子追加到指定 Markdown 路径", async () => {
+  const vault = new FakeVault();
+  const repository = createRepository(vault);
+
+  const result = await repository.appendCapture({ path:"Inbox/capture.md", text:"补充想法", kind:"idea", heading:"Inbox" });
+
+  assert.equal(result.file.path, "Inbox/capture.md");
+  assert.equal(vault.getAbstractFileByPath("Daily/today.md"), null);
+  assert.equal(vault.getAbstractFileByPath("Inbox/capture.md").content, "## Inbox\n\n- 补充想法\n");
+});
+
 test("DailyRepository 快速记录遵守禁止自动创建设置", async () => {
   const repository = createRepository(new FakeVault(), "Daily/missing.md", false);
   await assert.rejects(

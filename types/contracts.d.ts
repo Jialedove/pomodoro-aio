@@ -18,6 +18,7 @@ export interface Settings {
   tasksHeading: string;
   defaultTaskName: string;
   captureHeading: string;
+  capturePathPattern: string;
   projectEnable: boolean;
   projectTag: string;
   projectStatusKey: string;
