@@ -9,6 +9,7 @@ const {
   clone,
   createPlugin
 } = require("./support.cjs");
+const { isCompletedTaskDraft } = require("../src/ui/pomodoro-view.js");
 
 async function silenceConsoleError(fn) {
   const original = console.error;
@@ -16,6 +17,12 @@ async function silenceConsoleError(fn) {
   try { return await fn(); }
   finally { console.error = original; }
 }
+
+test("完成事件只命中仍显示旧任务的循环输入草稿", () => {
+  assert.equal(isCompletedTaskDraft("旧任务", "旧任务"), true);
+  assert.equal(isCompletedTaskDraft("新草稿", "旧任务"), false);
+  assert.equal(isCompletedTaskDraft("", "旧任务"), false);
+});
 
 test("计时基线：剩余时间由绝对开始时间计算", () => {
   const clock = new FakeClock(1_000);
@@ -80,6 +87,8 @@ test("完成循环任务清空对应工作区与逐项黑屏开关", async () =>
       cycleTaskBlackoutB:true
     }
   });
+  const events = [];
+  plugin.app.workspace.trigger = (...args) => events.push(args);
 
   assert.equal(await plugin.completeTask({ cycleSlot:0 }), true);
   assert.match(vault.getAbstractFileByPath("Daily/today.md").content, /- \[x\] A 1🍅/);
@@ -89,6 +98,7 @@ test("完成循环任务清空对应工作区与逐项黑屏开关", async () =>
   assert.equal(plugin.settings.cycleTaskB, "B");
   assert.equal(plugin.settings.cycleWorkspaceCommandB, "workspaces-plus:B");
   assert.equal(plugin.settings.cycleTaskBlackoutB, true);
+  assert.deepEqual(events, [["pomodoro:aio-task-selection-cleared", { taskName:"A", cycleSlot:0 }]]);
 });
 
 test("同名未完成日记任务时不会猜测勾选或清空选择", async () => {

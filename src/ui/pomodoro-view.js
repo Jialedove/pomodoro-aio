@@ -22,6 +22,12 @@ function logViewError(plugin, operation, error, step) {
   });
 }
 
+/** @param {unknown} draft @param {unknown} completedTask */
+function isCompletedTaskDraft(draft, completedTask) {
+  const current = String(draft || "").trim();
+  return !!current && current.toLowerCase() === String(completedTask || "").trim().toLowerCase();
+}
+
 /* ========== 视图（UI） ========== */
 class PomodoroView extends ItemView {
   static VIEW_TYPE = "pomodoro-aio-view";
@@ -354,6 +360,21 @@ class PomodoroView extends ItemView {
         if (cycleSaveTimer) window.clearTimeout(cycleSaveTimer);
         cycleSaveTimer = window.setTimeout(saveCycleConfig, 180);
       };
+      /** @param {{taskName?:unknown, cycleSlot?:unknown} | null | undefined} completion */
+      const onTaskSelectionCleared = completion => {
+        const cycleSlot = completion?.cycleSlot === 1 ? 1 : (completion?.cycleSlot === 0 ? 0 : null);
+        if (cycleSlot === null) return;
+        const taskInput = cycleSlot === 0 ? cycleTaskA : cycleTaskB;
+        const workspaceInput = cycleSlot === 0 ? cycleWorkspaceA : cycleWorkspaceB;
+        if (!isCompletedTaskDraft(taskInput.value, completion?.taskName)) return;
+        if (cycleSaveTimer) window.clearTimeout(cycleSaveTimer);
+        cycleSaveTimer = null;
+        taskInput.value = "";
+        workspaceInput.value = "";
+        workspaceInput.dataset.commandId = "";
+      };
+      this.app.workspace.on("pomodoro:aio-task-selection-cleared", onTaskSelectionCleared);
+      this.disposers.push(()=> this.app.workspace.off("pomodoro:aio-task-selection-cleared", onTaskSelectionCleared));
       [cycleTaskA, cycleMinA, cycleTaskB, cycleMinB].forEach(input=>{
         input.oninput = queueCycleSave;
         input.onchange = saveCycleConfig;
@@ -518,6 +539,8 @@ class PomodoroView extends ItemView {
         [cycleTaskB, cycleMinB, clearCycleTaskB, cycleWorkspaceB, clearCycleWorkspaceB].forEach(input=> input.disabled = lockCycleB);
         completeCycleTaskA.disabled = !String(s.cycleTaskA || "").trim();
         completeCycleTaskB.disabled = !String(s.cycleTaskB || "").trim();
+        if (!cycleSaveTimer && document.activeElement !== cycleTaskA && cycleTaskA.value !== (s.cycleTaskA || "")) cycleTaskA.value = s.cycleTaskA || "";
+        if (!cycleSaveTimer && document.activeElement !== cycleTaskB && cycleTaskB.value !== (s.cycleTaskB || "")) cycleTaskB.value = s.cycleTaskB || "";
         if (document.activeElement !== cycleWorkspaceA && cycleWorkspaceA.dataset.commandId !== (s.cycleWorkspaceCommandA || "")) {
           fillWorkspaceList(cycleWorkspaceA, cycleWorkspaceListA, s.cycleWorkspaceCommandA || "");
         }
@@ -651,4 +674,4 @@ class PomodoroView extends ItemView {
   }
 }
 
-module.exports = { PomodoroView };
+module.exports = { PomodoroView, isCompletedTaskDraft };

@@ -1358,7 +1358,9 @@ class PomodoroAIO extends Plugin {
     } else if (settingsChanged) {
       this.broadcast();
     }
-    return settingsChanged || runtimeChanged;
+    const changed = settingsChanged || runtimeChanged;
+    if (changed) this.app?.workspace?.trigger?.("pomodoro:aio-task-selection-cleared", { taskName:normalized, cycleSlot });
+    return changed;
   }
 
   /** @param {boolean} [manual] */
