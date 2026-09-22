@@ -257,12 +257,21 @@ class PomodoroView extends ItemView {
       });
       const captureStatus = capturePanel.createDiv({ cls:"pmd-capture-status", attr:{ role:"status", "aria-live":"polite" } });
       let captureSubmitting = false;
+      /** @type {number | null} */
+      let captureAutoCloseTimer = null;
+      const cancelCaptureAutoClose = ()=> {
+        if (captureAutoCloseTimer === null) return;
+        window.clearTimeout(captureAutoCloseTimer);
+        captureAutoCloseTimer = null;
+      };
       const closeCapturePanel = ()=> {
+        cancelCaptureAutoClose();
         capturePanel.addClass("pmd-hidden");
         quickCaptureBtn.setAttribute("aria-expanded", "false");
         captureStatus.setText("");
       };
       const openCapturePanel = ()=> {
+        cancelCaptureAutoClose();
         capturePanel.removeClass("pmd-hidden");
         quickCaptureBtn.setAttribute("aria-expanded", "true");
         window.setTimeout(()=> captureInput.focus(), 0);
@@ -276,7 +285,11 @@ class PomodoroView extends ItemView {
           await this.plugin.quickCapture(captureInput.value, "todo");
           captureInput.value = "";
           captureStatus.setText("已保存");
-          window.setTimeout(closeCapturePanel, 700);
+          cancelCaptureAutoClose();
+          captureAutoCloseTimer = window.setTimeout(()=> {
+            captureAutoCloseTimer = null;
+            closeCapturePanel();
+          }, 700);
         } catch (error) {
           captureStatus.setText("保存失败，请检查设置");
           logViewError(this.plugin, "quick-capture", error, "write");
@@ -287,6 +300,7 @@ class PomodoroView extends ItemView {
         }
       };
       quickCaptureBtn.onclick = ()=> capturePanel.classList.contains("pmd-hidden") ? openCapturePanel() : closeCapturePanel();
+      captureInput.oninput = cancelCaptureAutoClose;
       captureInput.onkeydown = event => {
         if (event.key === "Enter" && !event.isComposing && event.keyCode !== 229) {
           event.preventDefault();
@@ -600,6 +614,7 @@ class PomodoroView extends ItemView {
       this.disposers.push(()=>{
         if (taskSaveTimer) saveTask();
         if (cycleSaveTimer) saveCycleConfig();
+        cancelCaptureAutoClose();
       });
     } catch(err){
       logViewError(this.plugin, "view-render", err, "onOpen");
