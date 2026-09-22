@@ -127,9 +127,11 @@ class PomodoroView extends ItemView {
       // 内嵌清空（×）
       const clearTaskBtn = taskBox.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空任务名", 'aria-label':"清空任务名", type:"button" } });
       const taskBlackoutBtn = taskWrap.createEl("button", {
-        text:"执行时黑屏", cls:"pmd-task-blackout-toggle",
+        cls:"pmd-blackout-option",
         attr:{ type:"button", "aria-label":"当前任务执行时黑屏", "aria-pressed":"false", title:"此任务执行时显示黑屏" }
       });
+      taskBlackoutBtn.createSpan({ cls:"pmd-blackout-check", attr:{ "aria-hidden":"true" } });
+      taskBlackoutBtn.createSpan({ text:"执行时黑屏" });
       // Esc 清空
       taskInput.onkeydown = (e)=>{
         if (this.plugin.shouldBlockHotkeys(e, { allowInPluginInput:true })) return;
@@ -168,12 +170,14 @@ class PomodoroView extends ItemView {
       });
       const cycleTaskListA = cycleTaskWrapA.createEl("datalist", { attr:{ id:"pmdCycleTaskListA" } });
       const clearCycleTaskA = cycleTaskWrapA.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空任务名", "aria-label":"清空任务名", type:"button" } });
-      const cycleTaskBlackoutA = cycleFieldsA.createEl("button", {
-        text:"执行时黑屏", cls:"pmd-task-blackout-toggle",
-        attr:{ type:"button", "aria-label":"任务 A 执行时黑屏", "aria-pressed":"false", title:"任务 A 执行时显示黑屏" }
-      });
       const completeCycleTaskA = cycleTaskWrapA.createEl("button", { text:"完成", cls:"pmd-clear pmd-complete-cycle", attr:{ title:"完成任务 A", "aria-label":"完成任务 A", type:"button" } });
-      const cycleWorkspaceWrapA = cycleFieldsA.createDiv({ cls:"pmd-input-wrap" });
+      const cycleDurationA = cycleFieldsA.createDiv({ cls:"pmd-cycle-duration" });
+      const cycleMinA = cycleDurationA.createEl("input", {
+        type:"number", cls:"pmd-cycle-min",
+        attr:{ min:"1", step:"1", placeholder:"时长", "aria-label":"任务 A 时长（分钟）" }
+      });
+      cycleDurationA.createSpan({ cls:"pmd-cycle-unit", text:"分钟" });
+      const cycleWorkspaceWrapA = cycleFieldsA.createDiv({ cls:"pmd-input-wrap pmd-cycle-workspace-wrap" });
       const cycleWorkspaceA = cycleWorkspaceWrapA.createEl("input", {
         type:"text",
         cls:"pmd-cycle-workspace",
@@ -181,12 +185,12 @@ class PomodoroView extends ItemView {
       });
       const cycleWorkspaceListA = cycleWorkspaceWrapA.createEl("datalist", { attr:{ id:"pmdCycleWorkspaceListA" } });
       const clearCycleWorkspaceA = cycleWorkspaceWrapA.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空工作区选择", "aria-label":"清空工作区选择", type:"button" } });
-      const cycleDurationA = cycleRowA.createDiv({ cls:"pmd-cycle-duration" });
-      const cycleMinA = cycleDurationA.createEl("input", {
-        type:"number", cls:"pmd-cycle-min",
-        attr:{ min:"1", step:"1", placeholder:"时长", "aria-label":"任务 A 时长（分钟）" }
+      const cycleTaskBlackoutA = cycleFieldsA.createEl("button", {
+        cls:"pmd-blackout-option pmd-cycle-blackout-option",
+        attr:{ type:"button", "aria-label":"任务 A 执行时黑屏", "aria-pressed":"false", title:"任务 A 执行时显示黑屏" }
       });
-      cycleDurationA.createSpan({ cls:"pmd-cycle-unit", text:"分钟" });
+      cycleTaskBlackoutA.createSpan({ cls:"pmd-blackout-check", attr:{ "aria-hidden":"true" } });
+      cycleTaskBlackoutA.createSpan({ text:"执行时黑屏" });
 
       const cycleRowB = cycleWrap.createDiv({ cls:"pmd-cycle-row" });
       const cycleRoleB = cycleRowB.createSpan({ cls:"pmd-cycle-role", text:"下一段" });
@@ -198,12 +202,14 @@ class PomodoroView extends ItemView {
       });
       const cycleTaskListB = cycleTaskWrapB.createEl("datalist", { attr:{ id:"pmdCycleTaskListB" } });
       const clearCycleTaskB = cycleTaskWrapB.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空任务名", "aria-label":"清空任务名", type:"button" } });
-      const cycleTaskBlackoutB = cycleFieldsB.createEl("button", {
-        text:"执行时黑屏", cls:"pmd-task-blackout-toggle",
-        attr:{ type:"button", "aria-label":"任务 B 执行时黑屏", "aria-pressed":"false", title:"任务 B 执行时显示黑屏" }
-      });
       const completeCycleTaskB = cycleTaskWrapB.createEl("button", { text:"完成", cls:"pmd-clear pmd-complete-cycle", attr:{ title:"完成任务 B", "aria-label":"完成任务 B", type:"button" } });
-      const cycleWorkspaceWrapB = cycleFieldsB.createDiv({ cls:"pmd-input-wrap" });
+      const cycleDurationB = cycleFieldsB.createDiv({ cls:"pmd-cycle-duration" });
+      const cycleMinB = cycleDurationB.createEl("input", {
+        type:"number", cls:"pmd-cycle-min",
+        attr:{ min:"1", step:"1", placeholder:"时长", "aria-label":"任务 B 时长（分钟）" }
+      });
+      cycleDurationB.createSpan({ cls:"pmd-cycle-unit", text:"分钟" });
+      const cycleWorkspaceWrapB = cycleFieldsB.createDiv({ cls:"pmd-input-wrap pmd-cycle-workspace-wrap" });
       const cycleWorkspaceB = cycleWorkspaceWrapB.createEl("input", {
         type:"text",
         cls:"pmd-cycle-workspace",
@@ -211,12 +217,12 @@ class PomodoroView extends ItemView {
       });
       const cycleWorkspaceListB = cycleWorkspaceWrapB.createEl("datalist", { attr:{ id:"pmdCycleWorkspaceListB" } });
       const clearCycleWorkspaceB = cycleWorkspaceWrapB.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空工作区选择", "aria-label":"清空工作区选择", type:"button" } });
-      const cycleDurationB = cycleRowB.createDiv({ cls:"pmd-cycle-duration" });
-      const cycleMinB = cycleDurationB.createEl("input", {
-        type:"number", cls:"pmd-cycle-min",
-        attr:{ min:"1", step:"1", placeholder:"时长", "aria-label":"任务 B 时长（分钟）" }
+      const cycleTaskBlackoutB = cycleFieldsB.createEl("button", {
+        cls:"pmd-blackout-option pmd-cycle-blackout-option",
+        attr:{ type:"button", "aria-label":"任务 B 执行时黑屏", "aria-pressed":"false", title:"任务 B 执行时显示黑屏" }
       });
-      cycleDurationB.createSpan({ cls:"pmd-cycle-unit", text:"分钟" });
+      cycleTaskBlackoutB.createSpan({ cls:"pmd-blackout-check", attr:{ "aria-hidden":"true" } });
+      cycleTaskBlackoutB.createSpan({ text:"执行时黑屏" });
       cycleTaskA.value = this.plugin.settings.cycleTaskA || "";
       cycleTaskB.value = this.plugin.settings.cycleTaskB || "";
       cycleMinA.value = String(this.plugin.settings.cycleMinA || 15);
