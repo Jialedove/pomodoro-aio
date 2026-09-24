@@ -9,7 +9,7 @@
 - 暂停、继续和重置均以毫秒运行态计算，恢复时根据绝对时间重新计算剩余时间。
 - 自然到点按计划时长折算番茄；“立刻结算当前专注”按实际有效专注时长折算，均保持一位小数，非零实际时长最低记为 `0.1🍅`。
 - 强提醒只提醒待确认阶段，不会重新启动已经运行的阶段。
-- 可选“休息时黑屏”会在休息真正开始后遮住 Obsidian 主窗口；Esc 或点击只退出遮罩，不会停止休息计时。
+- 可选“休息时黑屏”和逐任务“执行时黑屏”在 macOS 上使用无边框原生覆盖层，遮住鼠标所在显示器的当前画面，不会把 Obsidian 切到新的全屏空间；Esc 或“立即退出”只撤下遮罩，不停止计时。原生程序不可用时退回 Obsidian 窗口内遮罩并提示原因。
 - “完成本段”只结算当前专注；“完成任务”会先结算正在运行任务的实际时长，再勾选对应日记待办，并清空该任务及其 Workspaces Plus 选择。
 
 ## 日记与项目同步
@@ -23,7 +23,7 @@
 
 ## 开发
 
-需要 Node.js LTS、npm，以及 Obsidian 1.8.7 或更高版本。
+需要 Node.js LTS、npm，以及 Obsidian 1.8.7 或更高版本。macOS 原生黑屏还需要 Xcode Command Line Tools 中的 Swift 编译器。
 
 ```bash
 npm ci
@@ -40,7 +40,7 @@ npm run build
 npm run check
 ```
 
-`npm run typecheck` 会执行全部源码语法检查，并对全部 `src` 模块运行 TypeScript `checkJs`；`types/obsidian.d.ts` 只提供编译期 API 形状，不进入运行时。`npm run check` 依次执行类型检查、项目 lint、单元/集成测试、生产构建和构建产物一致性检查。
+`npm run typecheck` 会执行全部源码语法检查，并对全部 `src` 模块运行 TypeScript `checkJs`；`types/obsidian.d.ts` 只提供编译期 API 形状，不进入运行时。`npm run check` 依次执行类型检查、项目 lint、单元/集成测试、生产构建、构建产物一致性检查和 macOS 原生辅助程序构建（非 macOS 跳过）。
 
 CI 还会确认提交的根目录 `main.js` 与生产构建一致；源码改动后请提交重新生成的产物。
 
@@ -60,7 +60,7 @@ npm run build
 npm run install:vault
 ```
 
-默认安装到 Dove 的卡片库；如需临时指定其他目录，可设置 `OBSIDIAN_PLUGIN_DIR`。安装脚本仅覆盖插件的 `main.js`、`manifest.json` 与 `styles.css`，会保留已有的 `data.json` 设置文件。安装后请在 Obsidian 中重载插件。
+默认安装到 Dove 的卡片库；如需临时指定其他目录，可设置 `OBSIDIAN_PLUGIN_DIR`。安装脚本只覆盖插件的 `main.js`、`manifest.json`、`styles.css` 与 `bin/pomodoro-blackout`，保留已有的 `data.json` 设置文件。安装后请在 Obsidian 中重载插件。原生程序只接收当前任务的显示文字与倒计时，计时与日记写入仍由插件管理；失去插件输入后会自动退出。
 
 ## 许可证
 

@@ -1,18 +1,12 @@
 const { TIMER_STATUS, TIMER_STAGE } = require("../core/timer");
 
-/**
- * Obsidian plugins run in Electron's renderer process. BrowserWindow is a main
- * process API and Obsidian exposes no supported bridge for a plugin to create
- * another always-on-top window. Keep the limitation explicit rather than
- * attempting an unsupported `require("electron").BrowserWindow` call.
- */
-/** @param {Document | null | undefined} document */
-function getBlackoutCapability(document) {
+// This describes the safe in-window fallback, not the macOS helper.
+function getBlackoutCapability() {
   return {
     scope: "obsidian-window",
     canCoverOtherApps: false,
-    canRequestCurrentDisplayFullscreen: typeof document?.documentElement?.requestFullscreen === "function",
-    reason: "Obsidian 插件只能安全操作当前渲染窗口，不能创建独立的置顶全屏 Electron 窗口。"
+    canRequestCurrentDisplayFullscreen: false,
+    reason: "原生遮罩不可用时仅覆盖 Obsidian 窗口，不切换到网页全屏。"
   };
 }
 
@@ -71,9 +65,6 @@ class BreakBlackoutController {
     this.titleEl = null;
     this.dismissedKey = "";
     this.finishedKey = "";
-    this.fullscreenRequested = false;
-    this.fullscreenRequest = null;
-    this.fullscreenRequestId = 0;
     this.finishUntilMs = 0;
     this._onKeydown = (/** @type {KeyboardEvent} */ event) => {
       if (event.key !== "Escape" || !this.overlay) return;
@@ -135,7 +126,6 @@ class BreakBlackoutController {
     if (!this.overlay) return;
     this.dismissedKey = blackoutKey(this.runtime);
     this.hide();
-    this.exitCurrentDisplayFullscreen();
     this.onDismiss();
   }
 
@@ -146,56 +136,6 @@ class BreakBlackoutController {
     this.labelEl = null;
     this.titleEl = null;
     this.timeEl = null;
-  }
-
-  /**
-   * Must be called synchronously from a direct user gesture. It only makes the
-   * current Obsidian window fullscreen; it cannot cover another application.
-   */
-  requestCurrentDisplayFullscreen() {
-    const root = this.document?.documentElement;
-    if (!root || typeof root.requestFullscreen !== "function" || this.document?.fullscreenElement || this.fullscreenRequested) return Promise.resolve(false);
-    if (this.fullscreenRequest) return this.fullscreenRequest;
-    const requestId = ++this.fullscreenRequestId;
-    /** @type {Promise<boolean>} */
-    let pending;
-    try {
-      pending = Promise.resolve(root.requestFullscreen({ navigationUI: "hide" }))
-        .then(() => {
-          if (requestId !== this.fullscreenRequestId) {
-            this._exitFullscreenDocument();
-            return false;
-          }
-          this.fullscreenRequested = true;
-          return true;
-        })
-        .catch(() => false)
-        .finally(() => {
-          if (this.fullscreenRequest === pending) this.fullscreenRequest = null;
-        });
-      this.fullscreenRequest = pending;
-      return pending;
-    } catch {
-      return Promise.resolve(false);
-    }
-  }
-
-  exitCurrentDisplayFullscreen() {
-    this.fullscreenRequestId += 1;
-    if (!this.fullscreenRequested) return false;
-    this.fullscreenRequested = false;
-    return this._exitFullscreenDocument();
-  }
-
-  _exitFullscreenDocument() {
-    if (typeof this.document?.exitFullscreen !== "function") return false;
-    try {
-      const exited = this.document.exitFullscreen();
-      exited?.catch?.(() => {});
-      return true;
-    } catch {
-      return false;
-    }
   }
 
   isFinishing() {
@@ -212,7 +152,6 @@ class BreakBlackoutController {
     }
     if (!shouldShowBlackout(runtime, settings)) {
       this.hide();
-      this.exitCurrentDisplayFullscreen();
       return false;
     }
     if (this.dismissedKey === key) {
@@ -225,7 +164,6 @@ class BreakBlackoutController {
 
   destroy() {
     this.hide();
-    this.exitCurrentDisplayFullscreen();
     this.dismissedKey = "";
     this.finishedKey = "";
     this.finishUntilMs = 0;
@@ -242,6 +180,7 @@ module.exports = {
   BreakBlackoutController,
   formatBlackoutTime,
   blackoutPrompt,
+  blackoutKey,
   shouldShowBlackout,
   shouldShowBreakBlackout,
   getBlackoutCapability

@@ -457,21 +457,21 @@ class PomodoroView extends ItemView {
       openTodayBtn.onclick = event=> this.plugin.runUserCommand(() => this.plugin.openToday(), event);
       longBtn.onclick = event=> this.plugin.runUserCommand(() => {
         const minutes = ensureLongValue();
-        return this.plugin.startFocus({ cause:'manual', minutes, requestFullscreen:true });
+        return this.plugin.startFocus({ cause:'manual', minutes });
       }, event);
 
       startBtn.onclick = event=> this.plugin.runUserCommand(() => {
         const snap = this.plugin.snapshot();
         if (snap.runtime.status === TIMER_STATUS.PAUSED) return this.plugin.togglePause(true);
         if (snap.runtime.attention && !snap.runtime.attention.nextStarted) {
-          return this.plugin.startPendingStage({ requestFullscreen:true });
+          return this.plugin.startPendingStage();
         }
         if (this.plugin.settings.workMode === 'cycle') {
           saveCycleConfig();
-          return this.plugin.startCycle(snap.runtime.cycleSlot, { requestFullscreen:true });
+          return this.plugin.startCycle(snap.runtime.cycleSlot);
         } else {
           saveTask();
-          return this.plugin.startFocus({ cause:'manual', requestFullscreen:true });
+          return this.plugin.startFocus({ cause:'manual' });
         }
       }, event);
       pauseBtn.onclick = event=> this.plugin.runUserCommand(() => this.plugin.togglePause(), event);

@@ -88,31 +88,20 @@ test("黑屏显示当前任务名，而不是固定的离开电脑提示", () =>
   assert.equal(controller.titleEl.textContent, "休息一下");
 });
 
-test("结束倒计时只闪烁一次，并探测当前显示器全屏能力", async () => {
+test("结束倒计时只闪烁一次，窗口后备遮罩不请求网页全屏", () => {
   const document = new FakeDocument();
   let fullscreenRequests = 0;
-  let fullscreenExits = 0;
   let now = 1_000;
   document.documentElement.requestFullscreen = () => {
     fullscreenRequests += 1;
-    document.fullscreenElement = document.documentElement;
-    return Promise.resolve();
-  };
-  document.exitFullscreen = () => {
-    fullscreenExits += 1;
-    document.fullscreenElement = null;
-    return Promise.resolve();
   };
   const controller = new BreakBlackoutController({ document, now:()=>now, finishDurationMs:320 });
   const runtime = breakRuntime({ sessionId:"break-1" });
 
   assert.equal(getBlackoutCapability(document).canCoverOtherApps, false);
-  assert.equal(getBlackoutCapability(document).canRequestCurrentDisplayFullscreen, true);
-  assert.equal(await controller.requestCurrentDisplayFullscreen(), true);
-  assert.equal(fullscreenRequests, 1);
-  assert.equal(controller.exitCurrentDisplayFullscreen(), true);
-  assert.equal(fullscreenExits, 1);
+  assert.equal(getBlackoutCapability(document).canRequestCurrentDisplayFullscreen, false);
   controller.sync(runtime, { breakBlackoutEnabled:true }, 0);
+  assert.equal(fullscreenRequests, 0);
   assert.match(controller.overlay.className, /pmd-blackout-finished/);
   assert.equal(controller.isFinishing(), true);
   now += 320;
@@ -120,44 +109,6 @@ test("结束倒计时只闪烁一次，并探测当前显示器全屏能力", as
   const className = controller.overlay.className;
   controller.sync(runtime, { breakBlackoutEnabled:true }, 0);
   assert.equal(controller.overlay.className, className);
-});
-
-test("拒绝全屏不会接管用户窗口，关闭遮罩会退出本次全屏", async () => {
-  const document = new FakeDocument();
-  let exits = 0;
-  document.documentElement.requestFullscreen = () => Promise.reject(new Error("denied"));
-  document.exitFullscreen = () => { exits += 1; return Promise.resolve(); };
-  const controller = new BreakBlackoutController({ document });
-
-  assert.equal(await controller.requestCurrentDisplayFullscreen(), false);
-  assert.equal(controller.fullscreenRequested, false);
-  assert.equal(controller.exitCurrentDisplayFullscreen(), false);
-  assert.equal(exits, 0);
-
-  document.documentElement.requestFullscreen = () => Promise.resolve();
-  assert.equal(await controller.requestCurrentDisplayFullscreen(), true);
-  controller.sync(breakRuntime(), { breakBlackoutEnabled:true }, 30);
-  controller.sync({ status:"idle", stage:null }, { breakBlackoutEnabled:true }, 0);
-  assert.equal(exits, 1);
-});
-
-test("已有用户全屏不会被接管，阶段结束会取消等待中的全屏请求", async () => {
-  const document = new FakeDocument();
-  let exits = 0;
-  let resolveRequest;
-  document.exitFullscreen = () => { exits += 1; return Promise.resolve(); };
-  document.fullscreenElement = { userOwned:true };
-  document.documentElement.requestFullscreen = () => assert.fail("不应接管已有的用户全屏");
-  const controller = new BreakBlackoutController({ document });
-
-  assert.equal(await controller.requestCurrentDisplayFullscreen(), false);
-  document.fullscreenElement = null;
-  document.documentElement.requestFullscreen = () => new Promise(resolve => { resolveRequest = resolve; });
-  const pending = controller.requestCurrentDisplayFullscreen();
-  controller.sync({ status:"idle", stage:null }, { breakBlackoutEnabled:true }, 0);
-  resolveRequest();
-  assert.equal(await pending, false);
-  assert.equal(exits, 1);
 });
 
 test("黑屏控制器支持倒计时、Esc 退出且同一休息不重新出现", () => {

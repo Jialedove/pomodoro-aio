@@ -262,17 +262,12 @@ test("插件按快照同步黑屏且设置默认关闭", () => {
   assert.equal(PomodoroAIO.normalizeSettings({ cycleTaskBlackoutA:true }).cycleTaskBlackoutA, true);
 });
 
-test("被拒绝的启动不会请求黑屏全屏", async () => {
+test("被拒绝的启动不改变现有计时，也不创建黑屏", async () => {
   const plugin = createPlugin({ runtime:{ status:"running", stage:"focus" } });
-  let taskRequests = 0;
-  let breakRequests = 0;
-  plugin.requestTaskBlackoutFullscreen = () => { taskRequests += 1; return Promise.resolve(false); };
-  plugin.requestBreakBlackoutFullscreen = () => { breakRequests += 1; return Promise.resolve(false); };
-
-  assert.equal(await plugin.startFocus({ requestFullscreen:true, suppressNotify:true }), false);
-  assert.equal(await plugin.startBreak(false, { requestFullscreen:true, suppressNotify:true }), false);
-  assert.equal(taskRequests, 0);
-  assert.equal(breakRequests, 0);
+  assert.equal(await plugin.startFocus({ suppressNotify:true }), false);
+  assert.equal(await plugin.startBreak(false, { suppressNotify:true }), false);
+  assert.equal(plugin.runtime.stage, "focus");
+  assert.equal(plugin.breakBlackout, null);
 });
 
 test("普通模式：开始自定义专注保留任务并折算番茄额度", async () => {

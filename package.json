@@ -8,11 +8,12 @@
     "dev": "node esbuild.config.mjs --watch",
     "build:dev": "node esbuild.config.mjs",
     "build": "node esbuild.config.mjs --production",
+    "build:native": "node scripts/build-native.mjs",
     "typecheck": "node scripts/typecheck.cjs",
     "lint": "eslint src scripts test esbuild.config.mjs && node scripts/lint.cjs",
     "test": "node --test test/*.test.cjs && node scripts/cycle-mode-check.cjs",
     "check:build": "node scripts/check-build.cjs",
-    "check": "npm run typecheck && npm run lint && npm test && npm run build && npm run check:build",
+    "check": "npm run typecheck && npm run lint && npm test && npm run build && npm run check:build && npm run build:native",
     "install:vault": "npm run check && node scripts/install-vault.mjs"
   },
   "devDependencies": {
