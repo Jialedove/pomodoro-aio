@@ -47,6 +47,20 @@ test("DailyRepository 保留任务行、CRLF 和 frontmatter 汇总行为", asyn
   assert.equal(vault.getAbstractFileByPath("Daily/today.md").frontmatter["番茄数"], 0.2);
 });
 
+test("DailyRepository 原子完成任务并保留番茄与行格式", async () => {
+  const vault = new FakeVault({ "Daily/today.md": "- [ ] 写报告 1.2🍅\r\n" });
+  const repository = createRepository(vault);
+
+  const result = await repository.completeTask({ taskName:"写报告" });
+
+  assert.equal(result.alreadyApplied, false);
+  assert.equal(vault.getAbstractFileByPath("Daily/today.md").content, "- [x] 写报告 1.2🍅\r\n");
+  await assert.rejects(
+    () => repository.completeTask({ taskName:"写报告" }),
+    error => error.code === "TASK_COMPLETION_CONFLICT"
+  );
+});
+
 test("DailyRepository 可按设置创建当天文件并列出未完成任务", async () => {
   const vault = new FakeVault();
   const repository = createRepository(vault);
@@ -55,6 +69,40 @@ test("DailyRepository 可按设置创建当天文件并列出未完成任务", a
 
   assert.equal(file.path, "Daily/today.md");
   assert.deepEqual(repository.listUncheckedTasksFromText(file.content), ["A", "C"]);
+});
+
+test("DailyRepository 原子追加快速记录到当日日记", async () => {
+  const vault = new FakeVault({ "Daily/today.md": "# 日记\n" });
+  const repository = createRepository(vault);
+
+  const todo = await repository.appendCapture({ text:"查询机票", kind:"todo", heading:"Inbox" });
+  const idea = await repository.appendCapture({ text:"文章灵感", kind:"idea", heading:"Inbox" });
+
+  assert.equal(todo.file.path, "Daily/today.md");
+  assert.equal(idea.line, "- 文章灵感");
+  assert.equal(
+    vault.getAbstractFileByPath("Daily/today.md").content,
+    "# 日记\n\n## Inbox\n\n- [ ] 查询机票\n- 文章灵感\n"
+  );
+});
+
+test("DailyRepository 可原子追加到指定 Markdown 路径", async () => {
+  const vault = new FakeVault();
+  const repository = createRepository(vault);
+
+  const result = await repository.appendCapture({ path:"Inbox/capture.md", text:"补充想法", kind:"idea", heading:"Inbox" });
+
+  assert.equal(result.file.path, "Inbox/capture.md");
+  assert.equal(vault.getAbstractFileByPath("Daily/today.md"), null);
+  assert.equal(vault.getAbstractFileByPath("Inbox/capture.md").content, "## Inbox\n\n- 补充想法\n");
+});
+
+test("DailyRepository 快速记录遵守禁止自动创建设置", async () => {
+  const repository = createRepository(new FakeVault(), "Daily/missing.md", false);
+  await assert.rejects(
+    () => repository.appendCapture({ text:"不会写入", kind:"todo", heading:"Inbox" }),
+    /未开启自动创建/
+  );
 });
 
 test("DailyRepository 只按规范 Markdown 路径创建目录和文件", async () => {

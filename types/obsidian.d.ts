@@ -34,6 +34,14 @@ declare module "obsidian" {
     constructor(leaf: any);
   }
 
+  export class Modal {
+    app: any;
+    contentEl: ObsidianElement;
+    constructor(app: any);
+    open(): void;
+    close(): void;
+  }
+
   export class PluginSettingTab {
     app: any;
     plugin: any;

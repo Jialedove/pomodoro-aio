@@ -20,6 +20,9 @@
 .pmd-input-wrap { position: relative; flex: 1 1 160px; min-width: 0; }
 .pmd-input-wrap .pmd-input { width: 100%; padding-right: 28px; }
 .pmd-clear { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); width: 20px; height: 20px; border: none; background: transparent; color: var(--text-muted); cursor: pointer; border-radius: 4px; }
+.pmd-cycle-task-input .pmd-input { padding-right: 58px; }
+.pmd-cycle-task-input .pmd-clear:not(.pmd-complete-cycle) { right: 30px; }
+.pmd-cycle-task-input .pmd-complete-cycle { width: 28px; font-size: 11px; }
 .pmd-clear:hover { background: var(--background-modifier-hover); }
 .pmd-clear:active { background: var(--background-modifier-border); }
 /* 当输入为空且显示占位符时，隐藏清空按钮 */
@@ -27,6 +30,11 @@
 .pmd-input-wrap .pmd-cycle-workspace:placeholder-shown ~ .pmd-clear { opacity: 0; pointer-events: none; }
 .pmd-input-wrap.pmd-datalist-opening .pmd-clear { opacity: 0; pointer-events: none; }
 .pmd-input { flex: 1 1 auto; display: block; width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--background-modifier-border); border-radius: 8px; }
+.pmd-capture-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; margin-top: 8px; padding: 8px; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); border-radius: 10px; }
+.pmd-capture-panel .pmd-input { min-height: 36px; }
+.pmd-capture-status { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.pmd-capture-modal-input { width: 100%; resize: vertical; }
+.pmd-capture-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .pmd-actions { display:flex; gap:8px; margin-top: 12px; flex-wrap: wrap; }
 .pmd-btn { padding: 6px 10px; border: 1px solid var(--background-modifier-border); border-radius: 8px; flex-shrink: 0; }
 .pmd-btn-primary { color: var(--text-on-accent); background: var(--interactive-accent); border-color: var(--interactive-accent); }
@@ -52,7 +60,7 @@
 .pmd-cycle { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .pmd-cycle-row {
   display: grid;
-  grid-template-columns: 52px minmax(0, 1fr) auto;
+  grid-template-columns: 52px minmax(0, 1fr);
   gap: 8px;
   align-items: center;
   min-width: 0;
@@ -64,7 +72,16 @@
 .pmd-cycle-row.is-selectable { cursor: pointer; }
 .pmd-cycle-role { align-self: start; padding-top: 8px; color: var(--text-muted); font-size: 12px; font-weight: 600; text-align: center; white-space: nowrap; }
 .pmd-cycle-row.is-current .pmd-cycle-role { color: var(--text-accent); }
-.pmd-cycle-fields { display: grid; gap: 6px; min-width: 0; }
+.pmd-cycle-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  grid-template-areas: "task duration" "workspace blackout";
+  gap: 6px 8px;
+  align-items: center;
+  min-width: 0;
+}
+.pmd-cycle-task-input { grid-area: task; }
+.pmd-cycle-workspace-wrap { grid-area: workspace; }
 .pmd-cycle-workspace {
   display: block;
   width: 100%;
@@ -79,15 +96,74 @@
   text-overflow: ellipsis;
 }
 .pmd-cycle-workspace:focus { color: var(--text-normal); border-color: var(--interactive-accent); }
-.pmd-cycle-duration { align-self: start; display: flex; align-items: center; gap: 4px; min-width: 0; }
+.pmd-cycle-duration { grid-area: duration; display: flex; align-items: center; gap: 4px; min-width: 0; }
 .pmd-cycle-min { width: 64px; min-width: 0; }
 .pmd-cycle-unit { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.pmd-root button.pmd-blackout-option {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  min-height: 40px;
+  padding: 0;
+  border: 0;
+  appearance: none;
+  box-shadow: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.pmd-root button.pmd-blackout-option:hover,
+.pmd-root button.pmd-blackout-option:active { border: 0; box-shadow: none; background: transparent; }
+.pmd-blackout-check {
+  flex: 0 0 40px;
+  position: relative;
+  width: 40px;
+  height: 40px;
+}
+.pmd-blackout-check::before {
+  content: "";
+  position: absolute;
+  inset: 7px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+}
+.pmd-blackout-check::after {
+  content: "✓";
+  position: absolute;
+  inset: 7px;
+  display: grid;
+  place-items: center;
+  color: transparent;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+}
+.pmd-blackout-option:hover .pmd-blackout-check::before { border-color: var(--interactive-accent); }
+.pmd-blackout-option[aria-pressed="true"] .pmd-blackout-check::before {
+  border-color: var(--interactive-accent);
+  background: var(--interactive-accent);
+}
+.pmd-blackout-option[aria-pressed="true"] .pmd-blackout-check::after { color: var(--text-on-accent); }
+.pmd-blackout-option:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: -4px; border-radius: 10px; }
+.pmd-blackout-option:active { scale: .96; }
+.pmd-cycle-blackout-option { grid-area: blackout; justify-self: end; }
 .pmd-hidden { display: none; }
 @container (max-width: 320px) {
   .pmd-head .pmd-btn { margin-left: 0; width: 100%; }
   .pmd-time { min-width: 0; }
   .pmd-row-inline > .pmd-btn { width: 100%; }
-  .pmd-cycle-row { grid-template-columns: 48px minmax(0, 1fr) 72px; gap: 6px; padding: 3px; }
+  .pmd-capture-panel { grid-template-columns: 1fr; }
+  .pmd-capture-status { white-space: normal; }
+  .pmd-cycle-row { grid-template-columns: 48px minmax(0, 1fr); gap: 6px; padding: 3px; }
+  .pmd-cycle-fields {
+    grid-template-columns: minmax(0, 1fr) 80px;
+    grid-template-areas: "task duration" "workspace workspace" "blackout blackout";
+    gap: 6px;
+  }
   .pmd-cycle-unit { display: none; }
   .pmd-cycle-min { width: 100%; }
 }
@@ -119,6 +195,34 @@
   animation: pomodoro-ribbon-pulse 1s ease-in-out infinite;
   pointer-events: none;
 }
+.pmd-blackout-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: #000;
+  cursor: pointer;
+  -webkit-font-smoothing: antialiased;
+}
+.pmd-blackout-content { display: grid; justify-items: center; gap: 12px; max-width: min(88vw, 720px); text-align: center; }
+.pmd-blackout-label { color: rgba(255,255,255,.72); font-size: 14px; letter-spacing: .08em; text-wrap: pretty; }
+.pmd-blackout-title { color: #fff; font-size: clamp(48px, 10vw, 112px); font-weight: 700; letter-spacing: -.04em; line-height: 1; text-wrap: balance; overflow-wrap: anywhere; }
+.pmd-blackout-time { color: rgba(255,255,255,.86); font-size: clamp(32px, 8vw, 72px); font-variant-numeric: tabular-nums; }
+.pmd-blackout-exit {
+  padding: 7px 12px;
+  color: rgba(255, 255, 255, 0.4);
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.pmd-blackout-exit:hover,
+.pmd-blackout-exit:focus-visible { color: rgba(255, 255, 255, 0.8); border-color: rgba(255, 255, 255, 0.5); }
+.pmd-blackout-finished { animation: pmd-blackout-finish-flash 320ms ease-out 1; }
+@keyframes pmd-blackout-finish-flash { 0%, 100% { opacity: 1; } 45% { opacity: .84; } }
+@media (prefers-reduced-motion: reduce) { .pmd-blackout-finished { animation: none; } }
 @keyframes pomodoro-ribbon-pulse {
   0%,100% { opacity: 0.25; }
   50% { opacity: 1; }

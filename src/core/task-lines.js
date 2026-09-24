@@ -59,6 +59,46 @@ function settlementConflict(message) {
   return error;
 }
 
+/** @param {string} message */
+function taskCompletionConflict(message) {
+  /** @type {Error & { code?: string }} */
+  const error = new Error(message);
+  error.code = "TASK_COMPLETION_CONFLICT";
+  return error;
+}
+
+/**
+ * Plan a checkbox-only task completion. Completion deliberately requires one
+ * unchecked exact-name match: a task name alone is not enough identity when a
+ * daily note contains duplicate unchecked rows.
+ * @param {unknown} text @param {unknown} taskName @returns {TaskMutationPlan}
+ */
+function planTaskLineCompletion(text, taskName) {
+  const source = String(text || "");
+  const eol = source.includes("\r\n") ? "\r\n" : "\n";
+  const lines = source.split(/\r?\n/);
+  const want = String(taskName || "").trim().toLowerCase();
+  if (!want) throw new Error("任务名为空");
+  const hits = lines.reduce((indexes, line, index) => {
+    if (/^\s*-\s*\[\s\]\s+/.test(line) && stripBaseName(line).toLowerCase() === want) indexes.push(index);
+    return indexes;
+  }, /** @type {number[]} */ ([]));
+  if (!hits.length) throw taskCompletionConflict("未找到待完成的任务行");
+  if (hits.length > 1) throw taskCompletionConflict("存在多个同名未完成任务，无法安全标记");
+  const targetIndex = hits[0];
+  const lineBefore = lines[targetIndex];
+  const lineAfter = lineBefore.replace(/^(\s*-\s*\[)\s(\])/, "$1x$2");
+  return {
+    kind: "complete",
+    targetIndex,
+    lineBefore,
+    lineAfter,
+    beforeHash: textHash(source),
+    expectedSum: getTomatoSum(source),
+    eol
+  };
+}
+
 /** @param {unknown} text @param {unknown} taskName @param {number} amount @param {Pick<Settings, "allowAutoCreateTask" | "tasksHeading">} settings @returns {TaskMutationPlan} */
 function planTaskLineMutation(text, taskName, amount, settings) {
   const source = String(text || "");
@@ -141,6 +181,8 @@ module.exports = {
   insertUnderHeading,
   textHash,
   settlementConflict,
+  taskCompletionConflict,
+  planTaskLineCompletion,
   planTaskLineMutation,
   applyTaskLineMutation
 };

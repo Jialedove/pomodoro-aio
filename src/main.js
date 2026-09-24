@@ -14,6 +14,8 @@ const {
 } = require("./core/validation");
 const {
   getTomatoSum,
+  stripBaseName,
+  planTaskLineCompletion,
   settlementConflict
 } = require("./core/task-lines");
 const {
@@ -36,7 +38,10 @@ const {
 } = require("./core/settlement");
 const { RuntimeStore, cloneValue } = require("./services/runtime-store");
 const { DailyRepository, ProjectRepository } = require("./services/repositories");
+const { normalizeCaptureHeading, normalizeCaptureText } = require("./core/quick-capture");
 const { PomodoroView } = require("./ui/pomodoro-view");
+const { QuickCaptureModal } = require("./ui/quick-capture-modal");
+const { BreakBlackoutController } = require("./ui/break-blackout");
 const { PomodoroSettingTab } = require("./ui/settings-tab");
 const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/workspaces-plus");
 /** @typedef {import("../types/contracts").Attention} Attention */
@@ -50,8 +55,8 @@ const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/
 /** @typedef {import("../types/contracts").StageTransition} StageTransition */
 /** @typedef {import("../types/contracts").TimerStage} TimerStage */
 /** @typedef {Record<string, any>} AnyRecord */
-/** @typedef {{suppressNotify?:boolean, cause?:string, minutes?:number|null, cycle?:boolean, cycleSlot?:0|1, taskName?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean, newCycle?:boolean}} StartFocusOptions */
-/** @typedef {{forceRun?:boolean, suppressNotify?:boolean, cause?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean, breakContinuation?:BreakContinuation}} StartBreakOptions */
+/** @typedef {{suppressNotify?:boolean, cause?:string, minutes?:number|null, cycle?:boolean, cycleSlot?:0|1, taskName?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean, newCycle?:boolean, requestFullscreen?:boolean}} StartFocusOptions */
+/** @typedef {{forceRun?:boolean, suppressNotify?:boolean, cause?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean, breakContinuation?:BreakContinuation, requestFullscreen?:boolean}} StartBreakOptions */
 /** @typedef {{type?:string, isLong?:boolean, cycleSlot?:number|null, autoStarted?:boolean, durationMs?:number, taskName?:string}} NextPhase */
 
 /* ========== 默认设置 ========== */
@@ -76,6 +81,9 @@ const DEFAULT_SETTINGS = {
   allowAutoCreateTask: true,
   tasksHeading: "",
   defaultTaskName: "",
+  captureHeading: "Inbox",
+  // 留空时复用“当日路径模板”；也可写入另一个按日期归档的 Markdown 文件。
+  capturePathPattern: "",
 
   // 项目同步
   projectEnable: true,
@@ -104,15 +112,19 @@ const DEFAULT_SETTINGS = {
   ribbonClickAutoNext: true,
   focusStartCommandId: "",
   breakStartCommandId: "",
+  breakBlackoutEnabled: false,
+  taskBlackoutEnabled: false,
 
   // 循环工作：两项任务交替；可选地在若干完整 A→B 轮次后提示短休
   workMode: "standard",
   cycleTaskA: "",
   cycleMinA: 15,
   cycleWorkspaceCommandA: "",
+  cycleTaskBlackoutA: false,
   cycleTaskB: "",
   cycleMinB: 15,
   cycleWorkspaceCommandB: "",
+  cycleTaskBlackoutB: false,
   cycleBreakEvery: 0,
 
   // 兼容性
@@ -210,11 +222,14 @@ function normalizeSettings(raw={}, fallback=DEFAULT_SETTINGS) {
   result.fallbackPattern = has("fallbackPattern")
     ? (tryNormalizeMarkdownPath(source.fallbackPattern) || fallbackPattern)
     : fallbackPattern;
+  const capturePathPattern = has("capturePathPattern") ? String(source.capturePathPattern || "").trim() : String(base.capturePathPattern || "").trim();
+  result.capturePathPattern = capturePathPattern ? (tryNormalizeMarkdownPath(capturePathPattern) || "") : "";
   const projectPath = has("currentProjectPath") ? source.currentProjectPath : base.currentProjectPath;
   result.currentProjectPath = String(projectPath || "").trim()
     ? (tryNormalizeMarkdownPath(projectPath) || "")
     : "";
-  for (const key of ["autoNext", "projectEnable", "showProjectSelector", "enableSound", "enableNotify", "persistentAlertSound", "ribbonClickAutoNext", "allowCreateDaily", "allowAutoCreateTask", "respectModalInputFocus"]) {
+  result.captureHeading = normalizeCaptureHeading(has("captureHeading") ? source.captureHeading : base.captureHeading);
+  for (const key of ["autoNext", "projectEnable", "showProjectSelector", "enableSound", "enableNotify", "persistentAlertSound", "ribbonClickAutoNext", "allowCreateDaily", "allowAutoCreateTask", "respectModalInputFocus", "breakBlackoutEnabled", "taskBlackoutEnabled", "cycleTaskBlackoutA", "cycleTaskBlackoutB"]) {
     if (typeof source[key] !== "boolean") result[key] = base[key];
   }
   return result;
@@ -537,6 +552,8 @@ class PomodoroAIO extends Plugin {
     this.projectRepository = null;
     /** @type {InstanceType<typeof WorkspacesPlusAdapter> | null} */
     this.workspacesPlus = null;
+    /** @type {InstanceType<typeof BreakBlackoutController> | null} */
+    this.breakBlackout = null;
     /** @type {ObsidianElement | null} */
     this.ribbon = null;
     /** @type {ObsidianElement | null} */
@@ -550,6 +567,11 @@ class PomodoroAIO extends Plugin {
     /** @type {unknown} */
     this._lastPersistenceError = null;
     this._completionInFlight = false;
+    /** @type {number | null} */
+    this._dailyCompletionSyncTimer = null;
+    this._dailyCompletionSyncBusy = false;
+    /** @type {any} */
+    this._dailyCompletionSyncRef = null;
     this._unloading = false;
     this._scheduleTick = () => {};
   }
@@ -561,6 +583,7 @@ class PomodoroAIO extends Plugin {
     this._alertEscalationTimeout = null;
     this._completionInFlight = false;
     this.ribbonBadge = null;
+    this._getBreakBlackoutController();
     if (!this.runtime.dayKey) this.runtime = reduceRuntime(this.runtime, {
       type:RUNTIME_EVENT.DAY_ROLLOVER,
       dayKey:this.logicalTodayKey()
@@ -577,6 +600,11 @@ class PomodoroAIO extends Plugin {
       await this.drainProjectQueue();
     } catch (error) {
       logPluginError("startup-project-retry", error, { step:"drain" });
+    }
+    try {
+      await this.syncCompletedTaskSelections();
+    } catch (error) {
+      logPluginError("startup-task-completion-sync", error, { target:this.todayFilePath(), step:"reconcile" });
     }
 
     // 视图
@@ -602,7 +630,10 @@ class PomodoroAIO extends Plugin {
     this.addCommand({ id: 'pause-resume', name: '暂停/继续', callback: (evt)=> this.runUserCommand(()=> this.togglePause(), evt) });
     this.addCommand({ id: 'reset', name: '重置', callback: (evt)=> this.runUserCommand(()=> this.reset(), evt) });
     this.addCommand({ id: 'complete-now', name: '立刻结算当前专注（按实际时长）', callback: (evt)=> this.runUserCommand(()=> this.forceCompleteFocusOnce(), evt) });
+    this.addCommand({ id: 'complete-task', name: '完成当前任务并勾选日记待办', callback: (evt)=> this.runUserCommand(()=> this.completeTask(), evt) });
     this.addCommand({ id: 'open-today', name: '打开当日日记', callback: (evt)=> this.runUserCommand(()=> this.openToday(), evt) });
+    this.addCommand({ id: 'quick-capture', name: '快速记录', callback: (evt)=> this.runUserCommand(()=> this.openQuickCaptureModal(), evt) });
+    this._registerDailyTaskCompletionSync();
 
     // 设置页
     this.addSettingTab(new PomodoroSettingTab(this.app, this, normalizeSettings));
@@ -635,9 +666,15 @@ class PomodoroAIO extends Plugin {
     this._scheduleTick();
     this.applyStrongAlertStateFromRuntime();
     this.updateRibbonVisuals();
+    this.syncBreakBlackout();
   }
   async onunload(){
     this._unloading = true;
+    if (this._dailyCompletionSyncTimer) window.clearTimeout(this._dailyCompletionSyncTimer);
+    this._dailyCompletionSyncTimer = null;
+    if (this._dailyCompletionSyncRef) this.app?.vault?.offref?.(this._dailyCompletionSyncRef);
+    this._dailyCompletionSyncRef = null;
+    this.breakBlackout?.destroy();
     this.stopPersistentAlertSound();
     if (this._tickTimeout) window.clearTimeout(this._tickTimeout);
     await this.flushPendingSaves();
@@ -752,7 +789,8 @@ class PomodoroAIO extends Plugin {
       const selectors = [
         ".modal", ".modal-container", ".modal-bg",
         ".prompt", ".suggestion-container", ".popover",
-        ".quick-switcher", ".command-palette", ".mod-command-palette"
+        ".quick-switcher", ".command-palette", ".mod-command-palette",
+        ".pmd-blackout-overlay"
       ];
       const nodes = root?.querySelectorAll?.(selectors.join(", ")) || [];
       for (const el of nodes) {
@@ -821,7 +859,33 @@ class PomodoroAIO extends Plugin {
   broadcast() {
     const snap = this.snapshot();
     this.updateRibbonVisuals(snap.runtime);
+    this.syncBreakBlackout(snap);
     this.app.workspace.trigger('pomodoro:aio-state', snap);
+  }
+  _getBreakBlackoutController(){
+    if (this.breakBlackout) return this.breakBlackout;
+    if (typeof document === "undefined" || !document.body) return null;
+    this.breakBlackout = new BreakBlackoutController({ document });
+    return this.breakBlackout;
+  }
+  /** @param {{settings:Settings, runtime:Runtime & {leftSec?:number}} | null} [snapshot] */
+  syncBreakBlackout(snapshot=null){
+    const controller = this._getBreakBlackoutController();
+    if (!controller) return false;
+    const snap = snapshot || this.snapshot();
+    return controller.sync(snap.runtime, snap.settings, snap.runtime.leftSec ?? this.getLeftSec());
+  }
+  /** @param {{cycle?:boolean, cycleSlot?:number}} [options] */
+  requestTaskBlackoutFullscreen(options={}){
+    const enabled = options.cycle
+      ? (options.cycleSlot === 1 ? this.settings.cycleTaskBlackoutB : this.settings.cycleTaskBlackoutA)
+      : this.settings.taskBlackoutEnabled;
+    if (enabled !== true) return Promise.resolve(false);
+    return this._getBreakBlackoutController()?.requestCurrentDisplayFullscreen() || Promise.resolve(false);
+  }
+  requestBreakBlackoutFullscreen(){
+    if (this.settings.breakBlackoutEnabled !== true) return Promise.resolve(false);
+    return this._getBreakBlackoutController()?.requestCurrentDisplayFullscreen() || Promise.resolve(false);
   }
   snapshot(){
     const leftMs = this.getLeftMs();
@@ -897,7 +961,8 @@ class PomodoroAIO extends Plugin {
     }
     await this.startPendingStage();
   }
-  async startPendingStage(){
+  /** @param {{requestFullscreen?:boolean}} [options] */
+  async startPendingStage(options={}){
     const next = this.runtime.attention;
     if (!next || next.nextStarted) { await this.stopStrongAlert(); return; }
     if (next.type === TIMER_STAGE.BREAK) await this.startBreak(next.isLong, {
@@ -905,15 +970,16 @@ class PomodoroAIO extends Plugin {
       cause:'manual',
       durationMs:next.durationMs,
       allowTransition:true,
-      breakContinuation:this.runtime.breakContinuation || undefined
+      breakContinuation:this.runtime.breakContinuation || undefined,
+      requestFullscreen:options.requestFullscreen === true
     });
     else if (next.type === TIMER_STAGE.FOCUS && Number.isInteger(next.cycleSlot)) {
       /** @type {StartFocusOptions} */
-      const options = { cause:'manual', durationMs:next.durationMs, allowTransition:true };
-      if (next.taskName !== undefined) options.taskName = next.taskName;
-      await this.startCycle(next.cycleSlot === 1 ? 1 : 0, options);
+      const startOptions = { cause:'manual', durationMs:next.durationMs, allowTransition:true, requestFullscreen:options.requestFullscreen === true };
+      if (next.taskName !== undefined) startOptions.taskName = next.taskName;
+      await this.startCycle(next.cycleSlot === 1 ? 1 : 0, startOptions);
     }
-    else if (next.type === TIMER_STAGE.FOCUS) await this.startFocus({ cause:'manual', durationMs:next.durationMs, allowTransition:true });
+    else if (next.type === TIMER_STAGE.FOCUS) await this.startFocus({ cause:'manual', durationMs:next.durationMs, allowTransition:true, requestFullscreen:options.requestFullscreen === true });
     else await this.stopStrongAlert();
   }
   /** @param {NextPhase} nextPhase */
@@ -1009,6 +1075,7 @@ class PomodoroAIO extends Plugin {
       new Notice("当前已有计时，请先完成或重置当前阶段");
       return false;
     }
+    if (opts.requestFullscreen) this.requestTaskBlackoutFullscreen({ cycle:opts.cycle, cycleSlot:opts.cycleSlot });
     const previousRuntime = this.runtime;
     this.ensureDayFreshness(false);
     const requestedDurationMs = Number(opts.durationMs);
@@ -1094,6 +1161,7 @@ class PomodoroAIO extends Plugin {
     const forceRun = opts.forceRun ?? true;
     const shouldRun = forceRun !== false && (forceRun || !!this.settings.autoNext);
     const continuation = normalizeBreakContinuation(opts.breakContinuation);
+    if (opts.requestFullscreen && shouldRun) this.requestBreakBlackoutFullscreen();
     const effects = this.applyRuntimeEvent(shouldRun ? {
       type:RUNTIME_EVENT.START_STAGE,
       stage:TIMER_STAGE.BREAK,
@@ -1180,6 +1248,7 @@ class PomodoroAIO extends Plugin {
 
     const leftMs = this.getLeftMs();
     if (leftMs > 0) return;
+    if (this.breakBlackout?.isFinishing()) return;
 
     if (r.stage === TIMER_STAGE.FOCUS) await this.settleFocus(false);
     else if (r.stage === TIMER_STAGE.BREAK) await this.settleBreak();
@@ -1192,6 +1261,113 @@ class PomodoroAIO extends Plugin {
     if (this._completionInFlight) { new Notice("正在结算当前专注"); return; }
     if (this.getElapsedMs() <= 0) { new Notice("尚未产生有效专注时长"); return; }
     await this.settleFocus(true);
+  }
+
+  /** @param {{cycleSlot?:0|1} | 0 | 1 | undefined} [options] */
+  async completeTask(options){
+    const requestedCycleSlot = typeof options === "number"
+      ? (options === 1 ? 1 : 0)
+      : (options?.cycleSlot === 1 ? 1 : (options?.cycleSlot === 0 ? 0 : null));
+    const cycleSlot = requestedCycleSlot === null && this.runtime.mode === "cycle"
+      ? (this.runtime.cycleSlot === 1 ? 1 : 0)
+      : requestedCycleSlot;
+    const taskName = cycleSlot === 0
+      ? this.settings.cycleTaskA
+      : cycleSlot === 1
+        ? this.settings.cycleTaskB
+        : (this.runtime.currentTaskName || this.settings.defaultTaskName);
+    const task = String(taskName || "").trim();
+    if (!task) {
+      new Notice("请先选择要完成的任务");
+      return false;
+    }
+    const activeSameName = this.runtime.stage === TIMER_STAGE.FOCUS
+      && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(this.runtime.status)
+      && String(this.runtime.currentTaskName || "").trim().toLowerCase() === task.toLowerCase();
+    if (activeSameName && !this.isActiveFocusTask(task, cycleSlot)) {
+      new Notice("当前正在执行另一循环项，无法完成同名任务");
+      return false;
+    }
+    try {
+      const daily = this._getDailyRepository();
+      const current = await daily.readPath(this.todayFilePath());
+      if (!daily.isFile(current.file)) throw new Error("找不到当天任务文件");
+      // Reject missing or ambiguous checkboxes before ending a running focus.
+      // The atomic write below checks again in case the note changes meanwhile.
+      planTaskLineCompletion(current.text, task);
+      if (!(await this.settleOrEndActiveTaskForCompletion(task, cycleSlot))) {
+        new Notice("当前专注尚未安全结算，任务没有标记完成");
+        return false;
+      }
+      await this._getDailyRepository().completeTask({ taskName:task, path:this.todayFilePath() });
+      await this.clearCompletedTaskSelection(task, cycleSlot);
+      new Notice("任务已完成，日记与任务选择已同步");
+      return true;
+    } catch (error) {
+      logPluginError("complete-task", error, { target:this.todayFilePath(), step:"daily-checkbox" });
+      const message = String(error instanceof Error ? error.message : error);
+      new Notice(message.includes("多个同名") ? message : "完成任务失败，请检查当日日记");
+      return false;
+    }
+  }
+
+  /** @param {string} task @param {0|1|null} cycleSlot */
+  isActiveFocusTask(task, cycleSlot){
+    const isCycle = cycleSlot !== null;
+    return this.runtime.stage === TIMER_STAGE.FOCUS
+      && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(this.runtime.status)
+      && this.runtime.mode === (isCycle ? "cycle" : "standard")
+      && (!isCycle || this.runtime.cycleSlot === cycleSlot)
+      && String(this.runtime.currentTaskName || "").trim().toLowerCase() === String(task || "").trim().toLowerCase();
+  }
+
+  /** @param {string} task @param {0|1|null} cycleSlot */
+  async settleOrEndActiveTaskForCompletion(task, cycleSlot){
+    if (!this.isActiveFocusTask(task, cycleSlot)) return true;
+    if (this._completionInFlight) return false;
+    if (this.getElapsedMs() > 0) {
+      await this.settleFocus(true);
+      return !this.runtime.pendingSettlement && this.runtime.status !== TIMER_STATUS.FAILED;
+    }
+    return this.reset(false);
+  }
+
+  /** @param {string} task @param {0|1|null} cycleSlot */
+  async clearCompletedTaskSelection(task, cycleSlot){
+    const normalized = String(task || "").trim();
+    if (!normalized) return false;
+    /** @param {unknown} value */
+    const isSameTask = value => String(value || "").trim().toLowerCase() === normalized.toLowerCase();
+    let settingsChanged = false;
+    let runtimeChanged = false;
+    if (cycleSlot === 0 && isSameTask(this.settings.cycleTaskA)) {
+      Object.assign(this.settings, { cycleTaskA:"", cycleWorkspaceCommandA:"", cycleTaskBlackoutA:false });
+      settingsChanged = true;
+    } else if (cycleSlot === 1 && isSameTask(this.settings.cycleTaskB)) {
+      Object.assign(this.settings, { cycleTaskB:"", cycleWorkspaceCommandB:"", cycleTaskBlackoutB:false });
+      settingsChanged = true;
+    } else if (cycleSlot === null) {
+      if (isSameTask(this.settings.defaultTaskName)) {
+        this.settings.defaultTaskName = "";
+        settingsChanged = true;
+      }
+      if (this.settings.taskBlackoutEnabled) {
+        this.settings.taskBlackoutEnabled = false;
+        settingsChanged = true;
+      }
+      runtimeChanged = isSameTask(this.runtime.currentTaskName);
+    }
+    if (settingsChanged) await this.saveSettings();
+    if (runtimeChanged) {
+      const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.SET_TASK, name:"" });
+      await this.saveState({ critical:true });
+      this.runRuntimeEffects(effects);
+    } else if (settingsChanged) {
+      this.broadcast();
+    }
+    const changed = settingsChanged || runtimeChanged;
+    if (changed) this.app?.workspace?.trigger?.("pomodoro:aio-task-selection-cleared", { taskName:normalized, cycleSlot });
+    return changed;
   }
 
   /** @param {boolean} [manual] */
@@ -1735,6 +1911,11 @@ class PomodoroAIO extends Plugin {
       normalizePath
     );
   }
+  quickCaptureFilePath(){
+    if (!this.settings.capturePathPattern) return this.todayFilePath();
+    const pattern = this.settings.capturePathPattern;
+    return normalizeMarkdownPath(renderPattern(pattern, this.logicalTodayKey()), normalizePath);
+  }
   _getDailyRepository(){
     if (this.dailyRepository) return this.dailyRepository;
     this.dailyRepository = new DailyRepository({
@@ -1828,6 +2009,89 @@ class PomodoroAIO extends Plugin {
     const unchecked = await this.listUncheckedTasksFromText(text);
     return { file, sum, unchecked };
   }
+  _registerDailyTaskCompletionSync(){
+    if (this._dailyCompletionSyncRef || typeof this.app?.vault?.on !== "function") return;
+    /** @param {any} file */
+    const onModify = file => this.queueDailyTaskCompletionSync(file);
+    this._dailyCompletionSyncRef = this.app.vault.on("modify", onModify);
+  }
+  /** @param {{path?:unknown} | null | undefined} file */
+  queueDailyTaskCompletionSync(file){
+    if (this._unloading || String(file?.path || "") !== this.todayFilePath()) return;
+    if (this._dailyCompletionSyncTimer) window.clearTimeout(this._dailyCompletionSyncTimer);
+    this._dailyCompletionSyncTimer = window.setTimeout(() => {
+      this._dailyCompletionSyncTimer = null;
+      this.syncCompletedTaskSelections().catch(error => logPluginError("task-completion-sync", error, {
+        target:this.todayFilePath(), step:"read"
+      }));
+    }, 180);
+  }
+  async syncCompletedTaskSelections(){
+    if (this._dailyCompletionSyncBusy || this._completionInFlight || this.runtime.pendingSettlement || this.runtime.status === TIMER_STATUS.FAILED || !this.app?.vault) return false;
+    this._dailyCompletionSyncBusy = true;
+    try {
+      const daily = this._getDailyRepository();
+      const file = daily.getFile(this.todayFilePath());
+      if (!daily.isFile(file)) return false;
+      const lines = String(await daily.read(file)).split(/\r?\n/);
+      /** @param {unknown} value */
+      const isCompleted = value => {
+        const task = String(value || "").trim();
+        if (!task) return false;
+        let checked = 0;
+        let unchecked = 0;
+        for (const line of lines) {
+          if (stripBaseName(line).toLowerCase() !== task.toLowerCase()) continue;
+          if (/^\s*-\s*\[x\]\s+/i.test(line)) checked += 1;
+          else if (/^\s*-\s*\[\s\]\s+/.test(line)) unchecked += 1;
+        }
+        return checked === 1 && unchecked === 0;
+      };
+      let changed = false;
+      const currentTask = String(this.runtime.currentTaskName || "").trim();
+      const currentSlot = this.runtime.mode === "cycle" ? (this.runtime.cycleSlot === 1 ? 1 : 0) : null;
+      if (isCompleted(currentTask) && await this.settleOrEndActiveTaskForCompletion(currentTask, currentSlot)) {
+        changed = (await this.clearCompletedTaskSelection(currentTask, currentSlot)) || changed;
+      } else if (isCompleted(this.settings.defaultTaskName) && await this.settleOrEndActiveTaskForCompletion(this.settings.defaultTaskName, null)) {
+        changed = (await this.clearCompletedTaskSelection(this.settings.defaultTaskName, null)) || changed;
+      }
+      if (isCompleted(this.settings.cycleTaskA) && await this.settleOrEndActiveTaskForCompletion(this.settings.cycleTaskA, 0)) changed = (await this.clearCompletedTaskSelection(this.settings.cycleTaskA, 0)) || changed;
+      if (isCompleted(this.settings.cycleTaskB) && await this.settleOrEndActiveTaskForCompletion(this.settings.cycleTaskB, 1)) changed = (await this.clearCompletedTaskSelection(this.settings.cycleTaskB, 1)) || changed;
+      return changed;
+    } finally {
+      this._dailyCompletionSyncBusy = false;
+    }
+  }
+  /** @param {unknown} text @param {"todo"|"idea"} [kind] */
+  async quickCapture(text, kind="todo"){
+    const content = normalizeCaptureText(text);
+    if (!content) {
+      new Notice("请输入要记录的内容");
+      throw new Error("记录内容为空");
+    }
+    try {
+      const result = await this._getDailyRepository().appendCapture({
+        text:content,
+        kind:kind === "idea" ? "idea" : "todo",
+        heading:this.settings.captureHeading,
+        path:this.quickCaptureFilePath()
+      });
+      new Notice(kind === "idea" ? "想法已保存" : "待办已保存");
+      this.broadcast();
+      return result;
+    } catch (error) {
+      if (String(error instanceof Error ? error.message : error) !== "记录内容为空") {
+        logPluginError("quick-capture", error, { target:this.quickCaptureFilePath(), step:"write" });
+        new Notice("快速记录失败，请检查目标路径和自动创建设置");
+      }
+      throw error;
+    }
+  }
+  openQuickCaptureModal(){
+    const modal = new QuickCaptureModal(this.app, (text, kind)=> this.quickCapture(text, kind));
+    modal.open();
+    return modal;
+  }
   projectCandidates(){
     return this._getProjectRepository().listCandidates({
       tag: this.settings.projectTag,
@@ -1865,6 +2129,11 @@ class PomodoroAIO extends Plugin {
   /** @param {Partial<Settings>} patch */
   setCycleConfig(patch){
     this.settings = normalizeSettings({ ...this.settings, ...patch }, this.settings);
+    this.saveSettings(); this.broadcast();
+  }
+  /** @param {unknown} enabled */
+  setTaskBlackoutEnabled(enabled){
+    this.settings = normalizeSettings({ ...this.settings, taskBlackoutEnabled: enabled === true }, this.settings);
     this.saveSettings(); this.broadcast();
   }
   /** @param {unknown} slot */

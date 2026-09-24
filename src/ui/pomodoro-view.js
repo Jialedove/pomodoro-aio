@@ -22,6 +22,12 @@ function logViewError(plugin, operation, error, step) {
   });
 }
 
+/** @param {unknown} draft @param {unknown} completedTask */
+function isCompletedTaskDraft(draft, completedTask) {
+  const current = String(draft || "").trim();
+  return !!current && current.toLowerCase() === String(completedTask || "").trim().toLowerCase();
+}
+
 /* ========== 视图（UI） ========== */
 class PomodoroView extends ItemView {
   static VIEW_TYPE = "pomodoro-aio-view";
@@ -120,6 +126,12 @@ class PomodoroView extends ItemView {
       let _suppressTaskSyncUntil = 0;
       // 内嵌清空（×）
       const clearTaskBtn = taskBox.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空任务名", 'aria-label':"清空任务名", type:"button" } });
+      const taskBlackoutBtn = taskWrap.createEl("button", {
+        cls:"pmd-blackout-option",
+        attr:{ type:"button", "aria-label":"当前任务执行时黑屏", "aria-pressed":"false", title:"此任务执行时显示黑屏" }
+      });
+      taskBlackoutBtn.createSpan({ cls:"pmd-blackout-check", attr:{ "aria-hidden":"true" } });
+      taskBlackoutBtn.createSpan({ text:"执行时黑屏" });
       // Esc 清空
       taskInput.onkeydown = (e)=>{
         if (this.plugin.shouldBlockHotkeys(e, { allowInPluginInput:true })) return;
@@ -151,14 +163,21 @@ class PomodoroView extends ItemView {
       const cycleRowA = cycleWrap.createDiv({ cls:"pmd-cycle-row" });
       const cycleRoleA = cycleRowA.createSpan({ cls:"pmd-cycle-role", text:"当前" });
       const cycleFieldsA = cycleRowA.createDiv({ cls:"pmd-cycle-fields" });
-      const cycleTaskWrapA = cycleFieldsA.createDiv({ cls:"pmd-input-wrap" });
+      const cycleTaskWrapA = cycleFieldsA.createDiv({ cls:"pmd-input-wrap pmd-cycle-task-input" });
       const cycleTaskA = cycleTaskWrapA.createEl("input", {
         type:"text", cls:"pmd-input",
         attr:{ list:"pmdCycleTaskListA", placeholder:"任务 A", "aria-label":"循环任务 A" }
       });
       const cycleTaskListA = cycleTaskWrapA.createEl("datalist", { attr:{ id:"pmdCycleTaskListA" } });
       const clearCycleTaskA = cycleTaskWrapA.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空任务名", "aria-label":"清空任务名", type:"button" } });
-      const cycleWorkspaceWrapA = cycleFieldsA.createDiv({ cls:"pmd-input-wrap" });
+      const completeCycleTaskA = cycleTaskWrapA.createEl("button", { text:"完成", cls:"pmd-clear pmd-complete-cycle", attr:{ title:"完成任务 A", "aria-label":"完成任务 A", type:"button" } });
+      const cycleDurationA = cycleFieldsA.createDiv({ cls:"pmd-cycle-duration" });
+      const cycleMinA = cycleDurationA.createEl("input", {
+        type:"number", cls:"pmd-cycle-min",
+        attr:{ min:"1", step:"1", placeholder:"时长", "aria-label":"任务 A 时长（分钟）" }
+      });
+      cycleDurationA.createSpan({ cls:"pmd-cycle-unit", text:"分钟" });
+      const cycleWorkspaceWrapA = cycleFieldsA.createDiv({ cls:"pmd-input-wrap pmd-cycle-workspace-wrap" });
       const cycleWorkspaceA = cycleWorkspaceWrapA.createEl("input", {
         type:"text",
         cls:"pmd-cycle-workspace",
@@ -166,24 +185,31 @@ class PomodoroView extends ItemView {
       });
       const cycleWorkspaceListA = cycleWorkspaceWrapA.createEl("datalist", { attr:{ id:"pmdCycleWorkspaceListA" } });
       const clearCycleWorkspaceA = cycleWorkspaceWrapA.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空工作区选择", "aria-label":"清空工作区选择", type:"button" } });
-      const cycleDurationA = cycleRowA.createDiv({ cls:"pmd-cycle-duration" });
-      const cycleMinA = cycleDurationA.createEl("input", {
-        type:"number", cls:"pmd-cycle-min",
-        attr:{ min:"1", step:"1", placeholder:"时长", "aria-label":"任务 A 时长（分钟）" }
+      const cycleTaskBlackoutA = cycleFieldsA.createEl("button", {
+        cls:"pmd-blackout-option pmd-cycle-blackout-option",
+        attr:{ type:"button", "aria-label":"任务 A 执行时黑屏", "aria-pressed":"false", title:"任务 A 执行时显示黑屏" }
       });
-      cycleDurationA.createSpan({ cls:"pmd-cycle-unit", text:"分钟" });
+      cycleTaskBlackoutA.createSpan({ cls:"pmd-blackout-check", attr:{ "aria-hidden":"true" } });
+      cycleTaskBlackoutA.createSpan({ text:"执行时黑屏" });
 
       const cycleRowB = cycleWrap.createDiv({ cls:"pmd-cycle-row" });
       const cycleRoleB = cycleRowB.createSpan({ cls:"pmd-cycle-role", text:"下一段" });
       const cycleFieldsB = cycleRowB.createDiv({ cls:"pmd-cycle-fields" });
-      const cycleTaskWrapB = cycleFieldsB.createDiv({ cls:"pmd-input-wrap" });
+      const cycleTaskWrapB = cycleFieldsB.createDiv({ cls:"pmd-input-wrap pmd-cycle-task-input" });
       const cycleTaskB = cycleTaskWrapB.createEl("input", {
         type:"text", cls:"pmd-input",
         attr:{ list:"pmdCycleTaskListB", placeholder:"任务 B", "aria-label":"循环任务 B" }
       });
       const cycleTaskListB = cycleTaskWrapB.createEl("datalist", { attr:{ id:"pmdCycleTaskListB" } });
       const clearCycleTaskB = cycleTaskWrapB.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空任务名", "aria-label":"清空任务名", type:"button" } });
-      const cycleWorkspaceWrapB = cycleFieldsB.createDiv({ cls:"pmd-input-wrap" });
+      const completeCycleTaskB = cycleTaskWrapB.createEl("button", { text:"完成", cls:"pmd-clear pmd-complete-cycle", attr:{ title:"完成任务 B", "aria-label":"完成任务 B", type:"button" } });
+      const cycleDurationB = cycleFieldsB.createDiv({ cls:"pmd-cycle-duration" });
+      const cycleMinB = cycleDurationB.createEl("input", {
+        type:"number", cls:"pmd-cycle-min",
+        attr:{ min:"1", step:"1", placeholder:"时长", "aria-label":"任务 B 时长（分钟）" }
+      });
+      cycleDurationB.createSpan({ cls:"pmd-cycle-unit", text:"分钟" });
+      const cycleWorkspaceWrapB = cycleFieldsB.createDiv({ cls:"pmd-input-wrap pmd-cycle-workspace-wrap" });
       const cycleWorkspaceB = cycleWorkspaceWrapB.createEl("input", {
         type:"text",
         cls:"pmd-cycle-workspace",
@@ -191,12 +217,12 @@ class PomodoroView extends ItemView {
       });
       const cycleWorkspaceListB = cycleWorkspaceWrapB.createEl("datalist", { attr:{ id:"pmdCycleWorkspaceListB" } });
       const clearCycleWorkspaceB = cycleWorkspaceWrapB.createEl("button", { text:"×", cls:"pmd-clear", attr:{ title:"清空工作区选择", "aria-label":"清空工作区选择", type:"button" } });
-      const cycleDurationB = cycleRowB.createDiv({ cls:"pmd-cycle-duration" });
-      const cycleMinB = cycleDurationB.createEl("input", {
-        type:"number", cls:"pmd-cycle-min",
-        attr:{ min:"1", step:"1", placeholder:"时长", "aria-label":"任务 B 时长（分钟）" }
+      const cycleTaskBlackoutB = cycleFieldsB.createEl("button", {
+        cls:"pmd-blackout-option pmd-cycle-blackout-option",
+        attr:{ type:"button", "aria-label":"任务 B 执行时黑屏", "aria-pressed":"false", title:"任务 B 执行时显示黑屏" }
       });
-      cycleDurationB.createSpan({ cls:"pmd-cycle-unit", text:"分钟" });
+      cycleTaskBlackoutB.createSpan({ cls:"pmd-blackout-check", attr:{ "aria-hidden":"true" } });
+      cycleTaskBlackoutB.createSpan({ text:"执行时黑屏" });
       cycleTaskA.value = this.plugin.settings.cycleTaskA || "";
       cycleTaskB.value = this.plugin.settings.cycleTaskB || "";
       cycleMinA.value = String(this.plugin.settings.cycleMinA || 15);
@@ -232,7 +258,72 @@ class PomodoroView extends ItemView {
       const pauseBtn = actions.createEl("button", { text:"暂停", cls:"pmd-btn", attr:{ type:"button" } });
       const resetBtn = actions.createEl("button", { text:"重置", cls:"pmd-btn", attr:{ type:"button" } });
       const doneBtn  = actions.createEl("button", { text:"完成本段", cls:"pmd-btn", attr:{ type:"button" } });
+      const completeTaskBtn = actions.createEl("button", { text:"完成任务", cls:"pmd-btn", attr:{ type:"button" } });
       const refreshBtn = actions.createEl("button", { text:"刷新", cls:"pmd-btn pmd-btn-secondary", attr:{ type:"button" } });
+      const quickCaptureBtn = actions.createEl("button", { text:"快速捕捉", cls:"pmd-btn pmd-btn-secondary", attr:{ type:"button", "aria-expanded":"false", "aria-controls":"pmd-quick-capture" } });
+      const capturePanel = container.createDiv({ cls:"pmd-capture-panel pmd-hidden", attr:{ id:"pmd-quick-capture" } });
+      const captureInput = capturePanel.createEl("input", {
+        type:"text",
+        cls:"pmd-input pmd-capture-input",
+        attr:{ placeholder:"输入后按 Enter 保存为待办", "aria-label":"快速捕捉内容" }
+      });
+      const captureStatus = capturePanel.createDiv({ cls:"pmd-capture-status", attr:{ role:"status", "aria-live":"polite" } });
+      let captureSubmitting = false;
+      /** @type {number | null} */
+      let captureAutoCloseTimer = null;
+      const cancelCaptureAutoClose = ()=> {
+        if (captureAutoCloseTimer === null) return;
+        window.clearTimeout(captureAutoCloseTimer);
+        captureAutoCloseTimer = null;
+      };
+      const closeCapturePanel = ()=> {
+        cancelCaptureAutoClose();
+        capturePanel.addClass("pmd-hidden");
+        quickCaptureBtn.setAttribute("aria-expanded", "false");
+        captureStatus.setText("");
+      };
+      const openCapturePanel = ()=> {
+        cancelCaptureAutoClose();
+        capturePanel.removeClass("pmd-hidden");
+        quickCaptureBtn.setAttribute("aria-expanded", "true");
+        window.setTimeout(()=> captureInput.focus(), 0);
+      };
+      const submitCapture = async ()=> {
+        if (captureSubmitting) return;
+        captureSubmitting = true;
+        captureInput.disabled = true;
+        captureStatus.setText("正在保存…");
+        try {
+          await this.plugin.quickCapture(captureInput.value, "todo");
+          captureInput.value = "";
+          captureStatus.setText("已保存");
+          cancelCaptureAutoClose();
+          captureAutoCloseTimer = window.setTimeout(()=> {
+            captureAutoCloseTimer = null;
+            closeCapturePanel();
+          }, 700);
+        } catch (error) {
+          captureStatus.setText("保存失败，请检查设置");
+          logViewError(this.plugin, "quick-capture", error, "write");
+        } finally {
+          captureSubmitting = false;
+          captureInput.disabled = false;
+          if (!capturePanel.classList.contains("pmd-hidden")) captureInput.focus();
+        }
+      };
+      quickCaptureBtn.onclick = ()=> capturePanel.classList.contains("pmd-hidden") ? openCapturePanel() : closeCapturePanel();
+      captureInput.oninput = cancelCaptureAutoClose;
+      captureInput.onkeydown = event => {
+        if (event.key === "Enter" && !event.isComposing && event.keyCode !== 229) {
+          event.preventDefault();
+          submitCapture();
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          captureInput.value = "";
+          closeCapturePanel();
+          quickCaptureBtn.focus();
+        }
+      };
 
       // 底部信息
       const meta = container.createDiv({ cls:"pmd-meta" });
@@ -254,6 +345,7 @@ class PomodoroView extends ItemView {
         taskSaveTimer = window.setTimeout(saveTask, 180);
       };
       taskInput.onchange = saveTask;
+      taskBlackoutBtn.onclick = ()=> this.plugin.setTaskBlackoutEnabled(this.plugin.settings.taskBlackoutEnabled !== true);
       modeButton.onclick = ()=> {
         const next = this.plugin.settings.workMode === 'cycle' ? 'standard' : 'cycle';
         this.plugin.setWorkMode(next);
@@ -274,6 +366,25 @@ class PomodoroView extends ItemView {
         if (cycleSaveTimer) window.clearTimeout(cycleSaveTimer);
         cycleSaveTimer = window.setTimeout(saveCycleConfig, 180);
       };
+      /** @param {{taskName?:unknown, cycleSlot?:unknown} | null | undefined} completion */
+      const onTaskSelectionCleared = completion => {
+        const cycleSlot = completion?.cycleSlot === 1 ? 1 : (completion?.cycleSlot === 0 ? 0 : null);
+        if (cycleSlot === null) return;
+        const taskInput = cycleSlot === 0 ? cycleTaskA : cycleTaskB;
+        const workspaceInput = cycleSlot === 0 ? cycleWorkspaceA : cycleWorkspaceB;
+        if (!isCompletedTaskDraft(taskInput.value, completion?.taskName)) return;
+        const hadPendingCycleSave = cycleSaveTimer !== null;
+        if (cycleSaveTimer) window.clearTimeout(cycleSaveTimer);
+        cycleSaveTimer = null;
+        taskInput.value = "";
+        workspaceInput.value = "";
+        workspaceInput.dataset.commandId = "";
+        // Preserve edits queued for the other cycle slot while preventing the
+        // completed task from being written back by the pending debounce.
+        if (hadPendingCycleSave) saveCycleConfig();
+      };
+      this.app.workspace.on("pomodoro:aio-task-selection-cleared", onTaskSelectionCleared);
+      this.disposers.push(()=> this.app.workspace.off("pomodoro:aio-task-selection-cleared", onTaskSelectionCleared));
       [cycleTaskA, cycleMinA, cycleTaskB, cycleMinB].forEach(input=>{
         input.oninput = queueCycleSave;
         input.onchange = saveCycleConfig;
@@ -288,6 +399,8 @@ class PomodoroView extends ItemView {
         input.addEventListener('focus', ()=> _openDatalist(input));
         input.addEventListener('click', ()=> _openDatalist(input));
       });
+      cycleTaskBlackoutA.onclick = ()=> this.plugin.setCycleConfig({ cycleTaskBlackoutA: this.plugin.settings.cycleTaskBlackoutA !== true });
+      cycleTaskBlackoutB.onclick = ()=> this.plugin.setCycleConfig({ cycleTaskBlackoutB: this.plugin.settings.cycleTaskBlackoutB !== true });
       cycleRowA.ondblclick = (event)=> { if (!(event.target instanceof Element && event.target.closest("input, button, select"))) this.plugin.selectCycleSlot(0); };
       cycleRowB.ondblclick = (event)=> { if (!(event.target instanceof Element && event.target.closest("input, button, select"))) this.plugin.selectCycleSlot(1); };
       /** @param {Event | null | undefined} event */
@@ -321,6 +434,8 @@ class PomodoroView extends ItemView {
       clearCycleTaskA.onclick = (event)=> { if (event.detail === 0) clearCycleTask(cycleTaskA, event); };
       clearCycleTaskB.onpointerdown = (event)=> clearCycleTask(cycleTaskB, event);
       clearCycleTaskB.onclick = (event)=> { if (event.detail === 0) clearCycleTask(cycleTaskB, event); };
+      completeCycleTaskA.onclick = event=> this.plugin.runUserCommand(() => this.plugin.completeTask({ cycleSlot:0 }), event);
+      completeCycleTaskB.onclick = event=> this.plugin.runUserCommand(() => this.plugin.completeTask({ cycleSlot:1 }), event);
       clearCycleWorkspaceA.onpointerdown = (event)=> clearCycleWorkspace(cycleWorkspaceA, event);
       clearCycleWorkspaceA.onclick = (event)=> { if (event.detail === 0) clearCycleWorkspace(cycleWorkspaceA, event); };
       clearCycleWorkspaceB.onpointerdown = (event)=> clearCycleWorkspace(cycleWorkspaceB, event);
@@ -342,26 +457,27 @@ class PomodoroView extends ItemView {
       openTodayBtn.onclick = event=> this.plugin.runUserCommand(() => this.plugin.openToday(), event);
       longBtn.onclick = event=> this.plugin.runUserCommand(() => {
         const minutes = ensureLongValue();
-        return this.plugin.startFocus({ cause:'manual', minutes });
+        return this.plugin.startFocus({ cause:'manual', minutes, requestFullscreen:true });
       }, event);
 
       startBtn.onclick = event=> this.plugin.runUserCommand(() => {
         const snap = this.plugin.snapshot();
         if (snap.runtime.status === TIMER_STATUS.PAUSED) return this.plugin.togglePause(true);
         if (snap.runtime.attention && !snap.runtime.attention.nextStarted) {
-          return this.plugin.startPendingStage();
+          return this.plugin.startPendingStage({ requestFullscreen:true });
         }
         if (this.plugin.settings.workMode === 'cycle') {
           saveCycleConfig();
-          return this.plugin.startCycle();
+          return this.plugin.startCycle(snap.runtime.cycleSlot, { requestFullscreen:true });
         } else {
           saveTask();
-          return this.plugin.startFocus({ cause:'manual' });
+          return this.plugin.startFocus({ cause:'manual', requestFullscreen:true });
         }
       }, event);
       pauseBtn.onclick = event=> this.plugin.runUserCommand(() => this.plugin.togglePause(), event);
       resetBtn.onclick = event=> this.plugin.runUserCommand(() => this.plugin.reset(), event);
       doneBtn.onclick  = event=> this.plugin.runUserCommand(() => this.plugin.forceCompleteFocusOnce(), event);
+      completeTaskBtn.onclick = event=> this.plugin.runUserCommand(() => this.plugin.completeTask(), event);
       const refreshTodayUI = async ()=>{
         const snap = await this._safeRefreshTodaySnapshot();
         this._todaySumCache = snap.sum;
@@ -387,8 +503,11 @@ class PomodoroView extends ItemView {
 
         const renderKey = [
           cycleMode, s.showProjectSelector, s.currentProjectPath, s.dailyGoal,
+          s.taskBlackoutEnabled,
           s.cycleTaskA, s.cycleMinA, s.cycleWorkspaceCommandA,
+          s.cycleTaskBlackoutA,
           s.cycleTaskB, s.cycleMinB, s.cycleWorkspaceCommandB,
+          s.cycleTaskBlackoutB,
           r.status, r.stage, JSON.stringify(r.attention), r.mode, r.cycleSlot,
           r.sessionCount, r.currentTaskName,
           r.longFocusMinutes, this._todaySumCache
@@ -409,6 +528,14 @@ class PomodoroView extends ItemView {
         taskWrap.classList.toggle('pmd-hidden', cycleMode);
         longWrap.classList.toggle('pmd-hidden', cycleMode);
         cycleWrap.classList.toggle('pmd-hidden', !cycleMode);
+        /** @param {HTMLElement} button @param {boolean} enabled */
+        const setBlackoutPressed = (button, enabled)=> {
+          button.setAttribute("aria-pressed", String(enabled));
+          button.setAttribute("title", enabled ? "执行时会显示黑屏；点击关闭" : "执行时不显示黑屏；点击开启");
+        };
+        setBlackoutPressed(taskBlackoutBtn, s.taskBlackoutEnabled === true);
+        setBlackoutPressed(cycleTaskBlackoutA, s.cycleTaskBlackoutA === true);
+        setBlackoutPressed(cycleTaskBlackoutB, s.cycleTaskBlackoutB === true);
         const modeLocked = r.status !== TIMER_STATUS.IDLE || !!r.attention;
         modeButton.disabled = modeLocked;
         modeButton.setText(cycleMode ? "循环工作" : "普通专注");
@@ -420,6 +547,10 @@ class PomodoroView extends ItemView {
         const lockCycleB = cycleRunning && r.cycleSlot === 1;
         [cycleTaskA, cycleMinA, clearCycleTaskA, cycleWorkspaceA, clearCycleWorkspaceA].forEach(input=> input.disabled = lockCycleA);
         [cycleTaskB, cycleMinB, clearCycleTaskB, cycleWorkspaceB, clearCycleWorkspaceB].forEach(input=> input.disabled = lockCycleB);
+        completeCycleTaskA.disabled = !String(s.cycleTaskA || "").trim();
+        completeCycleTaskB.disabled = !String(s.cycleTaskB || "").trim();
+        if (!cycleSaveTimer && document.activeElement !== cycleTaskA && cycleTaskA.value !== (s.cycleTaskA || "")) cycleTaskA.value = s.cycleTaskA || "";
+        if (!cycleSaveTimer && document.activeElement !== cycleTaskB && cycleTaskB.value !== (s.cycleTaskB || "")) cycleTaskB.value = s.cycleTaskB || "";
         if (document.activeElement !== cycleWorkspaceA && cycleWorkspaceA.dataset.commandId !== (s.cycleWorkspaceCommandA || "")) {
           fillWorkspaceList(cycleWorkspaceA, cycleWorkspaceListA, s.cycleWorkspaceCommandA || "");
         }
@@ -463,6 +594,7 @@ class PomodoroView extends ItemView {
         show(pauseBtn, r.status === TIMER_STATUS.RUNNING);
         show(resetBtn, r.status !== TIMER_STATUS.IDLE || !!r.attention);
         show(doneBtn, r.stage === TIMER_STAGE.FOCUS && active);
+        show(completeTaskBtn, !cycleMode && !!String(r.currentTaskName || s.defaultTaskName || "").trim());
 
         if (r.status === TIMER_STATUS.PAUSED) startBtn.setText("继续");
         else if (r.attention?.type === TIMER_STAGE.BREAK) startBtn.setText("开始休息");
@@ -511,6 +643,7 @@ class PomodoroView extends ItemView {
       this.disposers.push(()=>{
         if (taskSaveTimer) saveTask();
         if (cycleSaveTimer) saveCycleConfig();
+        cancelCaptureAutoClose();
       });
     } catch(err){
       logViewError(this.plugin, "view-render", err, "onOpen");
@@ -551,4 +684,4 @@ class PomodoroView extends ItemView {
   }
 }
 
-module.exports = { PomodoroView };
+module.exports = { PomodoroView, isCompletedTaskDraft };

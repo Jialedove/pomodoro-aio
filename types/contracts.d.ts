@@ -17,6 +17,8 @@ export interface Settings {
   allowAutoCreateTask: boolean;
   tasksHeading: string;
   defaultTaskName: string;
+  captureHeading: string;
+  capturePathPattern: string;
   projectEnable: boolean;
   projectTag: string;
   projectStatusKey: string;
@@ -41,13 +43,17 @@ export interface Settings {
   ribbonClickAutoNext: boolean;
   focusStartCommandId: string;
   breakStartCommandId: string;
+  breakBlackoutEnabled: boolean;
+  taskBlackoutEnabled: boolean;
   workMode: WorkMode;
   cycleTaskA: string;
   cycleMinA: number;
   cycleWorkspaceCommandA: string;
+  cycleTaskBlackoutA: boolean;
   cycleTaskB: string;
   cycleMinB: number;
   cycleWorkspaceCommandB: string;
+  cycleTaskBlackoutB: boolean;
   cycleBreakEvery: number;
   respectModalInputFocus: boolean;
   schemaVersion?: number;
@@ -121,7 +127,7 @@ export interface BreakContinuation {
 }
 
 export interface TaskMutationPlan {
-  kind: "line" | "insert";
+  kind: "line" | "insert" | "complete";
   targetIndex: number | null;
   lineBefore: string | null;
   lineAfter: string;

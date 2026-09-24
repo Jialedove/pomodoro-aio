@@ -1,12 +1,14 @@
 const {
   getTomatoSum,
   stripBaseName,
+  planTaskLineCompletion,
   planTaskLineMutation,
   applyTaskLineMutation,
   settlementConflict
 } = require("../core/task-lines");
 const { normalizePath } = require("obsidian");
 const { normalizeTag, normalizeTomatoValue, normalizeMarkdownPath } = require("../core/validation");
+const { appendCaptureToHeading } = require("../core/quick-capture");
 /** @typedef {import("../../types/contracts").Settings} Settings */
 /** @typedef {import("../../types/contracts").TaskMutationPlan} TaskMutationPlan */
 /** @typedef {import("../../types/contracts").ProjectSettlementPlan} ProjectSettlementPlan */
@@ -79,6 +81,19 @@ class DailyRepository {
     return { file, text: await this.read(file) };
   }
 
+  /** @param {{text:unknown, kind?:"todo"|"idea", heading?:unknown, path?:unknown}} input */
+  async appendCapture(input) {
+    const file = input?.path === undefined ? await this.ensureTodayFile() : await this.ensureFileAtPath(input.path);
+    /** @type {{text:string, heading:string, line:string, createdHeading:boolean} | null} */
+    let capture = null;
+    await this.process(file, current => {
+      capture = appendCaptureToHeading(current, input);
+      return capture.text;
+    });
+    if (!capture) throw new Error("快速记录写入失败");
+    return { file, .../** @type {{text:string, heading:string, line:string, createdHeading:boolean}} */ (capture) };
+  }
+
   /** @param {any} file @param {(text:string)=>string} callback */
   async process(file, callback) {
     if (typeof this.vault.process !== "function") throw new Error("当前 Obsidian 不支持原子日记处理");
@@ -128,6 +143,21 @@ class DailyRepository {
       frontmatterError = error;
     }
     return { file, text, sum, frontmatterError };
+  }
+
+  /** @param {{taskName:unknown, path?:unknown}} input */
+  async completeTask({ taskName, path }) {
+    const targetPath = path ? normalizeMarkdownPath(path, normalizePath) : this._todayPath();
+    const file = this.getFile(targetPath);
+    if (!this.isFile(file)) throw new Error("找不到当天任务文件");
+    /** @type {{text:string, alreadyApplied:boolean}} */
+    let mutation = { text:"", alreadyApplied:false };
+    await this.process(file, current => {
+      const plan = planTaskLineCompletion(current, taskName);
+      mutation = applyTaskLineMutation(current, plan);
+      return mutation.text;
+    });
+    return { file, ...mutation };
   }
 
   /** @param {any} file @param {TaskMutationPlan} plan */
