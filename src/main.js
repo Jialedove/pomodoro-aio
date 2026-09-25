@@ -1266,7 +1266,6 @@ class PomodoroAIO extends Plugin {
     try {
       await this.commitRuntimeEvent({ type:RUNTIME_EVENT.SELECT_MODULE,
         moduleIndex:index, moduleId:definition.id, attention });
-      new Notice(`已选择${definition.type === "work" ? "工作" : "休息"}：${definition.name}`);
       return true;
     } catch (error) {
       logPluginError("select-module", error, { step:"save-runtime" });

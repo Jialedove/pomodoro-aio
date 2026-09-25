@@ -29,6 +29,8 @@ declare module "obsidian" {
 
   export function normalizePath(path: string): string;
 
+  export function setIcon(parent: HTMLElement, iconId: string): void;
+
   export class ItemView {
     app: any;
     containerEl: ObsidianElement;

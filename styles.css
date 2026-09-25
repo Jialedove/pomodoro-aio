@@ -67,8 +67,12 @@
 /* Compact module rows follow the previous timer and task-entry layout. */
 .pmd-root { max-width: 100%; padding: 10px; -webkit-font-smoothing: antialiased; }
 .pmd-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
-.pmd-head .pmd-btn { min-height: 32px; padding: 4px 8px; font-size: 12px; white-space: nowrap; }
 .pmd-head .pmd-btn:first-of-type { margin-left: auto; }
+.pmd-root button.pmd-icon-button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 40px; width: 40px; min-width: 40px; height: 40px; min-height: 40px; padding: 0; border: 1px solid transparent; border-radius: 8px; appearance: none; box-shadow: none; background: transparent; color: var(--text-muted); }
+.pmd-root button.pmd-icon-button svg { width: 18px; height: 18px; stroke-width: 1.8px; }
+.pmd-root button.pmd-icon-button:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.pmd-root button.pmd-icon-button:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
+.pmd-root button.pmd-start-button { color: var(--text-accent); }
 .pmd-ring { position: relative; width: 72px; height: 72px; flex: 0 0 72px; }
 .pmd-ring-svg { position: absolute; inset: 0; display: block; }
 .pmd-ring-track { fill: none; stroke: var(--background-modifier-border); stroke-width: 6; opacity: .35; }
@@ -80,15 +84,16 @@
 .pmd-btn:active { scale: .96; }
 .pmd-btn:disabled { opacity: .5; cursor: not-allowed; }
 .pmd-btn-secondary { background: var(--background-secondary-alt); }
-.pmd-status-line { min-height: 20px; margin-top: 4px; color: var(--text-muted); font-size: 12px; }
+.pmd-status-line { margin-top: 4px; color: var(--text-muted); font-size: 12px; }
 .pmd-muted { color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
-.pmd-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; color: var(--text-muted); font-size: 12px; }
+.pmd-summary-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px; margin: 10px 0 8px; }
+.pmd-meta { align-self: center; min-width: 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 .pmd-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
 .pmd-actions > .pmd-btn { flex: 1 1 auto; }
+.pmd-actions > .pmd-icon-button { flex: 0 0 40px; }
 .pmd-hidden { display: none !important; }
 .pmd-capture { margin-top: 8px; padding: 8px; border: 1px solid var(--background-modifier-border); border-radius: 10px; background: var(--background-secondary); }
-.pmd-editor-heading { display: flex; justify-content: flex-end; align-items: center; min-height: 36px; margin: 10px 0 7px; }
-.pmd-settings-button { min-width: 72px; }
+.pmd-editor-heading { display: flex; justify-content: flex-end; align-items: center; min-height: 40px; }
 .pmd-edit-status { min-height: 18px; margin-top: 6px; color: var(--text-muted); font-size: 12px; }
 .pmd-edit-status:empty { display: none; }
 .pmd-module-list { display: grid; gap: 8px; margin-top: 2px; }
@@ -112,7 +117,9 @@
 .pmd-module-row.is-rest .pmd-module-fields { grid-template-areas: "name duration" ". blackout"; }
 .pmd-module-name { grid-area: name; display: flex; align-items: center; gap: 6px; min-width: 0; }
 .pmd-module-name > .pmd-input-wrap { flex: 1 1 auto; }
-.pmd-complete-inline { flex: 0 0 auto; min-height: 32px; padding: 3px 7px; border: 1px solid var(--background-modifier-border); border-radius: 6px; font-size: 11px; }
+.pmd-root button.pmd-complete-inline { flex: 0 0 auto; min-width: 36px; min-height: 32px; padding: 2px 4px; border: 0; border-radius: 6px; appearance: none; box-shadow: none; background: transparent; color: var(--text-muted); font-size: 11px; font-weight: 500; }
+.pmd-root button.pmd-complete-inline:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.pmd-root button.pmd-complete-inline:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
 .pmd-module-workspace { grid-area: workspace; }
 .pmd-module-duration { grid-area: duration; display: flex; align-items: center; gap: 4px; }
 .pmd-module-blackout { grid-area: blackout; justify-self: end; }
@@ -139,8 +146,8 @@
 .pmd-settings-presets textarea { width: 100%; min-height: 110px; resize: vertical; }
 .pmd-settings-presets button { justify-self: start; }
 .pmd-edit-toolbar { justify-content: flex-end; flex-wrap: nowrap; gap: 6px; margin: 0; }
-.pmd-edit-toolbar > .pmd-btn { flex: 0 0 auto; min-width: 64px; }
-.pmd-root > .pmd-actions { margin-top: 18px; }
+.pmd-edit-toolbar > .pmd-btn { flex: 0 0 auto; min-width: 50px; min-height: 32px; padding: 4px 7px; font-size: 12px; }
+.pmd-root > .pmd-actions { gap: 4px; margin-top: 14px; }
 .pmd-snapshot-note { color: var(--text-muted); font-size: 12px; }
 .pmd-capture .pmd-row-inline { display: flex; gap: 7px; padding-bottom: 8px; }
 .pmd-capture-status { min-height: 18px; padding-bottom: 5px; color: var(--text-muted); font-size: 12px; }
@@ -162,7 +169,7 @@
 .pmd-unassigned-hint { color: var(--text-muted); font-size: 12px; }
 @container (max-width: 320px) {
   .pmd-root { padding: 8px; }
-  .pmd-head > .pmd-btn { flex: 1 1 auto; }
+  .pmd-head > .pmd-icon-button { flex: 0 0 40px; }
   .pmd-module-row { grid-template-columns: 42px minmax(0, 1fr); gap: 6px; }
   .pmd-root button.pmd-module-grip, .pmd-root button.pmd-module-remove { flex-basis: 19px; width: 19px; }
   .pmd-module-fields { grid-template-columns: minmax(0, 1fr) max-content; grid-template-areas: "name duration" "workspace workspace" ". blackout"; gap: 6px; }

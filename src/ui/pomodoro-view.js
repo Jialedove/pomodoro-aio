@@ -1,4 +1,4 @@
-const { ItemView } = require("obsidian");
+const { ItemView, setIcon } = require("obsidian");
 const { TIMER_STATUS } = require("../core/timer");
 const { formatTomatoNumber } = require("../core/validation");
 const { workspaceLayoutLabel } = require("../integrations/workspaces-plus");
@@ -19,6 +19,16 @@ function logViewError(plugin, operation, error) {
     step: "ui",
     error: String(error instanceof Error ? error.message : error || "unknown error")
   });
+}
+
+/** @param {HTMLElement} button @param {string} icon @param {string} label */
+function setButtonIcon(button, icon, label) {
+  if (button.dataset.pmdIcon !== icon) {
+    setIcon(button, icon);
+    button.dataset.pmdIcon = icon;
+  }
+  button.setAttribute("aria-label", label);
+  button.setAttribute("title", label);
 }
 
 /** @param {any} leaf @param {any} plugin */
@@ -62,30 +72,36 @@ class PomodoroView extends ItemView {
     ring.setAttribute("aria-valuemin", "0");
     const timer = head.createDiv({ cls: "pmd-time", text: mmss(this.plugin.getLeftSec()), attr: { role: "timer", "aria-label": "剩余时间" } });
     const phase = head.createDiv({ cls: "pmd-state", text: "待机" });
-    const todayButton = head.createEl("button", { cls: "pmd-btn pmd-btn-secondary", text: "打开当日日记", attr: { type: "button" } });
+    const todayButton = head.createEl("button", { cls: "pmd-btn pmd-icon-button", attr: { type: "button" } });
+    setButtonIcon(todayButton, "file-text", "打开当日日记");
     todayButton.onclick = () => this.plugin.runUserCommand(() => this.plugin.openToday());
-    const projectButton = head.createEl("button", { cls: "pmd-btn pmd-btn-secondary pmd-project-entry", text: "推进中的项目", attr: { type: "button" } });
+    const projectButton = head.createEl("button", { cls: "pmd-btn pmd-icon-button pmd-project-entry", attr: { type: "button" } });
+    setButtonIcon(projectButton, "folder", "推进中的项目");
     projectButton.onclick = () => this.plugin.activateProjectsView();
 
     const statusLine = root.createDiv({ cls: "pmd-status-line", attr: { "aria-live": "polite" } });
 
     const actions = root.createDiv({ cls: "pmd-actions" });
-    const startButton = actions.createEl("button", { cls: "pmd-btn pmd-btn-primary", text: "开始", attr: { type: "button" } });
+    const startButton = actions.createEl("button", { cls: "pmd-btn pmd-icon-button pmd-start-button", attr: { type: "button" } });
+    setButtonIcon(startButton, "play", "开始");
     const pauseButton = actions.createEl("button", { cls: "pmd-btn", text: "暂停", attr: { type: "button" } });
     const completeSegmentButton = actions.createEl("button", { cls: "pmd-btn", text: "完成本段", attr: { type: "button" } });
     const completeTaskButton = actions.createEl("button", { cls: "pmd-btn pmd-btn-secondary", text: "完成事情", attr: { type: "button" } });
     const resetButton = actions.createEl("button", { cls: "pmd-btn", text: "重置", attr: { type: "button" } });
-    const refreshButton = actions.createEl("button", { cls: "pmd-btn pmd-btn-secondary", text: "刷新", attr: { type: "button" } });
-    const quickCaptureButton = actions.createEl("button", { cls: "pmd-btn pmd-btn-secondary", text: "快速捕捉", attr: { type: "button", "aria-expanded":"false", "aria-controls":"pmd-quick-capture" } });
+    const refreshButton = actions.createEl("button", { cls: "pmd-btn pmd-icon-button", attr: { type: "button" } });
+    setButtonIcon(refreshButton, "refresh-cw", "刷新");
+    const quickCaptureButton = actions.createEl("button", { cls: "pmd-btn pmd-icon-button", attr: { type: "button", "aria-expanded":"false", "aria-controls":"pmd-quick-capture" } });
+    setButtonIcon(quickCaptureButton, "pencil", "快速捕捉");
 
-    const runtimeStats = root.createDiv({ cls: "pmd-meta" });
-
-    const editor = root.createDiv({ cls: "pmd-module-editor" });
-    const editorHeading = editor.createDiv({ cls: "pmd-editor-heading" });
-    const editModeButton = editorHeading.createEl("button", { cls:"pmd-btn pmd-btn-secondary pmd-settings-button", text:"设置", attr:{ type:"button", "aria-label":"设置工作与休息模块" } });
+    const summaryBar = root.createDiv({ cls: "pmd-summary-bar" });
+    const runtimeStats = summaryBar.createDiv({ cls: "pmd-meta" });
+    const editorHeading = summaryBar.createDiv({ cls: "pmd-editor-heading" });
+    const editModeButton = editorHeading.createEl("button", { cls:"pmd-btn pmd-icon-button pmd-settings-button", attr:{ type:"button" } });
+    setButtonIcon(editModeButton, "settings", "设置工作与休息模块");
     const editToolbar = editorHeading.createDiv({ cls:"pmd-actions pmd-edit-toolbar pmd-hidden" });
     const cancelEditButton = editToolbar.createEl("button", { cls:"pmd-btn pmd-btn-secondary", text:"取消", attr:{ type:"button" } });
     const saveEditButton = editToolbar.createEl("button", { cls:"pmd-btn pmd-btn-primary", text:"保存", attr:{ type:"button" } });
+    const editor = root.createDiv({ cls: "pmd-module-editor" });
     const moduleList = editor.createDiv({ cls: "pmd-module-list" });
     const addActions = editor.createDiv({ cls: "pmd-actions pmd-add-module-actions pmd-hidden" });
     const addWorkButton = addActions.createEl("button", { cls: "pmd-btn", text: "+ 工作", attr: { type: "button" } });
@@ -328,7 +344,7 @@ class PomodoroView extends ItemView {
     };
     cancelEditButton.onclick = () => {
       this._moduleDraft = null;
-      editStatus.setText("已取消，未保存任何模块改动");
+      editStatus.setText("");
       refreshEditor(this.plugin.snapshot(), true);
       onState(this.plugin.snapshot());
     };
@@ -382,11 +398,10 @@ class PomodoroView extends ItemView {
       const selectedId = runtime.status === TIMER_STATUS.IDLE
         ? runtime.selectedModuleId || modules[runtime.currentModuleIndex || 0]?.id
         : runtime.attention?.moduleRun?.moduleId || runtime.moduleRun?.moduleId;
-      const selectedDefinition = modules.find((/** @type {ModuleDefinition} */ module) => module.id === selectedId);
       timer.setText(mmss(runtime.leftSec ?? this.plugin.getLeftSec()));
       phase.setText(run ? `${run.type === "work" ? "工作" : "休息"}${pending ? " · 待开始" : ""}` : "待机");
-      statusLine.classList.toggle("pmd-hidden", runtime.status === TIMER_STATUS.RUNNING);
-      statusLine.setText(runtime.status === TIMER_STATUS.PAUSED ? "已暂停" : runtime.status === TIMER_STATUS.AWAITING ? "等待确认" : runtime.status === TIMER_STATUS.SETTLING ? "正在结算" : runtime.status === TIMER_STATUS.FAILED ? "需要恢复结算" : selectedDefinition ? `当前选择：${selectedDefinition.type === "work" ? "工作" : "休息"} · ${selectedDefinition.name}` : "待机");
+      statusLine.classList.toggle("pmd-hidden", runtime.status === TIMER_STATUS.RUNNING || runtime.status === TIMER_STATUS.IDLE);
+      statusLine.setText(runtime.status === TIMER_STATUS.PAUSED ? "已暂停" : runtime.status === TIMER_STATUS.AWAITING ? "等待确认" : runtime.status === TIMER_STATUS.SETTLING ? "正在结算" : runtime.status === TIMER_STATUS.FAILED ? "需要恢复结算" : "");
       const dailyGoal = Number(settings.dailyGoal) > 0 ? Number(settings.dailyGoal) : 8;
       const todaySum = this._todaySumCache || 0;
       ringText.textContent = `${formatTomatoNumber(todaySum)}/${dailyGoal}`;
@@ -394,7 +409,7 @@ class PomodoroView extends ItemView {
       ring.setAttribute("aria-valuenow", String(todaySum));
       ringProgress.setAttribute("stroke-dashoffset", String(2 * Math.PI * 30 * (1 - Math.min(todaySum / dailyGoal, 1))));
       runtimeStats.setText(`今日累计：${formatTomatoNumber(todaySum)}🍅 · 本次工作 ${runtime.completedWorkCount || 0} 段 · 休息 ${runtime.completedRestCount || 0} 段 · 完整循环 ${runtime.completedLoopCount || 0} 次`);
-      startButton.setText(runtime.status === TIMER_STATUS.PAUSED ? "继续" : pending ? "开始下一段" : active ? "继续" : "开始");
+      setButtonIcon(startButton, "play", runtime.status === TIMER_STATUS.PAUSED ? "继续" : pending ? "开始下一段" : active ? "继续" : "开始");
       startButton.classList.toggle("pmd-hidden", !!this._moduleDraft || runtime.status === TIMER_STATUS.RUNNING || runtime.status === TIMER_STATUS.SETTLING || runtime.status === TIMER_STATUS.FAILED);
       startButton.disabled = !!this._moduleDraft || (!modules.length && runtime.status === TIMER_STATUS.IDLE);
       pauseButton.classList.toggle("pmd-hidden", runtime.status !== TIMER_STATUS.RUNNING);
@@ -424,13 +439,13 @@ class PomodoroView extends ItemView {
         this._todayUnchecked = Array.isArray(today?.unchecked) ? today.unchecked : [];
         fillTaskLists();
         onState(this.plugin.snapshot());
-        refreshButton.setText("已刷新");
+        setButtonIcon(refreshButton, "refresh-cw", "已刷新");
       } catch (error) {
-        refreshButton.setText("刷新失败");
+        setButtonIcon(refreshButton, "refresh-cw", "刷新失败");
         logViewError(this.plugin, "daily-refresh", error);
       } finally {
         refreshButton.disabled = false;
-        window.setTimeout(() => { if (refreshButton.isConnected) refreshButton.setText("刷新"); }, 1200);
+        window.setTimeout(() => { if (refreshButton.isConnected) setButtonIcon(refreshButton, "refresh-cw", "刷新"); }, 1200);
       }
     };
     refreshButton.onclick = refreshToday;
