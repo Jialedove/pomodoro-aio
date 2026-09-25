@@ -2,6 +2,8 @@ const { ItemView } = require("obsidian");
 const { TIMER_STATUS } = require("../core/timer");
 const { formatTomatoNumber } = require("../core/validation");
 const { workspaceLayoutLabel } = require("../integrations/workspaces-plus");
+const { normalizeModuleDefinition } = require("../core/modules");
+const { createModuleDraft } = require("../core/module-draft");
 /** @typedef {{id:string, type:"work"|"rest", name:string, durationMin:number, blackout:boolean, workspaceCommandId?:string}} ModuleDefinition */
 
 /** @param {number} sec */
@@ -37,6 +39,8 @@ class PomodoroView extends ItemView {
     this._taskListPrefix = `pmd-tasks-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     /** @type {string} */
     this._editorSignature = "";
+    /** @type {ReturnType<typeof createModuleDraft> | null} */
+    this._moduleDraft = null;
     this._todaySumCache = 0;
   }
   getViewType() { return PomodoroView.VIEW_TYPE; }
@@ -44,6 +48,7 @@ class PomodoroView extends ItemView {
   getIcon() { return "clock"; }
 
   async onOpen() {
+    this._moduleDraft = null;
     const root = this.containerEl;
     root.empty();
     root.addClass("pmd-root");
@@ -69,7 +74,7 @@ class PomodoroView extends ItemView {
     const nextLine = currentSummary.createDiv({ cls: "pmd-next-module" });
 
     const actions = root.createDiv({ cls: "pmd-actions" });
-    const startButton = actions.createEl("button", { cls: "pmd-btn pmd-btn-primary", text: "开始序列", attr: { type: "button" } });
+    const startButton = actions.createEl("button", { cls: "pmd-btn pmd-btn-primary", text: "开始", attr: { type: "button" } });
     const pauseButton = actions.createEl("button", { cls: "pmd-btn", text: "暂停", attr: { type: "button" } });
     const completeSegmentButton = actions.createEl("button", { cls: "pmd-btn", text: "完成本段", attr: { type: "button" } });
     const completeTaskButton = actions.createEl("button", { cls: "pmd-btn pmd-btn-secondary", text: "完成事情", attr: { type: "button" } });
@@ -81,11 +86,17 @@ class PomodoroView extends ItemView {
 
     const editor = root.createDiv({ cls: "pmd-module-editor" });
     const editorHeading = editor.createDiv({ cls: "pmd-editor-heading" });
-    editorHeading.createEl("h3", { text: "工作与休息序列" });
+    const editModeButton = editorHeading.createEl("button", { cls:"pmd-btn pmd-btn-secondary pmd-settings-button", text:"设置", attr:{ type:"button", "aria-label":"设置工作与休息模块" } });
     const moduleList = editor.createDiv({ cls: "pmd-module-list" });
-    const addActions = editor.createDiv({ cls: "pmd-actions pmd-add-module-actions" });
+    const addActions = editor.createDiv({ cls: "pmd-actions pmd-add-module-actions pmd-hidden" });
     const addWorkButton = addActions.createEl("button", { cls: "pmd-btn", text: "+ 工作", attr: { type: "button" } });
     const addRestButton = addActions.createEl("button", { cls: "pmd-btn", text: "+ 休息", attr: { type: "button" } });
+    const presetEditor = editor.createDiv({ cls:"pmd-rest-presets pmd-hidden" });
+    presetEditor.createEl("label", { text:"休息事项预设（每行一项）", attr:{ for:"pmd-rest-presets-input" } });
+    const presetInput = presetEditor.createEl("textarea", { cls:"pmd-input", attr:{ id:"pmd-rest-presets-input", rows:"4", placeholder:"例如：NSDR 非睡眠深度休息" } });
+    const editToolbar = editor.createDiv({ cls:"pmd-actions pmd-edit-toolbar pmd-hidden" });
+    const cancelEditButton = editToolbar.createEl("button", { cls:"pmd-btn pmd-btn-secondary", text:"取消", attr:{ type:"button" } });
+    const saveEditButton = editToolbar.createEl("button", { cls:"pmd-btn pmd-btn-primary", text:"保存", attr:{ type:"button" } });
     const editStatus = editor.createDiv({ cls:"pmd-edit-status", attr:{ role:"status", "aria-live":"polite" } });
     const editorNote = editor.createDiv({ cls: "pmd-snapshot-note pmd-hidden", text: "本段按开始时设置运行；这里的修改用于后续模块执行。" });
 
@@ -122,6 +133,7 @@ class PomodoroView extends ItemView {
       if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); void submitCapture(); }
       if (event.key === "Escape") { capture.classList.add("pmd-hidden"); quickCaptureButton.setAttribute("aria-expanded", "false"); quickCaptureButton.focus(); }
     };
+    root.appendChild(actions);
 
     /** @param {any} command */
     const commandTitle = command => workspaceLayoutLabel(command) || command?.name || command?.id || "工作区";
@@ -142,173 +154,194 @@ class PomodoroView extends ItemView {
       list.empty();
       this._todayUnchecked.forEach(task => list.createEl("option", { attr:{ value:task } }));
     });
-    /** @type {Set<Promise<boolean>>} */
-    const pendingEdits = new Set();
-    /** @param {Promise<boolean>} promise */
-    const trackEdit = promise => {
-      pendingEdits.add(promise);
-      void promise.finally(() => pendingEdits.delete(promise));
-      return promise;
-    };
-    /** @param {()=>Promise<any>} action @param {string} success */
-    const edit = (action, success) => trackEdit((async () => {
-      try {
-        const result = await action();
-        if (result === false) throw new Error("edit rejected");
-        editStatus.setText(success);
-        return true;
-      } catch (error) {
-        editStatus.setText("保存失败，请检查插件设置或稍后重试");
-        logViewError(this.plugin, "module-edit", error);
-        return false;
-      }
-    })());
-    const refreshEditor = (snap = this.plugin.snapshot()) => {
-      const modules = Array.isArray(snap.settings.modules) ? snap.settings.modules : [];
-      projectButton.classList.toggle("pmd-hidden", snap.settings.enableProjects !== true);
+    const refreshEditor = (snap = this.plugin.snapshot(), force = false) => {
+      const editing = !!this._moduleDraft;
+      /** @type {Record<string, any>[]} */
+      const modules = this._moduleDraft ? this._moduleDraft.modules : (Array.isArray(snap.settings.modules) ? snap.settings.modules : []);
       const signature = JSON.stringify(modules);
-      if (signature === this._editorSignature) return;
+      projectButton.classList.toggle("pmd-hidden", snap.settings.enableProjects !== true);
+      root.classList.toggle("is-configuring", editing);
+      editModeButton.classList.toggle("pmd-hidden", editing);
+      addActions.classList.toggle("pmd-hidden", !editing);
+      presetEditor.classList.toggle("pmd-hidden", !editing);
+      editToolbar.classList.toggle("pmd-hidden", !editing);
+      if (!force && (editing || signature === this._editorSignature)) return;
       this._editorSignature = signature;
       moduleList.empty();
       this._taskLists = [];
-      /** @type {ModuleDefinition[]} */
-      const definitions = modules;
-      definitions.forEach((module, index) => {
-        const row = moduleList.createDiv({ cls: `pmd-module-row is-${module.type}`, attr: { "data-module-id": module.id, "data-index": String(index) } });
+      if (!modules.length) moduleList.createDiv({ cls:"pmd-empty", text:editing ? "添加工作或休息模块，组成你的序列。" : "点击设置，添加工作或休息模块。" });
+      modules.forEach((module, index) => {
+        const row = moduleList.createDiv({ cls:`pmd-module-row is-${module.type}${editing ? " is-editing" : " is-readonly"}`, attr:{ "data-module-id":module.id } });
         const role = row.createDiv({ cls:"pmd-module-role" });
-        const roleLabel = role.createEl("button", { cls:"pmd-module-select",
-          text:module.type === "work" ? "工作" : "休息",
-          attr:{ type:"button", title:"双击设为当前模块", "aria-label":`双击选择第 ${index + 1} 段${module.type === "work" ? "工作" : "休息"}` } });
-        const chooseModule = (/** @type {Event} */ event) => this.plugin.runUserCommand(async () => {
-          if ((await Promise.all([...pendingEdits])).some(saved => !saved)) return false;
-          return this.plugin.selectModule(index);
-        }, event);
-        roleLabel.ondblclick = chooseModule;
-        roleLabel.onclick = event => { if (event.detail === 0) chooseModule(event); };
-        const grip = role.createSpan({ cls:"pmd-module-grip", text:"↕", attr:{ title:"拖动调整顺序", "aria-label":`拖动第 ${index + 1} 个模块排序`, draggable:"true" } });
-        const fields = row.createDiv({ cls: "pmd-module-fields" });
-        const nameWrap = fields.createDiv({ cls: "pmd-input-wrap pmd-module-name" });
-        const name = nameWrap.createEl("input", { cls: "pmd-input", attr: { type: "text", placeholder: module.type === "work" ? "输入/选择事情（仅显示未勾选待办）" : "休息方式", "aria-label": module.type === "work" ? `第 ${index + 1} 段工作事情` : `第 ${index + 1} 段休息方式` } });
-        name.value = module.type === "work" && module.name === "工作" ? "" : module.name || "";
-        const listId = `${this._taskListPrefix}-${index}`;
-        if (module.type === "work") {
-          name.setAttribute("list", listId);
-          const list = nameWrap.createEl("datalist", { attr:{ id:listId } });
-          this._taskLists.push(list);
-          name.addEventListener("focus", () => openDatalist(name));
-          name.addEventListener("click", () => openDatalist(name));
+        const roleLabel = role.createEl("button", { cls:"pmd-module-select", text:module.type === "work" ? "工作" : "休息",
+          attr:{ type:"button", title:editing ? "正在编辑模块" : "双击设为当前模块", "aria-label":`${editing ? "正在编辑" : "双击选择"}第 ${index + 1} 段${module.type === "work" ? "工作" : "休息"}` } });
+        if (editing) roleLabel.disabled = true;
+        else {
+          const chooseModule = (/** @type {Event} */ event) => this.plugin.runUserCommand(() => this.plugin.selectModule(index), event);
+          roleLabel.ondblclick = chooseModule;
+          roleLabel.onclick = event => { if (event.detail === 0) chooseModule(event); };
         }
-        let nameSave = Promise.resolve(true);
-        /** @type {string | null} */
-        let pendingNameValue = null;
-        const saveName = () => {
-          const value = name.value.trim();
-          if (pendingNameValue === value) return nameSave;
-          const current = this.plugin.settings.modules.find((/** @type {ModuleDefinition} */ item) => item.id === module.id)?.name || "";
-          if (value === current) return nameSave;
-          pendingNameValue = value;
-          nameSave = trackEdit(this.plugin.updateModule(module.id, { name:value }).then((/** @type {boolean} */ result) => {
-            editStatus.setText(result ? "名称已保存" : "保存失败，请重试");
-            return result === true;
-          }).catch((/** @type {unknown} */ error) => {
-            editStatus.setText("保存失败，请检查插件设置或稍后重试");
-            logViewError(this.plugin, "module-name", error);
-            return false;
-          }).finally(() => {
-            if (pendingNameValue === value) pendingNameValue = null;
-          }));
-          return nameSave;
+        const fields = row.createDiv({ cls:"pmd-module-fields" });
+        if (!editing) {
+          const nameWrap = fields.createDiv({ cls:"pmd-module-name pmd-module-name-display" });
+          const nameTrigger = nameWrap.createEl("button", { cls:"pmd-module-name-trigger",
+            text:!module.name || (module.type === "work" && module.name === "工作") || (module.type === "rest" && module.name === "休息")
+              ? (module.type === "work" ? "选择事情" : "选择休息事项") : module.name,
+            attr:{ type:"button", title:module.type === "work" ? "选择当日日记中的事情" : "选择预设休息事项", "aria-label":`设置第 ${index + 1} 段${module.type === "work" ? "工作事情" : "休息事项"}` } });
+          nameTrigger.onclick = () => {
+            editModeButton.click();
+            const target = [...moduleList.querySelectorAll(".pmd-module-row")].find(item => item.getAttribute("data-module-id") === module.id);
+            /** @type {HTMLInputElement | null} */ (target?.querySelector("input.pmd-input"))?.focus();
+          };
+          if (module.type === "work" && module.name && module.name !== "工作") {
+            const complete = nameWrap.createEl("button", { cls:"pmd-complete-inline", text:"完成", attr:{ type:"button", title:"完成事情并勾选日记待办" } });
+            complete.onclick = event => this.plugin.runUserCommand(() => this.plugin.completeTask({ moduleId:module.id }), event);
+          }
+          fields.createSpan({ cls:"pmd-module-duration-display", text:`${module.durationMin} 分钟` });
+          if (module.type === "work" && module.workspaceCommandId) {
+            const selected = this._workspaceCommands.find(command => command.id === module.workspaceCommandId);
+            fields.createDiv({ cls:"pmd-module-workspace-display", text:selected ? `布局：${commandTitle(selected)}` : "布局命令已失效" });
+          }
+          if (module.blackout) fields.createSpan({ cls:"pmd-module-blackout-display", text:"执行时黑屏" });
+          return;
+        }
+        const draft = /** @type {ReturnType<typeof createModuleDraft>} */ (this._moduleDraft);
+        const grip = role.createEl("button", { cls:"pmd-module-grip", text:"↕", attr:{ type:"button", title:"拖动排序，或用上下方向键移动", "aria-label":`排序第 ${index + 1} 个模块`, draggable:"true" } });
+        const remove = role.createEl("button", { cls:"pmd-module-remove", text:"×", attr:{ type:"button", title:"删除模块", "aria-label":`删除第 ${index + 1} 个模块` } });
+        remove.onclick = () => { draft.modules = draft.modules.filter(item => item.id !== module.id); refreshEditor(this.plugin.snapshot(), true); };
+        /** @param {number} target */
+        const moveTo = target => {
+          const from = draft.modules.findIndex(item => item.id === module.id);
+          if (from < 0 || target < 0 || target >= draft.modules.length || from === target) return;
+          const [moving] = draft.modules.splice(from, 1);
+          draft.modules.splice(target, 0, moving);
+          refreshEditor(this.plugin.snapshot(), true);
         };
-        name.onchange = () => { void saveName(); };
-        name.onkeydown = event => {
-          if (event.key === "Escape") {
+        grip.onkeydown = event => {
+          if (event.key === "ArrowUp" || event.key === "ArrowDown") {
             event.preventDefault();
-            name.value = "";
-            void saveName();
+            moveTo(index + (event.key === "ArrowUp" ? -1 : 1));
+            const movedRow = [...moduleList.querySelectorAll(".pmd-module-row")].find(item => item.getAttribute("data-module-id") === module.id);
+            /** @type {HTMLElement | null} */ (movedRow?.querySelector(".pmd-module-grip"))?.focus();
           }
         };
-        const clearName = nameWrap.createEl("button", { cls:"pmd-clear", text:"×", attr:{ type:"button", title:"清空名称", "aria-label":`清空第 ${index + 1} 段名称` } });
-        const clearNameAction = (/** @type {Event} */ event) => {
-          event.preventDefault();
-          name.value = "";
-          void saveName();
-          name.focus();
+        grip.ondragstart = event => {
+          row.classList.add("is-dragging");
+          event.dataTransfer?.setData("text/plain", module.id);
+          if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
         };
-        clearName.onpointerdown = clearNameAction;
-        clearName.onclick = event => { if (event.detail === 0) clearNameAction(event); };
-        if (module.type === "work") {
-          const completeThing = nameWrap.createEl("button", {
-            cls:"pmd-clear pmd-complete-thing", text:"完成",
-            attr:{ type:"button", title:"完成事情并勾选日记待办", "aria-label":`完成第 ${index + 1} 段事情` }
-          });
-          const syncCompleteButton = () => {
-            completeThing.disabled = !name.value.replace(/\u200B/g, "").trim();
-            completeThing.title = completeThing.disabled ? "请先输入或选择日记待办" : "完成事情并勾选日记待办";
+        grip.ondragend = () => row.classList.remove("is-dragging");
+        row.ondragover = event => { event.preventDefault(); row.classList.add("is-drop-target"); };
+        row.ondragleave = () => row.classList.remove("is-drop-target");
+        row.ondrop = event => {
+          event.preventDefault(); row.classList.remove("is-drop-target");
+          const movingId = event.dataTransfer?.getData("text/plain");
+          const from = draft.modules.findIndex(item => item.id === movingId);
+          if (from < 0 || movingId === module.id) return;
+          const [moving] = draft.modules.splice(from, 1);
+          draft.modules.splice(index, 0, moving);
+          refreshEditor(this.plugin.snapshot(), true);
+        };
+        const nameWrap = fields.createDiv({ cls:"pmd-input-wrap pmd-module-name" });
+        const name = nameWrap.createEl("input", { cls:"pmd-input", attr:{ type:"text", placeholder:module.type === "work" ? "输入/选择事情（未勾选待办）" : "输入/选择休息事项", "aria-label":`第 ${index + 1} 段${module.type === "work" ? "工作事情" : "休息事项"}` } });
+        name.value = module.type === "work" && module.name === "工作" ? "" : module.name || "";
+        const listId = `${this._taskListPrefix}-${index}`;
+        name.setAttribute("list", listId);
+        const list = nameWrap.createEl("datalist", { attr:{ id:listId } });
+        if (module.type === "work") this._taskLists.push(list);
+        else {
+          const fillRestList = () => {
+            list.empty();
+            const seen = new Set();
+            String(presetInput.value).split(/\r?\n/).map(item => item.trim()).filter(item => {
+              if (!item || seen.has(item)) return false;
+              seen.add(item); return true;
+            }).forEach(item => list.createEl("option", { attr:{ value:item } }));
           };
-          syncCompleteButton();
-          name.addEventListener("input", syncCompleteButton);
-          completeThing.onpointerdown = event => event.preventDefault();
-          completeThing.onclick = event => this.plugin.runUserCommand(async () => {
-            if (!(await saveName())) return false;
-            return this.plugin.completeTask({ moduleId:module.id });
-          }, event);
+          fillRestList();
+          name.addEventListener("focus", fillRestList);
         }
+        name.addEventListener("focus", () => openDatalist(name));
+        name.addEventListener("click", () => openDatalist(name));
+        name.oninput = () => { module.name = name.value.replace(/\u200B/g, ""); };
+        const clearName = nameWrap.createEl("button", { cls:"pmd-clear", text:"×", attr:{ type:"button", title:"清空名称" } });
+        clearName.onclick = () => { name.value = ""; module.name = ""; name.focus(); };
         const durationWrap = fields.createDiv({ cls:"pmd-module-duration" });
-        const duration = durationWrap.createEl("input", { cls: "pmd-cycle-min", attr: { type: "number", min: "1", step: "1", "aria-label": `第 ${index + 1} 段时长（分钟）` } });
-        duration.value = String(module.durationMin || 25);
-        duration.onchange = () => edit(() => this.plugin.updateModule(module.id, { durationMin: Math.max(1, Math.round(Number(duration.value) || 1)) }), "时长已保存");
+        const duration = durationWrap.createEl("input", { cls:"pmd-cycle-min", attr:{ type:"number", min:"1", step:"1", "aria-label":`第 ${index + 1} 段时长（分钟）` } });
+        duration.value = String(module.durationMin);
+        duration.oninput = () => { module.durationMin = Number(duration.value); };
         durationWrap.createSpan({ cls:"pmd-cycle-unit", text:"分钟" });
-
         if (module.type === "work") {
           const workspaceWrap = fields.createDiv({ cls:"pmd-input-wrap pmd-module-workspace" });
           const workspaceListId = `${this._taskListPrefix}-workspace-${index}`;
           const workspace = workspaceWrap.createEl("input", { cls:"pmd-cycle-workspace", attr:{ type:"text", list:workspaceListId, placeholder:"筛选/选择布局", "aria-label":`第 ${index + 1} 段工作区布局` } });
           const workspaceList = workspaceWrap.createEl("datalist", { attr:{ id:workspaceListId } });
           this._workspaceCommands.forEach(command => workspaceList.createEl("option", { attr:{ value:commandTitle(command) } }));
-          const selectedWorkspace = this._workspaceCommands.find(command => command.id === module.workspaceCommandId);
-          workspace.value = selectedWorkspace ? commandTitle(selectedWorkspace) : "";
+          const selected = this._workspaceCommands.find(command => command.id === module.workspaceCommandId);
+          workspace.value = selected ? commandTitle(selected) : "";
           workspace.onfocus = () => openDatalist(workspace);
-          workspace.onchange = () => {
-            const hit = this._workspaceCommands.find(command => commandTitle(command) === workspace.value.trim());
-            if (workspace.value.trim() && !hit) {
-              workspace.value = selectedWorkspace ? commandTitle(selectedWorkspace) : "";
-              editStatus.setText("请从工作区候选中选择布局");
-              return;
-            }
-            edit(() => this.plugin.updateModule(module.id, { workspaceCommandId:hit?.id || "" }), "工作区已保存");
+          workspace.oninput = () => {
+            const value = workspace.value.replace(/\u200B/g, "").trim();
+            const hit = this._workspaceCommands.find(command => commandTitle(command) === value);
+            module.invalidWorkspace = !!value && !hit;
+            module.workspaceCommandId = hit?.id || "";
           };
-          const clearWorkspace = workspaceWrap.createEl("button", { cls:"pmd-clear", text:"×", attr:{ type:"button", title:"清空工作区", "aria-label":`清空第 ${index + 1} 段工作区` } });
-          clearWorkspace.onclick = () => { workspace.value = ""; workspace.onchange?.(new Event("change")); workspace.focus(); };
+          const clearWorkspace = workspaceWrap.createEl("button", { cls:"pmd-clear", text:"×", attr:{ type:"button", title:"清空工作区" } });
+          clearWorkspace.onclick = () => { workspace.value = ""; module.workspaceCommandId = ""; module.invalidWorkspace = false; workspace.focus(); };
         }
         const blackout = fields.createEl("button", { cls:"pmd-blackout-option pmd-module-blackout", attr:{ type:"button", "aria-label":`第 ${index + 1} 段执行时黑屏`, "aria-pressed":String(module.blackout === true) } });
         blackout.createSpan({ cls:"pmd-blackout-check", attr:{ "aria-hidden":"true" } });
         blackout.createSpan({ text:"执行时黑屏" });
-        blackout.onclick = () => edit(() => this.plugin.updateModule(module.id, { blackout:module.blackout !== true }), "黑屏设置已保存");
-        const remove = role.createEl("button", { cls: "pmd-module-remove", text: "×", attr: { type: "button", title:"删除模块", "aria-label": `删除${module.type === "work" ? "工作" : "休息"}模块 ${index + 1}` } });
-        remove.onclick = () => edit(() => this.plugin.removeModule(module.id), "模块已删除");
-        grip.ondragstart = event => {
-            row.classList.add("is-dragging");
-            event.dataTransfer?.setData("text/plain", module.id);
-            if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
-        };
-        grip.ondragend = () => row.classList.remove("is-dragging");
-        row.ondragover = event => { event.preventDefault(); row.classList.add("is-drop-target"); };
-        row.ondragleave = () => row.classList.remove("is-drop-target");
-        row.ondrop = event => {
-            event.preventDefault();
-            row.classList.remove("is-drop-target");
-            const movingId = event.dataTransfer?.getData("text/plain");
-            if (!movingId || movingId === module.id) return;
-            edit(() => this.plugin.moveModule(movingId, index), "顺序已保存");
-        };
+        blackout.onclick = () => { module.blackout = !module.blackout; blackout.setAttribute("aria-pressed", String(module.blackout)); };
       });
       fillTaskLists();
     };
 
-    addWorkButton.onclick = () => edit(() => this.plugin.addModule("work"), "工作模块已添加");
-    addRestButton.onclick = () => edit(() => this.plugin.addModule("rest"), "休息模块已添加");
+    /** @param {"work" | "rest"} type */
+    const addDraftModule = type => {
+      if (!this._moduleDraft) return;
+      this._moduleDraft.modules.push(normalizeModuleDefinition({ type, name:type === "rest" ? "休息" : "工作", durationMin:type === "rest" ? 5 : 25 }));
+      refreshEditor(this.plugin.snapshot(), true);
+    };
+    addWorkButton.onclick = () => addDraftModule("work");
+    addRestButton.onclick = () => addDraftModule("rest");
+    editModeButton.onclick = () => {
+      this._moduleDraft = createModuleDraft(this.plugin.settings);
+      presetInput.value = this._moduleDraft.restPresetsText;
+      editStatus.setText("编辑仅在点击保存后生效");
+      refreshEditor(this.plugin.snapshot(), true);
+      onState(this.plugin.snapshot());
+    };
+    cancelEditButton.onclick = () => {
+      this._moduleDraft = null;
+      editStatus.setText("已取消，未保存任何模块改动");
+      refreshEditor(this.plugin.snapshot(), true);
+      onState(this.plugin.snapshot());
+    };
+    presetInput.oninput = () => {
+      if (this._moduleDraft) this._moduleDraft.restPresetsText = presetInput.value;
+    };
+    saveEditButton.onclick = async () => {
+      const draft = this._moduleDraft;
+      if (!draft) return;
+      saveEditButton.disabled = true;
+      draft.restPresetsText = presetInput.value;
+      editStatus.setText("正在保存…");
+      try {
+        await this.plugin.saveModuleDraft(draft);
+        this._moduleDraft = null;
+        editStatus.setText("设置已保存");
+        refreshEditor(this.plugin.snapshot(), true);
+        onState(this.plugin.snapshot());
+      } catch (error) {
+        editStatus.setText(error instanceof Error ? error.message : "保存失败，请稍后重试");
+        logViewError(this.plugin, "module-draft-save", error);
+      } finally {
+        saveEditButton.disabled = false;
+      }
+    };
     startButton.onclick = () => this.plugin.runUserCommand(async () => {
-      if ((await Promise.all([...pendingEdits])).some(saved => !saved)) return false;
+      if (this._moduleDraft) { editStatus.setText("请先保存或取消设置"); return false; }
       const snap = this.plugin.snapshot();
       if (snap.runtime.status === TIMER_STATUS.PAUSED) return this.plugin.togglePause();
       if (snap.runtime.moduleRun || snap.runtime.attention) return this.plugin.startPendingStage();
@@ -350,18 +383,18 @@ class PomodoroView extends ItemView {
       ring.setAttribute("aria-valuenow", String(todaySum));
       ringProgress.setAttribute("stroke-dashoffset", String(2 * Math.PI * 30 * (1 - Math.min(todaySum / dailyGoal, 1))));
       runtimeStats.setText(`今日累计：${formatTomatoNumber(todaySum)}🍅 · 本次工作 ${runtime.completedWorkCount || 0} 段 · 休息 ${runtime.completedRestCount || 0} 段 · 完整循环 ${runtime.completedLoopCount || 0} 次`);
-      startButton.setText(runtime.status === TIMER_STATUS.PAUSED ? "继续" : pending ? "开始下一段" : active ? "继续序列" : "开始序列");
+      startButton.setText(runtime.status === TIMER_STATUS.PAUSED ? "继续" : pending ? "开始下一段" : active ? "继续" : "开始");
       startButton.classList.toggle("pmd-hidden", runtime.status === TIMER_STATUS.RUNNING || runtime.status === TIMER_STATUS.SETTLING || runtime.status === TIMER_STATUS.FAILED);
-      startButton.disabled = !modules.length && runtime.status === TIMER_STATUS.IDLE;
+      startButton.disabled = !!this._moduleDraft || (!modules.length && runtime.status === TIMER_STATUS.IDLE);
       pauseButton.classList.toggle("pmd-hidden", runtime.status !== TIMER_STATUS.RUNNING);
       completeSegmentButton.classList.toggle("pmd-hidden", !running || runtime.status === TIMER_STATUS.SETTLING || runtime.status === TIMER_STATUS.FAILED);
       completeTaskButton.classList.toggle("pmd-hidden", !active || run?.type !== "work" || !String(run.name || "").trim());
       resetButton.classList.toggle("pmd-hidden", runtime.status === TIMER_STATUS.IDLE && !runtime.attention);
       currentSummary.classList.toggle("pmd-hidden", !active && !pending);
-      editorNote.classList.toggle("pmd-hidden", !active && !pending);
+      editorNote.classList.toggle("pmd-hidden", !this._moduleDraft || (!active && !pending));
       refreshEditor(snap);
-      moduleList.querySelectorAll(".pmd-module-row").forEach((row, index) => {
-        const isCurrent = modules[index]?.id === selectedId;
+      moduleList.querySelectorAll(".pmd-module-row").forEach(row => {
+        const isCurrent = row.getAttribute("data-module-id") === selectedId;
         row.classList.toggle("is-current", isCurrent);
         row.querySelector(".pmd-module-select")?.setAttribute("aria-pressed", String(isCurrent));
       });

@@ -41,7 +41,8 @@ const { DailyRepository, ProjectRepository } = require("./services/repositories"
 const { normalizeCaptureHeading, normalizeCaptureText } = require("./core/quick-capture");
 const { PomodoroView } = require("./ui/pomodoro-view");
 const { ProjectsView } = require("./ui/projects-view");
-const { migrateLegacySettings, normalizeModuleDefinition, normalizeOrchestration, getNextModule, createModuleRunSnapshot } = require("./core/modules");
+const { migrateLegacySettings, normalizeModuleDefinition, normalizeRestPresets, normalizeOrchestration, getNextModule, createModuleRunSnapshot } = require("./core/modules");
+const { prepareModuleDraft } = require("./core/module-draft");
 const { QuickCaptureModal } = require("./ui/quick-capture-modal");
 const { BreakBlackoutController } = require("./ui/break-blackout");
 const { NativeBlackoutController } = require("./ui/native-blackout");
@@ -66,6 +67,7 @@ const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/
 /** @type {Settings} */
 const DEFAULT_SETTINGS = {
   modules: [],
+  restPresets: normalizeRestPresets(),
   projectAssignments: {},
   loopMode: "infinite",
   loopCount: 1,
@@ -249,6 +251,7 @@ function normalizeSettings(raw={}, fallback=DEFAULT_SETTINGS) {
     if (typeof source[key] !== "boolean") result[key] = base[key];
   }
   result.modules = migrated.modules;
+  result.restPresets = normalizeRestPresets(has("restPresets") ? source.restPresets : base.restPresets);
   result.projectAssignments = Object.fromEntries((result.modules || [])
     .filter(item => item.type === "work")
     .map(item => [item.id, tryNormalizeMarkdownPath(migrated.projectAssignments?.[item.id]) || ""])
@@ -1153,9 +1156,10 @@ class PomodoroAIO extends Plugin {
       }
     }
   }
-  /** @param {{modules?:import("../types/contracts").ModuleDefinition[], projectAssignments?:Record<string,string>}} patch */
+  /** @param {{modules?:import("../types/contracts").ModuleDefinition[], restPresets?:string[], projectAssignments?:Record<string,string>}} patch */
   async persistModuleSettings(patch){
     const previousModules = this.settings.modules;
+    const previousRestPresets = this.settings.restPresets;
     const previousAssignments = this.settings.projectAssignments;
     Object.assign(this.settings, patch);
     try {
@@ -1163,10 +1167,20 @@ class PomodoroAIO extends Plugin {
       this.broadcast();
     } catch (error) {
       this.settings.modules = previousModules;
+      this.settings.restPresets = previousRestPresets;
       this.settings.projectAssignments = previousAssignments;
       this.broadcast();
       throw error;
     }
+  }
+  /** @param {{baseSignature:string,modules:Record<string, any>[],restPresetsText:string}} draft */
+  async saveModuleDraft(draft){
+    const patch = prepareModuleDraft(draft, this.settings);
+    const retainedIds = new Set(patch.modules.filter(module => module.type === "work").map(module => module.id));
+    const projectAssignments = Object.fromEntries(Object.entries(this.settings.projectAssignments)
+      .filter(([id]) => retainedIds.has(id)));
+    await this.persistModuleSettings({ ...patch, projectAssignments });
+    return true;
   }
   /** @param {"work" | "rest"} type */
   async addModule(type){

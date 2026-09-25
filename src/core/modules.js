@@ -1,5 +1,6 @@
 const MODULE_TYPES = Object.freeze({ WORK: "work", REST: "rest" });
 const LOOP_MODES = Object.freeze({ INFINITE: "infinite", ONCE: "once", COUNT: "count" });
+const DEFAULT_REST_PRESETS = Object.freeze(["NSDR 非睡眠深度休息", "在窗边看远方", "散步", "闭眼休息", "喝水", "拉伸"]);
 /** @typedef {Record<string, any>} AnyRecord */
 /** @typedef {{id:string,type:"work"|"rest",name:string,durationMin:number,blackout:boolean,workspaceCommandId?:string}} ModuleDefinition */
 /** @typedef {{loopMode:"infinite"|"once"|"count",loopCount:number,autoAdvance:boolean,enableProjects:boolean}} Orchestration */
@@ -14,6 +15,17 @@ function cleanText(value, fallback = "") {
 function positiveMinutes(value, fallback = 25) {
   const minutes = Number(value);
   return Number.isFinite(minutes) && minutes > 0 ? Math.max(1, Math.round(minutes * 10) / 10) : fallback;
+}
+
+/** @param {unknown} [value] @returns {string[]} */
+function normalizeRestPresets(value) {
+  if (!Array.isArray(value)) return [...DEFAULT_REST_PRESETS];
+  const seen = new Set();
+  return value.map(item => String(item ?? "").trim().slice(0, 80)).filter(item => {
+    if (!item || seen.has(item) || seen.size >= 40) return false;
+    seen.add(item);
+    return true;
+  });
 }
 
 /** @param {string} prefix */
@@ -227,6 +239,8 @@ function createModuleRunSnapshot(module, projectAssignments = {}, options = {}) 
 module.exports = {
   MODULE_TYPES,
   LOOP_MODES,
+  DEFAULT_REST_PRESETS,
+  normalizeRestPresets,
   normalizeModuleDefinition,
   normalizeOrchestration,
   migrateLegacySettings,

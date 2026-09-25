@@ -90,39 +90,48 @@
 .pmd-actions > .pmd-btn { flex: 1 1 auto; }
 .pmd-hidden { display: none !important; }
 .pmd-capture { margin-top: 8px; padding: 8px; border: 1px solid var(--background-modifier-border); border-radius: 10px; background: var(--background-secondary); }
-.pmd-editor-heading { margin: 14px 0 7px; }
-.pmd-editor-heading h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.pmd-editor-heading { display: flex; justify-content: flex-end; margin: 10px 0 7px; }
+.pmd-settings-button { min-width: 72px; }
 .pmd-edit-status { min-height: 18px; margin-top: 6px; color: var(--text-muted); font-size: 12px; }
+.pmd-edit-status:empty { display: none; }
 .pmd-module-list { display: grid; gap: 8px; margin-top: 2px; }
 .pmd-module-row { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 8px; min-width: 0; padding: 4px; border: 1px solid transparent; border-radius: 10px; }
+.pmd-module-row.is-readonly { padding-block: 7px; }
 .pmd-module-row.is-current { background: var(--background-secondary); border-color: var(--interactive-accent); }
 .pmd-module-row.is-dragging { opacity: .5; }
 .pmd-module-row.is-drop-target { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
 .pmd-module-role { display: flex; flex-direction: column; align-items: center; gap: 1px; padding-top: 2px; color: var(--text-muted); font-size: 12px; font-weight: 600; }
-.pmd-root button.pmd-module-select { min-width: 40px; min-height: 28px; padding: 2px; border: 0; border-radius: 6px; appearance: none; box-shadow: none; background: transparent; color: var(--text-muted); font-size: 12px; font-weight: 600; cursor: pointer; user-select: none; }
+.pmd-root button.pmd-module-select { min-width: 40px; min-height: 40px; padding: 2px; border: 0; border-radius: 6px; appearance: none; box-shadow: none; background: transparent; color: var(--text-muted); font-size: 12px; font-weight: 600; cursor: pointer; user-select: none; }
+.pmd-root button.pmd-module-select:disabled { cursor: default; opacity: 1; }
 .pmd-root button.pmd-module-select:hover, .pmd-root button.pmd-module-select:focus-visible { background: var(--background-modifier-hover); }
 .pmd-module-row.is-current .pmd-module-select { color: var(--text-accent); }
-.pmd-module-grip { display: grid; place-items: center; width: 28px; height: 22px; color: var(--text-faint); cursor: grab; user-select: none; }
+.pmd-module-grip { display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 0; background: transparent; color: var(--text-muted); cursor: grab; user-select: none; }
 .pmd-module-grip:active { cursor: grabbing; }
-.pmd-module-remove { width: 28px; height: 22px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; }
+.pmd-module-remove { width: 40px; height: 40px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); cursor: pointer; }
 .pmd-module-remove:hover { color: var(--text-error); background: var(--background-modifier-hover); }
 .pmd-module-fields { display: grid; grid-template-columns: minmax(0, 1fr) max-content; grid-template-areas: "name duration" "workspace blackout"; gap: 6px 8px; align-items: center; min-width: 0; }
-.pmd-module-row.is-rest .pmd-module-fields { grid-template-areas: "name duration" "blackout blackout"; }
+.pmd-module-row.is-rest .pmd-module-fields { grid-template-areas: "name duration" ". blackout"; }
+.pmd-module-row.is-readonly .pmd-module-fields { grid-template-areas: "name duration" "workspace blackout"; }
 .pmd-module-name { grid-area: name; }
+.pmd-module-name-display { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
+.pmd-root button.pmd-module-name-trigger { flex: 1 1 auto; min-width: 0; min-height: 40px; padding: 3px 5px; border: 0; border-radius: 6px; box-shadow: none; appearance: none; background: transparent; color: var(--text-normal); font-size: 13px; text-align: left; white-space: normal; overflow-wrap: anywhere; cursor: pointer; }
+.pmd-root button.pmd-module-name-trigger:hover, .pmd-root button.pmd-module-name-trigger:focus-visible { background: var(--background-modifier-hover); }
+.pmd-complete-inline { flex: 0 0 auto; min-height: 32px; padding: 3px 7px; border: 1px solid var(--background-modifier-border); border-radius: 6px; font-size: 11px; }
+.pmd-module-duration-display { grid-area: duration; justify-self: end; color: var(--text-muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pmd-module-workspace-display { grid-area: workspace; color: var(--text-muted); font-size: 11px; overflow-wrap: anywhere; }
+.pmd-module-blackout-display { grid-area: blackout; justify-self: end; color: var(--text-muted); font-size: 11px; }
+.pmd-module-row.is-readonly.is-rest .pmd-module-blackout-display { justify-self: end; }
 .pmd-module-workspace { grid-area: workspace; }
 .pmd-module-duration { grid-area: duration; display: flex; align-items: center; gap: 4px; }
 .pmd-module-blackout { grid-area: blackout; justify-self: end; }
-.pmd-module-row.is-rest .pmd-module-blackout { justify-self: start; }
+.pmd-module-row.is-rest .pmd-module-blackout { justify-self: end; }
 .pmd-module-duration .pmd-cycle-min { width: 64px; min-width: 0; }
 .pmd-cycle-unit { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 .pmd-input-wrap { position: relative; min-width: 0; }
-.pmd-input-wrap .pmd-input { padding-right: 56px; }
+.pmd-input-wrap .pmd-input { padding-right: 30px; }
 .pmd-input-wrap .pmd-cycle-workspace { width: 100%; height: 30px; padding: 4px 28px 4px 8px; border: 1px solid var(--background-modifier-border); border-radius: 8px; color: var(--text-muted); background: var(--background-primary); font-size: 12px; text-overflow: ellipsis; }
 .pmd-clear { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); width: 22px; height: 24px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; }
-.pmd-complete-thing { width: 30px; right: 28px; font-size: 11px; }
-.pmd-input-wrap .pmd-input:placeholder-shown ~ .pmd-clear:not(.pmd-complete-thing), .pmd-input-wrap .pmd-cycle-workspace:placeholder-shown ~ .pmd-clear:not(.pmd-complete-thing), .pmd-datalist-opening .pmd-clear:not(.pmd-complete-thing) { opacity: 0; pointer-events: none; }
-.pmd-input-wrap .pmd-complete-thing { opacity: 1; pointer-events: auto; }
-.pmd-input-wrap .pmd-complete-thing:disabled { opacity: .45; pointer-events: none; cursor: not-allowed; }
+.pmd-input-wrap .pmd-input:placeholder-shown ~ .pmd-clear, .pmd-input-wrap .pmd-cycle-workspace:placeholder-shown ~ .pmd-clear, .pmd-datalist-opening .pmd-clear { opacity: 0; pointer-events: none; }
 .pmd-clear:hover, .pmd-clear:focus-visible { background: var(--background-modifier-hover); }
 .pmd-root button.pmd-blackout-option { display: flex; align-items: center; gap: 2px; min-height: 38px; padding: 0; border: 0; appearance: none; box-shadow: none; background: transparent; color: var(--text-muted); font-size: 11px; white-space: nowrap; cursor: pointer; }
 .pmd-blackout-check { flex: 0 0 38px; position: relative; width: 38px; height: 38px; }
@@ -132,6 +141,14 @@
 .pmd-blackout-option[aria-pressed="true"] .pmd-blackout-check::after { color: var(--text-on-accent); }
 .pmd-blackout-option:focus-visible, .pmd-module-grip:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; border-radius: 6px; }
 .pmd-add-module-actions > .pmd-btn { flex: 1 1 90px; }
+.pmd-rest-presets { display: grid; gap: 6px; margin-top: 12px; color: var(--text-muted); font-size: 12px; }
+.pmd-rest-presets textarea { width: 100%; min-height: 90px; resize: vertical; background: var(--background-primary); }
+.pmd-settings-presets { display: grid; gap: 8px; max-width: 540px; }
+.pmd-settings-presets textarea { width: 100%; min-height: 110px; resize: vertical; }
+.pmd-settings-presets button { justify-self: start; }
+.pmd-edit-toolbar { justify-content: flex-end; }
+.pmd-edit-toolbar > .pmd-btn { flex: 0 1 100px; }
+.pmd-root > .pmd-actions { margin-top: 18px; }
 .pmd-snapshot-note { color: var(--text-muted); font-size: 12px; }
 .pmd-capture .pmd-row-inline { display: flex; gap: 7px; padding-bottom: 8px; }
 .pmd-capture-status { min-height: 18px; padding-bottom: 5px; color: var(--text-muted); font-size: 12px; }
@@ -155,8 +172,10 @@
   .pmd-root { padding: 8px; }
   .pmd-head > .pmd-btn { flex: 1 1 auto; }
   .pmd-module-row { grid-template-columns: 42px minmax(0, 1fr); gap: 6px; }
-  .pmd-module-fields { grid-template-columns: minmax(0, 1fr) 72px; grid-template-areas: "name duration" "workspace workspace" "blackout blackout"; gap: 6px; }
-  .pmd-module-blackout { justify-self: start; }
+  .pmd-module-row.is-editing .pmd-module-fields { grid-template-columns: minmax(0, 1fr) max-content; grid-template-areas: "name duration" "workspace workspace" ". blackout"; gap: 6px; }
+  .pmd-module-row.is-editing.is-rest .pmd-module-fields { grid-template-areas: "name duration" ". blackout"; }
+  .pmd-module-row.is-readonly .pmd-module-fields { grid-template-columns: minmax(0, 1fr) max-content; grid-template-areas: "name duration" "workspace blackout"; gap: 6px; }
+  .pmd-module-blackout { justify-self: end; }
   .pmd-module-duration .pmd-cycle-min { width: 100%; }
   .pmd-cycle-unit { display: none; }
   .pmd-project-card-head { display: grid; }

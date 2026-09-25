@@ -68,6 +68,7 @@ export interface Settings {
   taskBlackoutEnabled: boolean;
   workMode: WorkMode;
   modules: ModuleDefinition[];
+  restPresets: string[];
   projectAssignments: Record<string, string>;
   loopMode: "infinite" | "once" | "count";
   loopCount: number;

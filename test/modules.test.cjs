@@ -2,11 +2,19 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   normalizeModuleDefinition,
+  normalizeRestPresets,
   normalizeOrchestration,
   migrateLegacySettings,
   getNextModule,
   createModuleRunSnapshot
 } = require("../src/core/modules.js");
+
+test("休息事项预设有默认候选，去重并允许用户清空", () => {
+  assert.ok(normalizeRestPresets().includes("NSDR 非睡眠深度休息"));
+  assert.ok(normalizeRestPresets().includes("在窗边看远方"));
+  assert.deepEqual(normalizeRestPresets([" 散步 ", "散步", "闭眼休息"]), ["散步", "闭眼休息"]);
+  assert.deepEqual(normalizeRestPresets([]), []);
+});
 
 function sequentialIds() {
   let n = 0;

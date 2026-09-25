@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { FakeClock, FakeVault, createPlugin, clone, FailureStore, PomodoroAIO } = require("./support.cjs");
+const { createModuleDraft } = require("../src/core/module-draft.js");
 
 function moduleSettings(overrides = {}) {
   return {
@@ -19,6 +20,47 @@ async function silenceExpectedError(fn) {
   try { return await fn(); }
   finally { console.error = original; }
 }
+
+test("模块编辑草稿只有保存才写入，保存失败可重试，旧草稿不能覆盖外部变化", async () => {
+  const plugin = createPlugin({ settings:moduleSettings({
+    restPresets:["NSDR 非睡眠深度休息", "在窗边看远方"],
+    projectAssignments:{ "work-reading":"Projects/Reading.md" }
+  }) });
+  let writes = 0;
+  plugin.saveSettings = async () => { writes += 1; };
+  const draft = createModuleDraft(plugin.settings);
+  draft.modules[0].name = "写笔记";
+  draft.modules.splice(1, 1);
+  draft.restPresetsText = "闭眼休息\n散步\n散步";
+  assert.equal(writes, 0);
+  assert.equal(plugin.settings.modules[0].name, "阅读");
+  assert.equal(plugin.settings.modules.length, 2);
+  await plugin.saveModuleDraft(draft);
+  assert.equal(writes, 1);
+  assert.deepEqual(plugin.settings.modules.map(module => module.name), ["写笔记"]);
+  assert.deepEqual(plugin.settings.restPresets, ["闭眼休息", "散步"]);
+  assert.deepEqual(plugin.settings.projectAssignments, { "work-reading":"Projects/Reading.md" });
+
+  const failed = createModuleDraft(plugin.settings);
+  failed.modules[0].durationMin = 40;
+  plugin.saveSettings = async () => { throw new Error("disk failed"); };
+  await assert.rejects(plugin.saveModuleDraft(failed), /disk failed/);
+  assert.equal(plugin.settings.modules[0].durationMin, 30);
+  assert.deepEqual(plugin.settings.restPresets, ["闭眼休息", "散步"]);
+  plugin.saveSettings = async () => { writes += 1; };
+  await plugin.updateModule("work-reading", { name:"外部更新" });
+  await assert.rejects(plugin.saveModuleDraft(failed), /其他地方变化/);
+  assert.equal(plugin.settings.modules[0].name, "外部更新");
+  assert.equal(writes, 2);
+
+  const invalid = createModuleDraft(plugin.settings);
+  invalid.modules[0].durationMin = 0;
+  await assert.rejects(plugin.saveModuleDraft(invalid), /时长须大于零/);
+  invalid.modules[0].durationMin = 30;
+  invalid.modules[0].invalidWorkspace = true;
+  await assert.rejects(plugin.saveModuleDraft(invalid), /工作区须从候选中选择/);
+  assert.equal(writes, 2);
+});
 
 test("模块序列将工作、休息和完整循环分别计数，休息不写番茄", async () => {
   const clock = new FakeClock(1_000);

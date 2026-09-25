@@ -1,5 +1,6 @@
 const { PluginSettingTab, Setting, Notice } = require("obsidian");
 const { positiveNumber, normalizeTag } = require("../core/validation");
+const { normalizeRestPresets } = require("../core/modules");
 /** @typedef {import("../../types/contracts").Settings} Settings */
 
 class PomodoroSettingTab extends PluginSettingTab {
@@ -58,6 +59,20 @@ class PomodoroSettingTab extends PluginSettingTab {
       new Setting(c).setName("循环次数").setDesc("完整执行序列的次数；第一次完整通过记为 1 次。")
         .addText(text => text.setValue(String(this.plugin.settings.loopCount || 1)).onChange(value => set({ loopCount: Math.max(1, Math.round(positiveNumber(value, 1))) })));
     }
+
+    c.createEl("h3", { text:"休息事项" });
+    const presets = c.createDiv({ cls:"pmd-settings-presets" });
+    presets.createEl("label", { text:"预设休息事项（每行一项）", attr:{ for:"pmd-settings-rest-presets" } });
+    const presetInput = presets.createEl("textarea", { attr:{ id:"pmd-settings-rest-presets", rows:"5" } });
+    presetInput.value = (this.plugin.settings.restPresets || []).join("\n");
+    const savePresets = presets.createEl("button", { cls:"mod-cta", text:"保存休息事项", attr:{ type:"button" } });
+    const presetStatus = presets.createDiv({ attr:{ role:"status", "aria-live":"polite" } });
+    savePresets.onclick = async () => {
+      savePresets.disabled = true;
+      const ok = await set({ restPresets:normalizeRestPresets(presetInput.value.split(/\r?\n/)) });
+      presetStatus.setText(ok ? "休息事项已保存" : "保存失败，改动仍在输入框中");
+      savePresets.disabled = false;
+    };
 
     c.createEl("h3", { text: "功能" });
     new Setting(c).setName("推进中的项目").setDesc("启用独立项目页面，并允许工作模块关联项目、汇总项目番茄。关闭后不显示项目入口。")
