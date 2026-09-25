@@ -68,10 +68,6 @@ class PomodoroView extends ItemView {
     projectButton.onclick = () => this.plugin.activateProjectsView();
 
     const statusLine = root.createDiv({ cls: "pmd-status-line", attr: { "aria-live": "polite" } });
-    const currentSummary = root.createDiv({ cls: "pmd-current-summary pmd-hidden" });
-    const currentTitle = currentSummary.createDiv({ cls: "pmd-current-title" });
-    const currentMeta = currentSummary.createDiv({ cls: "pmd-current-meta" });
-    const nextLine = currentSummary.createDiv({ cls: "pmd-next-module" });
 
     const actions = root.createDiv({ cls: "pmd-actions" });
     const startButton = actions.createEl("button", { cls: "pmd-btn pmd-btn-primary", text: "开始", attr: { type: "button" } });
@@ -161,6 +157,13 @@ class PomodoroView extends ItemView {
       const signature = JSON.stringify(modules);
       projectButton.classList.toggle("pmd-hidden", snap.settings.enableProjects !== true);
       root.classList.toggle("is-configuring", editing);
+      refreshButton.classList.toggle("pmd-hidden", editing);
+      quickCaptureButton.classList.toggle("pmd-hidden", editing);
+      actions.classList.toggle("pmd-hidden", [...actions.children].every(button => button.classList.contains("pmd-hidden")));
+      if (editing) {
+        capture.classList.add("pmd-hidden");
+        quickCaptureButton.setAttribute("aria-expanded", "false");
+      }
       editModeButton.classList.toggle("pmd-hidden", editing);
       addActions.classList.toggle("pmd-hidden", !editing);
       presetEditor.classList.toggle("pmd-hidden", !editing);
@@ -171,7 +174,7 @@ class PomodoroView extends ItemView {
       this._taskLists = [];
       if (!modules.length) moduleList.createDiv({ cls:"pmd-empty", text:editing ? "添加工作或休息模块，组成你的序列。" : "点击设置，添加工作或休息模块。" });
       modules.forEach((module, index) => {
-        const row = moduleList.createDiv({ cls:`pmd-module-row is-${module.type}${editing ? " is-editing" : " is-readonly"}`, attr:{ "data-module-id":module.id } });
+        const row = moduleList.createDiv({ cls:`pmd-module-row is-${module.type}${editing ? " is-editing" : ""}`, attr:{ "data-module-id":module.id } });
         const role = row.createDiv({ cls:"pmd-module-role" });
         const roleLabel = role.createEl("button", { cls:"pmd-module-select", text:module.type === "work" ? "工作" : "休息",
           attr:{ type:"button", title:editing ? "正在编辑模块" : "双击设为当前模块", "aria-label":`${editing ? "正在编辑" : "双击选择"}第 ${index + 1} 段${module.type === "work" ? "工作" : "休息"}` } });
@@ -182,78 +185,63 @@ class PomodoroView extends ItemView {
           roleLabel.onclick = event => { if (event.detail === 0) chooseModule(event); };
         }
         const fields = row.createDiv({ cls:"pmd-module-fields" });
-        if (!editing) {
-          const nameWrap = fields.createDiv({ cls:"pmd-module-name pmd-module-name-display" });
-          const nameTrigger = nameWrap.createEl("button", { cls:"pmd-module-name-trigger",
-            text:!module.name || (module.type === "work" && module.name === "工作") || (module.type === "rest" && module.name === "休息")
-              ? (module.type === "work" ? "选择事情" : "选择休息事项") : module.name,
-            attr:{ type:"button", title:module.type === "work" ? "选择当日日记中的事情" : "选择预设休息事项", "aria-label":`设置第 ${index + 1} 段${module.type === "work" ? "工作事情" : "休息事项"}` } });
-          nameTrigger.onclick = () => {
-            editModeButton.click();
-            const target = [...moduleList.querySelectorAll(".pmd-module-row")].find(item => item.getAttribute("data-module-id") === module.id);
-            /** @type {HTMLInputElement | null} */ (target?.querySelector("input.pmd-input"))?.focus();
+        const draft = this._moduleDraft;
+        /** @param {Partial<ModuleDefinition>} patch */
+        const applyField = patch => {
+          if (draft) Object.assign(module, patch);
+          else this.plugin.runUserCommand(() => this.plugin.updateModule(module.id, patch));
+        };
+        if (editing && draft) {
+          const grip = role.createEl("button", { cls:"pmd-module-grip", text:"↕", attr:{ type:"button", title:"拖动排序，或用上下方向键移动", "aria-label":`排序第 ${index + 1} 个模块`, draggable:"true" } });
+          const remove = role.createEl("button", { cls:"pmd-module-remove", text:"×", attr:{ type:"button", title:"删除模块", "aria-label":`删除第 ${index + 1} 个模块` } });
+          remove.onclick = () => { draft.modules = draft.modules.filter(item => item.id !== module.id); refreshEditor(this.plugin.snapshot(), true); };
+          /** @param {number} target */
+          const moveTo = target => {
+            const from = draft.modules.findIndex(item => item.id === module.id);
+            if (from < 0 || target < 0 || target >= draft.modules.length || from === target) return;
+            const [moving] = draft.modules.splice(from, 1);
+            draft.modules.splice(target, 0, moving);
+            refreshEditor(this.plugin.snapshot(), true);
           };
-          if (module.type === "work" && module.name && module.name !== "工作") {
-            const complete = nameWrap.createEl("button", { cls:"pmd-complete-inline", text:"完成", attr:{ type:"button", title:"完成事情并勾选日记待办" } });
-            complete.onclick = event => this.plugin.runUserCommand(() => this.plugin.completeTask({ moduleId:module.id }), event);
-          }
-          fields.createSpan({ cls:"pmd-module-duration-display", text:`${module.durationMin} 分钟` });
-          if (module.type === "work" && module.workspaceCommandId) {
-            const selected = this._workspaceCommands.find(command => command.id === module.workspaceCommandId);
-            fields.createDiv({ cls:"pmd-module-workspace-display", text:selected ? `布局：${commandTitle(selected)}` : "布局命令已失效" });
-          }
-          if (module.blackout) fields.createSpan({ cls:"pmd-module-blackout-display", text:"执行时黑屏" });
-          return;
+          grip.onkeydown = event => {
+            if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+              event.preventDefault();
+              moveTo(index + (event.key === "ArrowUp" ? -1 : 1));
+              const movedRow = [...moduleList.querySelectorAll(".pmd-module-row")].find(item => item.getAttribute("data-module-id") === module.id);
+              /** @type {HTMLElement | null} */ (movedRow?.querySelector(".pmd-module-grip"))?.focus();
+            }
+          };
+          grip.ondragstart = event => {
+            row.classList.add("is-dragging");
+            event.dataTransfer?.setData("text/plain", module.id);
+            if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+          };
+          grip.ondragend = () => row.classList.remove("is-dragging");
+          row.ondragover = event => { event.preventDefault(); row.classList.add("is-drop-target"); };
+          row.ondragleave = () => row.classList.remove("is-drop-target");
+          row.ondrop = event => {
+            event.preventDefault(); row.classList.remove("is-drop-target");
+            const movingId = event.dataTransfer?.getData("text/plain");
+            const from = draft.modules.findIndex(item => item.id === movingId);
+            if (from < 0 || movingId === module.id) return;
+            const [moving] = draft.modules.splice(from, 1);
+            draft.modules.splice(index, 0, moving);
+            refreshEditor(this.plugin.snapshot(), true);
+          };
         }
-        const draft = /** @type {ReturnType<typeof createModuleDraft>} */ (this._moduleDraft);
-        const grip = role.createEl("button", { cls:"pmd-module-grip", text:"↕", attr:{ type:"button", title:"拖动排序，或用上下方向键移动", "aria-label":`排序第 ${index + 1} 个模块`, draggable:"true" } });
-        const remove = role.createEl("button", { cls:"pmd-module-remove", text:"×", attr:{ type:"button", title:"删除模块", "aria-label":`删除第 ${index + 1} 个模块` } });
-        remove.onclick = () => { draft.modules = draft.modules.filter(item => item.id !== module.id); refreshEditor(this.plugin.snapshot(), true); };
-        /** @param {number} target */
-        const moveTo = target => {
-          const from = draft.modules.findIndex(item => item.id === module.id);
-          if (from < 0 || target < 0 || target >= draft.modules.length || from === target) return;
-          const [moving] = draft.modules.splice(from, 1);
-          draft.modules.splice(target, 0, moving);
-          refreshEditor(this.plugin.snapshot(), true);
-        };
-        grip.onkeydown = event => {
-          if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-            event.preventDefault();
-            moveTo(index + (event.key === "ArrowUp" ? -1 : 1));
-            const movedRow = [...moduleList.querySelectorAll(".pmd-module-row")].find(item => item.getAttribute("data-module-id") === module.id);
-            /** @type {HTMLElement | null} */ (movedRow?.querySelector(".pmd-module-grip"))?.focus();
-          }
-        };
-        grip.ondragstart = event => {
-          row.classList.add("is-dragging");
-          event.dataTransfer?.setData("text/plain", module.id);
-          if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
-        };
-        grip.ondragend = () => row.classList.remove("is-dragging");
-        row.ondragover = event => { event.preventDefault(); row.classList.add("is-drop-target"); };
-        row.ondragleave = () => row.classList.remove("is-drop-target");
-        row.ondrop = event => {
-          event.preventDefault(); row.classList.remove("is-drop-target");
-          const movingId = event.dataTransfer?.getData("text/plain");
-          const from = draft.modules.findIndex(item => item.id === movingId);
-          if (from < 0 || movingId === module.id) return;
-          const [moving] = draft.modules.splice(from, 1);
-          draft.modules.splice(index, 0, moving);
-          refreshEditor(this.plugin.snapshot(), true);
-        };
-        const nameWrap = fields.createDiv({ cls:"pmd-input-wrap pmd-module-name" });
-        const name = nameWrap.createEl("input", { cls:"pmd-input", attr:{ type:"text", placeholder:module.type === "work" ? "输入/选择事情（未勾选待办）" : "输入/选择休息事项", "aria-label":`第 ${index + 1} 段${module.type === "work" ? "工作事情" : "休息事项"}` } });
-        name.value = module.type === "work" && module.name === "工作" ? "" : module.name || "";
+        const nameWrap = fields.createDiv({ cls:"pmd-module-name" });
+        const nameInputWrap = nameWrap.createDiv({ cls:"pmd-input-wrap" });
+        const name = nameInputWrap.createEl("input", { cls:"pmd-input", attr:{ type:"text", placeholder:module.type === "work" ? "输入/选择事情（未勾选待办）" : "输入/选择休息事项", "aria-label":`第 ${index + 1} 段${module.type === "work" ? "工作事情" : "休息事项"}` } });
+        name.value = (module.type === "work" && module.name === "工作") || (module.type === "rest" && module.name === "休息") ? "" : module.name || "";
         const listId = `${this._taskListPrefix}-${index}`;
         name.setAttribute("list", listId);
-        const list = nameWrap.createEl("datalist", { attr:{ id:listId } });
+        const list = nameInputWrap.createEl("datalist", { attr:{ id:listId } });
         if (module.type === "work") this._taskLists.push(list);
         else {
           const fillRestList = () => {
             list.empty();
             const seen = new Set();
-            String(presetInput.value).split(/\r?\n/).map(item => item.trim()).filter(item => {
+            String(draft ? presetInput.value : (this.plugin.settings.restPresets || []).join("\n")).split(/\r?\n/).map(item => item.trim()).filter(item => {
               if (!item || seen.has(item)) return false;
               seen.add(item); return true;
             }).forEach(item => list.createEl("option", { attr:{ value:item } }));
@@ -263,13 +251,25 @@ class PomodoroView extends ItemView {
         }
         name.addEventListener("focus", () => openDatalist(name));
         name.addEventListener("click", () => openDatalist(name));
-        name.oninput = () => { module.name = name.value.replace(/\u200B/g, ""); };
-        const clearName = nameWrap.createEl("button", { cls:"pmd-clear", text:"×", attr:{ type:"button", title:"清空名称" } });
-        clearName.onclick = () => { name.value = ""; module.name = ""; name.focus(); };
+        name.oninput = () => { if (draft) module.name = name.value.replace(/\u200B/g, ""); };
+        name.onchange = () => { if (!draft) applyField({ name:name.value.replace(/\u200B/g, "").trim() }); };
+        const clearName = nameInputWrap.createEl("button", { cls:"pmd-clear", text:"×", attr:{ type:"button", title:"清空名称" } });
+        clearName.onclick = () => { name.value = ""; applyField({ name:"" }); name.focus(); };
+        if (module.type === "work" && module.name && module.name !== "工作") {
+          const complete = nameWrap.createEl("button", { cls:"pmd-complete-inline", text:"完成", attr:{ type:"button", title:"完成事情并勾选日记待办" } });
+          complete.disabled = editing;
+          complete.onclick = event => this.plugin.runUserCommand(() => this.plugin.completeTask({ moduleId:module.id }), event);
+        }
         const durationWrap = fields.createDiv({ cls:"pmd-module-duration" });
         const duration = durationWrap.createEl("input", { cls:"pmd-cycle-min", attr:{ type:"number", min:"1", step:"1", "aria-label":`第 ${index + 1} 段时长（分钟）` } });
         duration.value = String(module.durationMin);
-        duration.oninput = () => { module.durationMin = Number(duration.value); };
+        duration.oninput = () => { if (draft) module.durationMin = Number(duration.value); };
+        duration.onchange = () => {
+          if (draft) return;
+          const minutes = Number(duration.value);
+          if (Number.isFinite(minutes) && minutes >= 1) applyField({ durationMin:minutes });
+          else { duration.value = String(module.durationMin); editStatus.setText("时长须大于零"); }
+        };
         durationWrap.createSpan({ cls:"pmd-cycle-unit", text:"分钟" });
         if (module.type === "work") {
           const workspaceWrap = fields.createDiv({ cls:"pmd-input-wrap pmd-module-workspace" });
@@ -283,16 +283,29 @@ class PomodoroView extends ItemView {
           workspace.oninput = () => {
             const value = workspace.value.replace(/\u200B/g, "").trim();
             const hit = this._workspaceCommands.find(command => commandTitle(command) === value);
-            module.invalidWorkspace = !!value && !hit;
-            module.workspaceCommandId = hit?.id || "";
+            if (draft) {
+              module.invalidWorkspace = !!value && !hit;
+              module.workspaceCommandId = hit?.id || "";
+            }
+          };
+          workspace.onchange = () => {
+            if (draft) return;
+            const value = workspace.value.replace(/\u200B/g, "").trim();
+            const hit = this._workspaceCommands.find(command => commandTitle(command) === value);
+            if (value && !hit) { workspace.value = selected ? commandTitle(selected) : ""; editStatus.setText("工作区须从候选中选择"); return; }
+            applyField({ workspaceCommandId:hit?.id || "" });
           };
           const clearWorkspace = workspaceWrap.createEl("button", { cls:"pmd-clear", text:"×", attr:{ type:"button", title:"清空工作区" } });
-          clearWorkspace.onclick = () => { workspace.value = ""; module.workspaceCommandId = ""; module.invalidWorkspace = false; workspace.focus(); };
+          clearWorkspace.onclick = () => { workspace.value = ""; if (draft) module.invalidWorkspace = false; applyField({ workspaceCommandId:"" }); workspace.focus(); };
         }
         const blackout = fields.createEl("button", { cls:"pmd-blackout-option pmd-module-blackout", attr:{ type:"button", "aria-label":`第 ${index + 1} 段执行时黑屏`, "aria-pressed":String(module.blackout === true) } });
         blackout.createSpan({ cls:"pmd-blackout-check", attr:{ "aria-hidden":"true" } });
         blackout.createSpan({ text:"执行时黑屏" });
-        blackout.onclick = () => { module.blackout = !module.blackout; blackout.setAttribute("aria-pressed", String(module.blackout)); };
+        blackout.onclick = () => {
+          const next = blackout.getAttribute("aria-pressed") !== "true";
+          blackout.setAttribute("aria-pressed", String(next));
+          applyField({ blackout:next });
+        };
       });
       fillTaskLists();
     };
@@ -362,7 +375,6 @@ class PomodoroView extends ItemView {
       const modules = Array.isArray(settings.modules) ? settings.modules : [];
       const queued = runtime.status === TIMER_STATUS.AWAITING ? runtime.attention?.moduleRun : null;
       const run = runtime.moduleRun || (queued ? modules.find((/** @type {ModuleDefinition} */ module) => module.id === queued.moduleId) || queued : null);
-      const next = runtime.nextModule;
       const running = [TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED].includes(runtime.status);
       const pending = !!runtime.attention && !runtime.attention.nextStarted;
       const active = !!run && runtime.status !== TIMER_STATUS.IDLE;
@@ -372,10 +384,8 @@ class PomodoroView extends ItemView {
       const selectedDefinition = modules.find((/** @type {ModuleDefinition} */ module) => module.id === selectedId);
       timer.setText(mmss(runtime.leftSec ?? this.plugin.getLeftSec()));
       phase.setText(run ? `${run.type === "work" ? "工作" : "休息"}${pending ? " · 待开始" : ""}` : "待机");
-      currentTitle.setText(run?.name || (modules.length ? "序列已就绪" : "先添加工作或休息模块"));
-      currentMeta.setText(run ? `${run.durationMin} 分钟${run.blackout ? " · 黑屏" : ""}` : `${modules.length} 个模块`);
-      nextLine.setText(next ? `下一项：${next.type === "work" ? "工作" : "休息"} · ${next.name || "未命名"} · ${next.durationMin} 分钟` : "下一项：序列结束");
-      statusLine.setText(runtime.status === TIMER_STATUS.RUNNING ? "正在执行" : runtime.status === TIMER_STATUS.PAUSED ? "已暂停" : runtime.status === TIMER_STATUS.AWAITING ? "等待确认" : runtime.status === TIMER_STATUS.SETTLING ? "正在结算" : runtime.status === TIMER_STATUS.FAILED ? "需要恢复结算" : selectedDefinition ? `当前选择：${selectedDefinition.type === "work" ? "工作" : "休息"} · ${selectedDefinition.name}` : "待机");
+      statusLine.classList.toggle("pmd-hidden", runtime.status === TIMER_STATUS.RUNNING);
+      statusLine.setText(runtime.status === TIMER_STATUS.PAUSED ? "已暂停" : runtime.status === TIMER_STATUS.AWAITING ? "等待确认" : runtime.status === TIMER_STATUS.SETTLING ? "正在结算" : runtime.status === TIMER_STATUS.FAILED ? "需要恢复结算" : selectedDefinition ? `当前选择：${selectedDefinition.type === "work" ? "工作" : "休息"} · ${selectedDefinition.name}` : "待机");
       const dailyGoal = Number(settings.dailyGoal) > 0 ? Number(settings.dailyGoal) : 8;
       const todaySum = this._todaySumCache || 0;
       ringText.textContent = `${formatTomatoNumber(todaySum)}/${dailyGoal}`;
@@ -384,13 +394,12 @@ class PomodoroView extends ItemView {
       ringProgress.setAttribute("stroke-dashoffset", String(2 * Math.PI * 30 * (1 - Math.min(todaySum / dailyGoal, 1))));
       runtimeStats.setText(`今日累计：${formatTomatoNumber(todaySum)}🍅 · 本次工作 ${runtime.completedWorkCount || 0} 段 · 休息 ${runtime.completedRestCount || 0} 段 · 完整循环 ${runtime.completedLoopCount || 0} 次`);
       startButton.setText(runtime.status === TIMER_STATUS.PAUSED ? "继续" : pending ? "开始下一段" : active ? "继续" : "开始");
-      startButton.classList.toggle("pmd-hidden", runtime.status === TIMER_STATUS.RUNNING || runtime.status === TIMER_STATUS.SETTLING || runtime.status === TIMER_STATUS.FAILED);
+      startButton.classList.toggle("pmd-hidden", !!this._moduleDraft || runtime.status === TIMER_STATUS.RUNNING || runtime.status === TIMER_STATUS.SETTLING || runtime.status === TIMER_STATUS.FAILED);
       startButton.disabled = !!this._moduleDraft || (!modules.length && runtime.status === TIMER_STATUS.IDLE);
       pauseButton.classList.toggle("pmd-hidden", runtime.status !== TIMER_STATUS.RUNNING);
       completeSegmentButton.classList.toggle("pmd-hidden", !running || runtime.status === TIMER_STATUS.SETTLING || runtime.status === TIMER_STATUS.FAILED);
       completeTaskButton.classList.toggle("pmd-hidden", !active || run?.type !== "work" || !String(run.name || "").trim());
       resetButton.classList.toggle("pmd-hidden", runtime.status === TIMER_STATUS.IDLE && !runtime.attention);
-      currentSummary.classList.toggle("pmd-hidden", !active && !pending);
       editorNote.classList.toggle("pmd-hidden", !this._moduleDraft || (!active && !pending));
       refreshEditor(snap);
       moduleList.querySelectorAll(".pmd-module-row").forEach(row => {
