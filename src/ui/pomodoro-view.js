@@ -83,6 +83,9 @@ class PomodoroView extends ItemView {
     const editor = root.createDiv({ cls: "pmd-module-editor" });
     const editorHeading = editor.createDiv({ cls: "pmd-editor-heading" });
     const editModeButton = editorHeading.createEl("button", { cls:"pmd-btn pmd-btn-secondary pmd-settings-button", text:"设置", attr:{ type:"button", "aria-label":"设置工作与休息模块" } });
+    const editToolbar = editorHeading.createDiv({ cls:"pmd-actions pmd-edit-toolbar pmd-hidden" });
+    const cancelEditButton = editToolbar.createEl("button", { cls:"pmd-btn pmd-btn-secondary", text:"取消", attr:{ type:"button" } });
+    const saveEditButton = editToolbar.createEl("button", { cls:"pmd-btn pmd-btn-primary", text:"保存", attr:{ type:"button" } });
     const moduleList = editor.createDiv({ cls: "pmd-module-list" });
     const addActions = editor.createDiv({ cls: "pmd-actions pmd-add-module-actions pmd-hidden" });
     const addWorkButton = addActions.createEl("button", { cls: "pmd-btn", text: "+ 工作", attr: { type: "button" } });
@@ -90,9 +93,6 @@ class PomodoroView extends ItemView {
     const presetEditor = editor.createDiv({ cls:"pmd-rest-presets pmd-hidden" });
     presetEditor.createEl("label", { text:"休息事项预设（每行一项）", attr:{ for:"pmd-rest-presets-input" } });
     const presetInput = presetEditor.createEl("textarea", { cls:"pmd-input", attr:{ id:"pmd-rest-presets-input", rows:"4", placeholder:"例如：NSDR 非睡眠深度休息" } });
-    const editToolbar = editor.createDiv({ cls:"pmd-actions pmd-edit-toolbar pmd-hidden" });
-    const cancelEditButton = editToolbar.createEl("button", { cls:"pmd-btn pmd-btn-secondary", text:"取消", attr:{ type:"button" } });
-    const saveEditButton = editToolbar.createEl("button", { cls:"pmd-btn pmd-btn-primary", text:"保存", attr:{ type:"button" } });
     const editStatus = editor.createDiv({ cls:"pmd-edit-status", attr:{ role:"status", "aria-live":"polite" } });
     const editorNote = editor.createDiv({ cls: "pmd-snapshot-note pmd-hidden", text: "本段按开始时设置运行；这里的修改用于后续模块执行。" });
 
