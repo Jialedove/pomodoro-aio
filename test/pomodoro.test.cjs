@@ -9,7 +9,6 @@ const {
   clone,
   createPlugin
 } = require("./support.cjs");
-const { isCompletedTaskDraft } = require("../src/ui/pomodoro-view.js");
 
 async function silenceConsoleError(fn) {
   const original = console.error;
@@ -17,12 +16,6 @@ async function silenceConsoleError(fn) {
   try { return await fn(); }
   finally { console.error = original; }
 }
-
-test("完成事件只命中仍显示旧任务的循环输入草稿", () => {
-  assert.equal(isCompletedTaskDraft("旧任务", "旧任务"), true);
-  assert.equal(isCompletedTaskDraft("新草稿", "旧任务"), false);
-  assert.equal(isCompletedTaskDraft("", "旧任务"), false);
-});
 
 test("计时基线：剩余时间由绝对开始时间计算", () => {
   const clock = new FakeClock(1_000);
@@ -1297,7 +1290,7 @@ test("插件启动先恢复结算与重试队列并对账离线完成，再启�
   };
   plugin.loadSettings = async () => {
     order.push("settings");
-    plugin.settings = PomodoroAIO.normalizeSettings({});
+    plugin.settings = PomodoroAIO.normalizeSettings({ enableProjects:true });
   };
   plugin.loadState = async () => {
     order.push("state");

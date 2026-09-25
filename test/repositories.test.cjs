@@ -129,7 +129,7 @@ test("ProjectRepository 筛选候选并幂等应用项目结算", async () => {
   const repository = createProjectRepository(vault, metadata);
 
   assert.deepEqual(repository.listCandidates({ tag: "#project", statusKey: "项目状态", statusWhitelist: "进行中" }), [
-    { label: "demo — 进行中 (Projects/demo.md)", path: "Projects/demo.md" }
+    { label: "demo — 进行中 (Projects/demo.md)", path: "Projects/demo.md", tomatoes:1 }
   ]);
   const plan = await repository.prepareSettlementPlan({ path: project.path, key: "番茄数", amount: 0.5, enabled: true });
   assert.deepEqual(plan, {

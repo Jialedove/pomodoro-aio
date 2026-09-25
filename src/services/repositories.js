@@ -248,8 +248,8 @@ class ProjectRepository {
     }
   }
 
-  /** @param {{tag:unknown, statusKey:string, statusWhitelist:string}} input */
-  listCandidates({ tag, statusKey, statusWhitelist }) {
+  /** @param {{tag:unknown, statusKey:string, statusWhitelist:string, projectFmKey?:string}} input */
+  listCandidates({ tag, statusKey, statusWhitelist, projectFmKey }) {
     const tagWant = normalizeTag(tag || "#project");
     const whitelist = new Set(String(statusWhitelist || "进行中,筹划中").split(",").map(value => value.trim()).filter(Boolean));
     const result = [];
@@ -264,7 +264,11 @@ class ProjectRepository {
       if (!tags.has(tagWant)) continue;
       const status = String(frontmatter[statusKey || "项目状态"] || "").trim();
       if (!whitelist.has(status)) continue;
-      result.push({ label: `${file.basename} — ${status} (${file.path})`, path: file.path });
+      result.push({
+        label: `${file.basename} — ${status} (${file.path})`,
+        path: file.path,
+        tomatoes: normalizeTomatoValue(frontmatter[projectFmKey || "番茄数"])
+      });
     }
     return result;
   }

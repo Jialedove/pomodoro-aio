@@ -242,6 +242,7 @@ const BASE_SETTINGS = {
   captureHeading: "Inbox",
   capturePathPattern: "",
   projectEnable: true,
+  enableProjects: true,
   projectTag: "#project",
   projectStatusKey: "项目状态",
   projectStatusWhitelist: "进行中,筹划中",

@@ -46,8 +46,16 @@ function validateSettlementJournal(value) {
   if (daily.kind === "insert" && (daily.targetIndex !== null || daily.lineBefore !== null)) return "journal daily insert 计划非法";
 
   const transition = value.transition;
-  if (!record(transition) || !["standard", "cycle"].includes(transition.mode)) return "journal transition 非法";
+  if (!record(transition) || !["standard", "cycle", "modules"].includes(transition.mode)) return "journal transition 非法";
   if (!positive(transition.durationMs) || typeof transition.autoNext !== "boolean") return "journal transition 字段非法";
+  if (transition.mode === "modules") {
+    if (transition.moduleIndex !== null && (!Number.isInteger(transition.moduleIndex) || transition.moduleIndex < 0)) return "journal moduleIndex 非法";
+    if (transition.moduleIndex !== null && (!record(transition.moduleRun) || !text(transition.moduleRun.runId)
+      || !text(transition.moduleRun.moduleId) || !["work", "rest"].includes(transition.moduleRun.type)
+      || !positive(transition.moduleRun.durationMs))) return "journal moduleRun 非法";
+    if (!Number.isInteger(transition.completedWorkCountAfter) || transition.completedWorkCountAfter < 1) return "journal work count 非法";
+    if (!Number.isInteger(transition.completedLoopCountAfter) || transition.completedLoopCountAfter < 0) return "journal loop count 非法";
+  }
   if (transition.mode === "standard" && typeof transition.isLong !== "boolean") return "journal standard transition 非法";
   if (transition.mode === "cycle" && (![0, 1].includes(transition.cycleSlot) || typeof transition.taskName !== "string")) return "journal cycle transition 非法";
   if (transition.cycleRoundCountAfter !== undefined

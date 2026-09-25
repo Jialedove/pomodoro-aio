@@ -1,7 +1,28 @@
 export type TimerStatus = "idle" | "running" | "paused" | "awaiting" | "settling" | "settlement-failed";
 export type TimerStage = "focus" | "break";
-export type WorkMode = "standard" | "cycle";
+export type WorkMode = "standard" | "cycle" | "modules";
 export type CycleSlot = 0 | 1;
+export type ModuleType = "work" | "rest";
+export interface ModuleDefinition {
+  id: string;
+  type: ModuleType;
+  name: string;
+  durationMin: number;
+  blackout: boolean;
+  workspaceCommandId?: string;
+}
+export interface ModuleRun {
+  runId: string;
+  moduleId: string;
+  type: ModuleType;
+  name: string;
+  durationMin: number;
+  durationMs: number;
+  blackout: boolean;
+  workspaceCommandId: string | null;
+  projectPath: string | null;
+  startedAtMs: number;
+}
 
 export interface Settings {
   [key: string]: any;
@@ -46,6 +67,12 @@ export interface Settings {
   breakBlackoutEnabled: boolean;
   taskBlackoutEnabled: boolean;
   workMode: WorkMode;
+  modules: ModuleDefinition[];
+  projectAssignments: Record<string, string>;
+  loopMode: "infinite" | "once" | "count";
+  loopCount: number;
+  autoAdvance: boolean;
+  enableProjects: boolean;
   cycleTaskA: string;
   cycleMinA: number;
   cycleWorkspaceCommandA: string;
@@ -66,6 +93,8 @@ export interface Attention {
   nextStarted: boolean;
   durationMs: number;
   taskName?: string;
+  moduleIndex?: number;
+  moduleRun?: ModuleRun;
 }
 
 export interface FailureRecord {
@@ -84,6 +113,12 @@ export interface Runtime {
   status: TimerStatus;
   stage: TimerStage | null;
   mode: WorkMode;
+  moduleRun?: ModuleRun | null;
+  currentModuleIndex?: number;
+  selectedModuleId?: string | null;
+  completedWorkCount?: number;
+  completedRestCount?: number;
+  completedLoopCount?: number;
   cycleSlot: CycleSlot;
   durationMs: number;
   startedAtMs: number;
@@ -117,6 +152,13 @@ export interface BreakTransition {
   mode?: WorkMode;
   cycleSlot?: CycleSlot;
   taskName?: string;
+  moduleIndex?: number | null;
+  moduleRun?: ModuleRun | null;
+  completedRestCountAfter?: number;
+  completedWorkCountAfter?: number;
+  completionType?: ModuleType;
+  sessionCountAfter?: number;
+  completedLoopCountAfter?: number;
 }
 
 export interface BreakContinuation {
@@ -148,7 +190,7 @@ export interface DailySettlementPlan extends TaskMutationPlan {
 }
 
 export interface StageTransition {
-  mode: WorkMode;
+  mode: WorkMode | "modules";
   durationMs: number;
   autoNext: boolean;
   isLong?: boolean;
@@ -156,6 +198,11 @@ export interface StageTransition {
   taskName?: string;
   cycleRoundCountAfter?: number;
   cycleRestDurationMs?: number;
+  moduleIndex?: number | null;
+  moduleRun?: ModuleRun | null;
+  completedWorkCountAfter?: number;
+  completedRestCountAfter?: number;
+  completedLoopCountAfter?: number;
 }
 
 export interface ProjectSettlementPlan {

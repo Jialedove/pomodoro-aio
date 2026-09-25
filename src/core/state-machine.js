@@ -24,8 +24,12 @@ const RUNTIME_EVENT = Object.freeze({
   FAIL: "fail",
   SET_TASK: "set-task",
   SET_VIEW_OPEN: "set-view-open",
+  SELECT_MODULE: "select-module",
   SELECT_CYCLE_SLOT: "select-cycle-slot",
   SET_LONG_FOCUS: "set-long-focus"
+  , FINISH_SEQUENCE: "finish-sequence"
+  , COMPLETE_REST: "complete-rest"
+  , COMPLETE_EMPTY_WORK: "complete-empty-work"
 });
 
 const RUNTIME_EFFECT = Object.freeze({
@@ -53,7 +57,8 @@ function clearedStage(runtime, status, remainingMs = 0) {
     pausedAtMs: 0,
     sessionId: null,
     plannedTomatoCredit: 0,
-    breakContinuation: null
+    breakContinuation: null,
+    moduleRun: null
   };
 }
 
@@ -78,6 +83,12 @@ function reduceRuntime(runtime, event) {
         pausedAtMs: 0,
         sessionId: event.sessionId ?? null,
         plannedTomatoCredit: event.stage === TIMER_STAGE.FOCUS ? plannedTomatoAmount(durationMs) : 0,
+        moduleRun: event.moduleRun ?? null,
+        currentModuleIndex: Number.isInteger(event.moduleIndex) ? event.moduleIndex : runtime.currentModuleIndex,
+        selectedModuleId: event.moduleRun?.moduleId ?? runtime.selectedModuleId,
+        completedWorkCount:event.newSequence ? 0 : runtime.completedWorkCount,
+        completedRestCount:event.newSequence ? 0 : runtime.completedRestCount,
+        completedLoopCount:event.newSequence ? 0 : runtime.completedLoopCount,
         cycleRoundCount: event.mode === "cycle" && Number.isInteger(event.cycleRoundCount)
           ? Math.max(0, event.cycleRoundCount)
           : runtime.cycleRoundCount,
@@ -99,6 +110,7 @@ function reduceRuntime(runtime, event) {
         failure: null
       }, TIMER_STATUS.AWAITING, event.durationMs);
       next.breakContinuation = event.breakContinuation ?? null;
+      next.currentModuleIndex = Number.isInteger(event.moduleIndex) ? event.moduleIndex : runtime.currentModuleIndex;
       if (event.currentTaskName !== undefined) next.currentTaskName = String(event.currentTaskName || "").trim();
       return result(next, [RUNTIME_EFFECT.ALERT_STOP, RUNTIME_EFFECT.BROADCAST, RUNTIME_EFFECT.RESYNC]);
     }
@@ -132,6 +144,11 @@ function reduceRuntime(runtime, event) {
         mode:event.mode,
         cycleSlot:0,
         cycleRoundCount:0,
+        currentModuleIndex:0,
+        selectedModuleId:event.selectedModuleId ?? null,
+        completedWorkCount:0,
+        completedRestCount:0,
+        completedLoopCount:0,
         attention:null,
         pendingBreakTransition:null,
         breakContinuation:null,
@@ -142,7 +159,8 @@ function reduceRuntime(runtime, event) {
       const continuation = event.breakContinuation !== undefined
         ? event.breakContinuation
         : event.attention?.type === TIMER_STAGE.BREAK ? (runtime.breakContinuation ?? null) : null;
-      const next = { ...runtime, attention:event.attention, breakContinuation:continuation };
+      const next = { ...runtime, attention:event.attention, breakContinuation:continuation,
+        selectedModuleId:event.attention?.moduleRun?.moduleId ?? runtime.selectedModuleId };
       if (event.attention.nextStarted) return result(next, [RUNTIME_EFFECT.ALERT_START, RUNTIME_EFFECT.BROADCAST]);
       const awaiting = clearedStage(next, TIMER_STATUS.AWAITING, event.attention.durationMs);
       awaiting.breakContinuation = continuation;
@@ -151,6 +169,19 @@ function reduceRuntime(runtime, event) {
 
     case RUNTIME_EVENT.CLEAR_ATTENTION:
       return result({ ...runtime, attention:null }, [RUNTIME_EFFECT.ALERT_STOP, RUNTIME_EFFECT.BROADCAST]);
+
+    case RUNTIME_EVENT.SELECT_MODULE:
+      if (runtime.pendingSettlement || runtime.pendingBreakTransition) return result(runtime);
+      if (runtime.status === TIMER_STATUS.IDLE && !runtime.attention) {
+        return result({ ...runtime, mode:"modules", currentModuleIndex:event.moduleIndex,
+          selectedModuleId:event.moduleId }, [RUNTIME_EFFECT.BROADCAST]);
+      }
+      if (runtime.status === TIMER_STATUS.AWAITING && runtime.attention?.moduleRun && event.attention) {
+        return result({ ...runtime, currentModuleIndex:event.moduleIndex,
+          selectedModuleId:event.moduleId, attention:event.attention,
+          remainingMs:event.attention.durationMs }, [RUNTIME_EFFECT.BROADCAST]);
+      }
+      return result(runtime);
 
     case RUNTIME_EVENT.BEGIN_FOCUS_SETTLEMENT:
       return result({
@@ -180,6 +211,12 @@ function reduceRuntime(runtime, event) {
       return result({
         ...runtime,
         sessionCount:Math.max(runtime.sessionCount || 0, Number(event.journal.sessionCountAfter) || 0),
+        completedWorkCount:event.journal.transition?.mode === "modules"
+          ? Math.max(runtime.completedWorkCount || 0, Number(event.journal.transition.completedWorkCountAfter) || 0)
+          : runtime.completedWorkCount,
+        completedLoopCount:event.journal.transition?.mode === "modules"
+          ? Math.max(runtime.completedLoopCount || 0, Number(event.journal.transition.completedLoopCountAfter) || 0)
+          : runtime.completedLoopCount,
         cycleRoundCount:event.journal.transition?.mode === "cycle" && Number.isInteger(event.journal.transition.cycleRoundCountAfter)
           ? Math.max(runtime.cycleRoundCount || 0, event.journal.transition.cycleRoundCountAfter)
           : runtime.cycleRoundCount,
@@ -190,7 +227,7 @@ function reduceRuntime(runtime, event) {
       return result({
         ...runtime,
         status:runtime.startedAtMs ? TIMER_STATUS.RUNNING : TIMER_STATUS.PAUSED,
-        sessionId:null,
+        sessionId:runtime.moduleRun?.runId || null,
         plannedTomatoCredit:runtime.stage === TIMER_STAGE.FOCUS ? plannedTomatoAmount(runtime.durationMs) : 0,
         failure:null
       });
@@ -235,6 +272,26 @@ function reduceRuntime(runtime, event) {
 
     case RUNTIME_EVENT.SET_LONG_FOCUS:
       return result({ ...runtime, longFocusMinutes:event.minutes }, event.broadcast ? [RUNTIME_EFFECT.BROADCAST] : []);
+
+    case RUNTIME_EVENT.COMPLETE_REST:
+      return result({
+        ...runtime,
+        completedRestCount:Math.max(runtime.completedRestCount || 0, Number(event.completedRestCountAfter) || 0),
+        completedLoopCount:Math.max(runtime.completedLoopCount || 0, Number(event.completedLoopCountAfter) || 0)
+      }, [RUNTIME_EFFECT.BROADCAST]);
+
+    case RUNTIME_EVENT.COMPLETE_EMPTY_WORK:
+      return result({
+        ...runtime,
+        sessionCount:Math.max(runtime.sessionCount || 0, Number(event.sessionCountAfter) || 0),
+        completedWorkCount:Math.max(runtime.completedWorkCount || 0, Number(event.completedWorkCountAfter) || 0),
+        completedLoopCount:Math.max(runtime.completedLoopCount || 0, Number(event.completedLoopCountAfter) || 0)
+      }, [RUNTIME_EFFECT.BROADCAST]);
+
+    case RUNTIME_EVENT.FINISH_SEQUENCE:
+      return result({ ...clearedStage(runtime, TIMER_STATUS.IDLE), currentModuleIndex:0,
+        selectedModuleId:null, attention:null, failure:null },
+        [RUNTIME_EFFECT.ALERT_STOP, RUNTIME_EFFECT.BROADCAST, RUNTIME_EFFECT.RESYNC]);
 
     default:
       throw new Error(`未知 runtime event：${event?.type || "empty"}`);

@@ -1,4 +1,4 @@
-const TIMER_SCHEMA_VERSION = 3;
+const TIMER_SCHEMA_VERSION = 4;
 const TIMER_STATUS = Object.freeze({
   IDLE: "idle",
   RUNNING: "running",
@@ -60,6 +60,10 @@ function getElapsedMs(runtime, at = Date.now()) {
 /** @param {Partial<Runtime> | null | undefined} runtime @param {Partial<Settings> | null | undefined} settings @param {number} [at] */
 function getRemainingMs(runtime, settings, at = Date.now()) {
   if (runtime?.status === TIMER_STATUS.IDLE) {
+    if (Array.isArray(settings?.modules)) {
+      const first = settings.modules[0];
+      return first ? Math.round(Number(first.durationMin) * 60_000) : 0;
+    }
     const slot = settings?.workMode === "cycle" ? runtime.cycleSlot : null;
     return configuredStageDurationMs(settings || {}, TIMER_STAGE.FOCUS, false, slot);
   }

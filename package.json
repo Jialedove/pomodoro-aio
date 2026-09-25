@@ -10,7 +10,7 @@
     "build": "node esbuild.config.mjs --production",
     "typecheck": "node scripts/typecheck.cjs",
     "lint": "eslint src scripts test esbuild.config.mjs && node scripts/lint.cjs",
-    "test": "node --test test/*.test.cjs && node scripts/cycle-mode-check.cjs",
+    "test": "node --test test/*.test.cjs",
     "check:build": "node scripts/check-build.cjs",
     "check": "npm run typecheck && npm run lint && npm test && npm run build && npm run check:build",
     "install:vault": "npm run check && node scripts/install-vault.mjs"

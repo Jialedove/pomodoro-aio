@@ -1,40 +1,34 @@
-# Pomodoro AIO 状态机
+# Pomodoro AIO 模块状态机
 
-## 状态模型
+## 运行模型
 
-运行态由 `status`、`stage`、`mode` 和必要的阶段字段共同表达。状态常量位于 `src/core/timer.js`，启动和恢复时由 `normalizeRuntime` 统一规范化。
+配置中的 `settings.modules` 是可编辑的模块定义。每次执行时生成 `runtime.moduleRun`：固定模块 ID、运行 ID、类型、名称、时长、黑屏、工作区及开始时的项目关系。定义修改只影响以后开始的模块。`currentModuleIndex` 记录序列位置；`completedWorkCount`、`completedRestCount`、`completedLoopCount` 分别计数。序列推进由 `src/core/modules.js` 计算，不依赖 A/B 槽位或旧工作模式。
 
-所有计时阶段变化统一进入 `src/core/state-machine.js` 的纯 `reduceRuntime(runtime, event)`。reducer 返回新的 runtime 与通用 effects；插件入口只在状态保存成功后执行广播、调度重对齐和强提醒启停。
+工作映射到计时内核的 `focus` 阶段，休息映射到 `break` 阶段。两者都使用绝对时间、暂停/恢复、到点提醒和重载恢复；只有工作写番茄。状态转换集中在 `src/core/state-machine.js` 的 `reduceRuntime`，并在关键持久化成功后才执行 UI 和调度效果。
 
-| 状态 | 含义 | 计时字段约束 |
-| --- | --- | --- |
-| `idle` | 没有正在进行的阶段 | `stage`、`sessionId`、开始/暂停时间清空 |
-| `running` | 专注或休息正在运行 | `stage`、`durationMs`、`startedAtMs` 有效 |
-| `paused` | 阶段暂停 | `remainingMs` 有效，`startedAtMs` 清空 |
-| `awaiting` | 阶段完成，等待 Ribbon 确认下一段 | `attention` 保存待进入阶段，当前阶段计时清空 |
-| `settling` | 专注结算或休息转换正在恢复、推进 | `pendingSettlement` 或 `pendingBreakTransition` 必须存在 |
-| `settlement-failed` | 结算失败，保留 session 和失败上下文 | 不丢弃可恢复的 journal |
+| 状态 | 含义 |
+| --- | --- |
+| `idle` | 序列尚未开始或已经结束；可保留本次完成计数 |
+| `running` | 一个模块正在计时，`moduleRun` 和绝对开始时间有效 |
+| `paused` | 当前模块暂停，保存已用和剩余毫秒 |
+| `awaiting` | 下一模块等待确认；`attention.moduleRun` 保存待启动计划 |
+| `settling` | 工作 journal 或模块转换正在持久化和推进 |
+| `settlement-failed` | 保留 journal/转换和失败上下文，等待重载恢复 |
 
-`stage` 只有 `focus` 和 `break`。循环模式通过 `mode: "cycle"` 与 `cycleSlot` 区分 A/B；循环阶段仍然是专注，不引入第三套计时逻辑。
-
-## 主要转换
+## 转换
 
 ```text
-idle ──开始专注/循环 A/B──> running(focus)
-running ──暂停──> paused
-paused ──继续──> running
-running(focus) ──到点/手动完成──> settling
-settling ──日记/项目/运行态完成──> awaiting 或 running(break)
-running(break) ──到点──> awaiting 或 running(focus)
-awaiting ──Ribbon 确认──> running
-任意可重置状态 ──重置──> idle
+idle → startSequence → running(工作或休息)
+running ↔ paused
+running(工作) → pendingSettlement → 下一模块 running/awaiting，或 idle
+running(休息) → pendingBreakTransition → 下一模块 running/awaiting，或 idle
+awaiting → 确认 → 新 moduleRun → running
 ```
 
-UI、Ribbon、通知和声音只调用插件的阶段方法；它们不直接拼装运行态。每秒更新只读取绝对时间计算结果，不把 `setTimeout` 的触发时间当作真实计时。
+末项完成时完整循环数加一，再按 `loopMode`（无限、一次、指定次数）决定从头开始或停止。`autoAdvance` 决定下一模块自动开始还是等待确认。待确认期间编辑定义或项目关系后，真正启动时以最新定义重新生成运行快照；已有运行段仍保持原快照。
 
-## 旧状态迁移和限制
+“完成本段”在工作中按实际有效时长结算；零有效时长只推进序列、不写日记番茄。休息完成不写日记，也不增加工作次数。两类无日记写入的转换通过持久化转换记录恢复，防止重载后重复计数或重复开始下一段。
 
-- `normalizeRuntime` 兼容旧的 `phase`、`pausedLeftSec`、`startedAt`、强提醒字段，并生成缺失的 `sessionId`；插件启动时会把规范化后的运行态重新持久化。
-- 当前 schema 为 `3`；不认识的状态、缺少开始时间的运行态和缺少 journal 的结算态会恢复为失败或安全待机状态，而不是继续猜测。
-- 运行态保存在 Obsidian local storage；设置保存在插件数据。插件启动时先规范化，再恢复未完成结算、frontmatter 修复队列和项目重试队列。
-- 休息本身不产生番茄记录，因此只写轻量的 `pendingBreakTransition`；重载时按其中固定的自动衔接选项和专注时长恢复下一阶段。
+## 旧数据兼容
+
+当前 runtime schema 为 `4`。旧设置只在首次缺少 `modules` 字段时转换；显式空列表不再触发旧迁移。旧 `standard/cycle`、A/B、长专注和按轮插休字段仅供迁移旧配置或恢复升级前仍在执行的阶段与 journal。新 UI、命令和 `startSequence` 路径只运行模块序列。旧待结算记录先按原计划完成，再进入新序列。

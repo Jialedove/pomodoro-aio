@@ -20,6 +20,7 @@ function getBlackoutCapability(document) {
 function shouldShowBlackout(runtime, settings) {
   const active = /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(runtime?.status);
   if (!active) return false;
+  if (runtime?.moduleRun) return runtime.moduleRun.blackout === true;
   if (runtime?.stage === TIMER_STAGE.BREAK) return settings?.breakBlackoutEnabled === true;
   if (runtime?.stage !== TIMER_STAGE.FOCUS) return false;
   if (runtime?.mode === "cycle") return runtime?.cycleSlot === 1
@@ -31,6 +32,7 @@ function shouldShowBlackout(runtime, settings) {
 /** @param {Record<string, any> | null | undefined} runtime */
 function blackoutKey(runtime) {
   if (!runtime?.stage) return "";
+  if (runtime.moduleRun?.runId) return `module:${runtime.moduleRun.runId}`;
   // A break has no persisted session id. Its phase stays the same across
   // pause/resume while startedAtMs is deliberately reset, so do not use that
   // mutable timestamp to decide whether a dismissed screen may reappear.
@@ -46,6 +48,7 @@ function formatBlackoutTime(seconds) {
 
 /** @param {Record<string, any>} runtime @param {Record<string, any> | null | undefined} settings */
 function blackoutPrompt(runtime, settings) {
+  if (runtime.moduleRun) return { label:"现在应该做什么", title:runtime.moduleRun.name };
   if (runtime.stage === TIMER_STAGE.BREAK) return { label:"现在应该做什么", title:"休息一下" };
   const configuredTask = runtime.mode === "cycle"
     ? (runtime.cycleSlot === 1 ? settings?.cycleTaskB : settings?.cycleTaskA)

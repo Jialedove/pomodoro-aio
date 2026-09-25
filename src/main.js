@@ -40,6 +40,8 @@ const { RuntimeStore, cloneValue } = require("./services/runtime-store");
 const { DailyRepository, ProjectRepository } = require("./services/repositories");
 const { normalizeCaptureHeading, normalizeCaptureText } = require("./core/quick-capture");
 const { PomodoroView } = require("./ui/pomodoro-view");
+const { ProjectsView } = require("./ui/projects-view");
+const { migrateLegacySettings, normalizeModuleDefinition, normalizeOrchestration, getNextModule, createModuleRunSnapshot } = require("./core/modules");
 const { QuickCaptureModal } = require("./ui/quick-capture-modal");
 const { BreakBlackoutController } = require("./ui/break-blackout");
 const { PomodoroSettingTab } = require("./ui/settings-tab");
@@ -57,11 +59,17 @@ const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/
 /** @typedef {Record<string, any>} AnyRecord */
 /** @typedef {{suppressNotify?:boolean, cause?:string, minutes?:number|null, cycle?:boolean, cycleSlot?:0|1, taskName?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean, newCycle?:boolean, requestFullscreen?:boolean}} StartFocusOptions */
 /** @typedef {{forceRun?:boolean, suppressNotify?:boolean, cause?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean, breakContinuation?:BreakContinuation, requestFullscreen?:boolean}} StartBreakOptions */
-/** @typedef {{type?:string, isLong?:boolean, cycleSlot?:number|null, autoStarted?:boolean, durationMs?:number, taskName?:string}} NextPhase */
+/** @typedef {{type?:string, isLong?:boolean, cycleSlot?:number|null, autoStarted?:boolean, durationMs?:number, taskName?:string, moduleIndex?:number, moduleRun?:import("../types/contracts").ModuleRun|null}} NextPhase */
 
 /* ========== 默认设置 ========== */
 /** @type {Settings} */
 const DEFAULT_SETTINGS = {
+  modules: [],
+  projectAssignments: {},
+  loopMode: "infinite",
+  loopCount: 1,
+  autoAdvance: false,
+  enableProjects: false,
   // 计时
   focusMin: 25,
   breakMin: 5,
@@ -157,7 +165,13 @@ function createRuntimeDefaults(settings) {
     schemaVersion: TIMER_SCHEMA_VERSION,
     status: TIMER_STATUS.IDLE,
     stage: null,
-    mode: settings.workMode === "cycle" ? "cycle" : "standard",
+    mode: "modules",
+    moduleRun: null,
+    currentModuleIndex: 0,
+    selectedModuleId: settings.modules?.[0]?.id || null,
+    completedWorkCount: 0,
+    completedRestCount: 0,
+    completedLoopCount: 0,
     cycleSlot: 0,
     durationMs: 0,
     startedAtMs: 0,
@@ -185,7 +199,8 @@ function createRuntimeDefaults(settings) {
 function normalizeSettings(raw={}, fallback=DEFAULT_SETTINGS) {
   const base = Object.assign({}, DEFAULT_SETTINGS, fallback || {});
   const source = raw || {};
-  const result = Object.assign({}, base, source, { schemaVersion: TIMER_SCHEMA_VERSION });
+  const migrated = migrateLegacySettings(source);
+  const result = Object.assign({}, base, migrated, { schemaVersion: TIMER_SCHEMA_VERSION });
   const has = (/** @type {string} */ key) => Object.prototype.hasOwnProperty.call(source, key);
   const number = (/** @type {keyof Settings} */ key, min=0.1) => {
     const fallbackValue = positiveNumber(base[key], DEFAULT_SETTINGS[key], min);
@@ -232,6 +247,12 @@ function normalizeSettings(raw={}, fallback=DEFAULT_SETTINGS) {
   for (const key of ["autoNext", "projectEnable", "showProjectSelector", "enableSound", "enableNotify", "persistentAlertSound", "ribbonClickAutoNext", "allowCreateDaily", "allowAutoCreateTask", "respectModalInputFocus", "breakBlackoutEnabled", "taskBlackoutEnabled", "cycleTaskBlackoutA", "cycleTaskBlackoutB"]) {
     if (typeof source[key] !== "boolean") result[key] = base[key];
   }
+  result.modules = migrated.modules;
+  result.projectAssignments = Object.fromEntries((result.modules || [])
+    .filter(item => item.type === "work")
+    .map(item => [item.id, tryNormalizeMarkdownPath(migrated.projectAssignments?.[item.id]) || ""])
+    .filter(([, path]) => !!path));
+  Object.assign(result, normalizeOrchestration(migrated));
   return result;
 }
 /** @param {unknown} value @param {Settings} settings @returns {Attention | null} */
@@ -250,7 +271,31 @@ function normalizeAttention(value, settings) {
     durationMs
   };
   if (record.taskName !== undefined) result.taskName = String(record.taskName || "").trim();
+  if (Number.isInteger(record.moduleIndex) && record.moduleIndex >= 0) result.moduleIndex = record.moduleIndex;
+  if (record.moduleRun) {
+    const moduleRun = normalizeModuleRun(record.moduleRun);
+    if (!moduleRun) return null;
+    if (moduleRun) result.moduleRun = moduleRun;
+  }
   return result;
+}
+/** @param {unknown} value @returns {import("../types/contracts").ModuleRun | null} */
+function normalizeModuleRun(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const run = /** @type {AnyRecord} */ (value);
+  if (!String(run.runId || "").trim() || !String(run.moduleId || "").trim()
+    || !["work", "rest"].includes(run.type) || !String(run.name || "").trim()
+    || !Number.isFinite(run.durationMs) || run.durationMs <= 0) return null;
+  const projectPath = String(run.projectPath || "").trim();
+  const normalizedProjectPath = projectPath ? tryNormalizeMarkdownPath(projectPath) : "";
+  if (projectPath && !normalizedProjectPath) return null;
+  return {
+    runId:String(run.runId), moduleId:String(run.moduleId), type:run.type,
+    name:String(run.name).trim(), durationMin:run.durationMs / 60_000,
+    durationMs:Math.round(run.durationMs), blackout:run.blackout === true,
+    workspaceCommandId:String(run.workspaceCommandId || ""),
+    projectPath:normalizedProjectPath || null, startedAtMs:Number(run.startedAtMs) || 0
+  };
 }
 /** @param {unknown} value @returns {{journal:SettlementJournal|null, error:string|null}} */
 function normalizeSettlement(value) {
@@ -273,8 +318,12 @@ function normalizeBreakTransition(value) {
   if (record.schemaVersion !== 1 || record.status !== "break-completing") return null;
   if (typeof record.autoNext !== "boolean" || !Number.isFinite(record.durationMs) || record.durationMs <= 0) return null;
   if (!Number.isFinite(record.createdAtMs) || record.createdAtMs <= 0) return null;
-  if (record.mode !== undefined && !["standard", "cycle"].includes(record.mode)) return null;
+  if (record.mode !== undefined && !["standard", "cycle", "modules"].includes(record.mode)) return null;
   if (record.mode === "cycle" && (![0, 1].includes(record.cycleSlot) || typeof record.taskName !== "string")) return null;
+  if (record.mode === "modules" && (record.moduleIndex !== null && (!Number.isInteger(record.moduleIndex) || record.moduleIndex < 0))) return null;
+  if (record.mode === "modules" && record.moduleRun && !normalizeModuleRun(record.moduleRun)) return null;
+  if (record.mode === "modules" && record.completionType === "work"
+    && (!Number.isInteger(record.completedWorkCountAfter) || !Number.isInteger(record.sessionCountAfter))) return null;
   return /** @type {BreakTransition} */ (cloneValue(record));
 }
 /** @param {unknown} value @returns {BreakContinuation | null} */
@@ -327,7 +376,8 @@ function normalizeRuntime(raw, settings, now=Date.now()) {
   const settlement = normalizeSettlement(source.pendingSettlement);
   const breakTransition = normalizeBreakTransition(source.pendingBreakTransition);
   const breakContinuation = normalizeBreakContinuation(source.breakContinuation);
-  const mode = source.mode === "cycle" || source.cycleActive || (legacy && settings.workMode === "cycle") ? "cycle" : "standard";
+  const mode = source.mode === "modules" || (!legacyPhase && !source.attention && (!source.status || source.status === TIMER_STATUS.IDLE))
+    ? "modules" : (source.mode === "cycle" || source.cycleActive || (legacy && settings.workMode === "cycle") ? "cycle" : "standard");
   let status = Object.values(TIMER_STATUS).includes(source.status) ? source.status : TIMER_STATUS.IDLE;
   let stage = source.stage === TIMER_STAGE.FOCUS || source.stage === TIMER_STAGE.BREAK ? source.stage : null;
   const durationMs = Math.max(0, Number(source.durationMs) || Number(source.durationSec || 0) * 1000);
@@ -357,14 +407,20 @@ function normalizeRuntime(raw, settings, now=Date.now()) {
     status,
     stage,
     mode,
+    moduleRun:normalizeModuleRun(source.moduleRun),
+    currentModuleIndex:Math.max(0, Math.floor(Number(source.currentModuleIndex) || 0)),
+    selectedModuleId:String(source.selectedModuleId || "") || null,
+    completedWorkCount:Math.max(0, Math.floor(Number(source.completedWorkCount) || 0)),
+    completedRestCount:Math.max(0, Math.floor(Number(source.completedRestCount) || 0)),
+    completedLoopCount:Math.max(0, Math.floor(Number(source.completedLoopCount) || 0)),
     cycleSlot: Number(source.cycleSlot) === 1 ? 1 : 0,
     durationMs,
     startedAtMs,
     elapsedMs,
     remainingMs,
     pausedAtMs,
-    sessionId: source.sessionId || (stage === TIMER_STAGE.FOCUS && [TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED].includes(status) ? createSessionId() : null),
-    plannedTomatoCredit: plannedTomatoAmount(durationMs || (Number(settings.focusMin) || 25) * 60 * 1000),
+    sessionId: source.sessionId || (source.moduleRun?.runId || (stage === TIMER_STAGE.FOCUS && [TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED].includes(status) ? createSessionId() : null)),
+    plannedTomatoCredit: stage === TIMER_STAGE.FOCUS ? plannedTomatoAmount(durationMs || (Number(settings.focusMin) || 25) * 60 * 1000) : 0,
     attention,
     pendingSettlement: settlement.journal,
     pendingBreakTransition: breakTransition,
@@ -386,6 +442,13 @@ function normalizeRuntime(raw, settings, now=Date.now()) {
     failure: source.failure && typeof source.failure === "object" ? source.failure : null
   });
 
+  const moduleDefinitions = Array.isArray(settings.modules) ? settings.modules : [];
+  const selectedId = result.attention?.moduleRun?.moduleId || result.moduleRun?.moduleId || result.selectedModuleId;
+  const selectedIndex = moduleDefinitions.findIndex(item => item.id === selectedId);
+  const fallbackIndex = Math.min(result.currentModuleIndex || 0, Math.max(0, moduleDefinitions.length - 1));
+  result.selectedModuleId = moduleDefinitions[selectedIndex >= 0 ? selectedIndex : fallbackIndex]?.id || null;
+  if (result.status === TIMER_STATUS.IDLE) result.currentModuleIndex = selectedIndex >= 0 ? selectedIndex : fallbackIndex;
+
   if (result.attention && !result.attention.nextStarted) result.status = TIMER_STATUS.AWAITING;
   if (result.status === TIMER_STATUS.AWAITING && !result.attention) result.status = TIMER_STATUS.IDLE;
   if (result.status === TIMER_STATUS.AWAITING && result.attention?.nextStarted) result.attention.nextStarted = false;
@@ -403,6 +466,7 @@ function normalizeRuntime(raw, settings, now=Date.now()) {
     result.plannedTomatoCredit = defaults.plannedTomatoCredit;
     result.attention = null;
     result.breakContinuation = null;
+    result.moduleRun = null;
     result.cycleRoundCount = 0;
     result.failure = null;
   } else if (result.status === TIMER_STATUS.AWAITING) {
@@ -415,6 +479,7 @@ function normalizeRuntime(raw, settings, now=Date.now()) {
     result.sessionId = null;
     result.plannedTomatoCredit = 0;
     result.breakContinuation = result.attention?.type === TIMER_STAGE.BREAK ? breakContinuation : null;
+    result.moduleRun = null;
     result.failure = null;
   } else if (![TIMER_STAGE.FOCUS, TIMER_STAGE.BREAK].includes(result.stage)) {
     result.status = TIMER_STATUS.IDLE;
@@ -426,6 +491,7 @@ function normalizeRuntime(raw, settings, now=Date.now()) {
     result.sessionId = null;
     result.plannedTomatoCredit = defaults.plannedTomatoCredit;
     result.breakContinuation = null;
+    result.moduleRun = null;
     result.cycleRoundCount = 0;
     result.attention = null;
     result.failure = null;
@@ -442,6 +508,10 @@ function normalizeRuntime(raw, settings, now=Date.now()) {
   } else if (result.status === TIMER_STATUS.RUNNING && (!result.durationMs || !result.startedAtMs)) {
     result.status = TIMER_STATUS.FAILED;
     result.failure = { stage: result.stage, sessionId: result.sessionId || null, atMs: now, message: "运行状态缺少有效开始时间" };
+  }
+  if (mode === "modules" && [TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED].includes(result.status) && !result.moduleRun) {
+    result.status = TIMER_STATUS.FAILED;
+    result.failure = { stage:result.stage, sessionId:result.sessionId, atMs:now, message:"模块执行快照缺失" };
   }
   if (result.stage !== TIMER_STAGE.BREAK && result.attention?.type !== TIMER_STAGE.BREAK && !result.pendingBreakTransition) result.breakContinuation = null;
   if (result.status === TIMER_STATUS.SETTLING && !result.pendingSettlement && !result.pendingBreakTransition) {
@@ -596,10 +666,9 @@ class PomodoroAIO extends Plugin {
     } catch (error) {
       logPluginError("startup-frontmatter-repair", error, { step:"drain" });
     }
-    try {
-      await this.drainProjectQueue();
-    } catch (error) {
-      logPluginError("startup-project-retry", error, { step:"drain" });
+    if (this.settings.enableProjects) {
+      try { await this.drainProjectQueue(); }
+      catch (error) { logPluginError("startup-project-retry", error, { step:"drain" }); }
     }
     try {
       await this.syncCompletedTaskSelections();
@@ -609,6 +678,7 @@ class PomodoroAIO extends Plugin {
 
     // 视图
     this.registerView(PomodoroView.VIEW_TYPE, (leaf)=> new PomodoroView(leaf, this));
+    this.registerView(ProjectsView.VIEW_TYPE, (leaf)=> new ProjectsView(leaf, this));
     this.addCommand({ id: 'open-view', name: '打开番茄视图', callback: (evt)=> this.runUserCommand(()=> this.activateView(), evt) });
 
     // Ribbon 图标（左侧菜单栏按钮）
@@ -624,12 +694,10 @@ class PomodoroAIO extends Plugin {
     }
 
     // 命令
-    this.addCommand({ id: 'start-focus', name: '开始专注', callback: (evt)=> this.runUserCommand(()=> this.startFocus(), evt) });
-    this.addCommand({ id: 'start-break', name: '开始短休', callback: (evt)=> this.runUserCommand(()=> this.startBreak(false), evt) });
-    this.addCommand({ id: 'start-long-break', name: '开始长休', callback: (evt)=> this.runUserCommand(()=> this.startBreak(true), evt) });
+    this.addCommand({ id: 'start-sequence', name: '开始模块循环', callback: (evt)=> this.runUserCommand(()=> this.startSequence(), evt) });
     this.addCommand({ id: 'pause-resume', name: '暂停/继续', callback: (evt)=> this.runUserCommand(()=> this.togglePause(), evt) });
     this.addCommand({ id: 'reset', name: '重置', callback: (evt)=> this.runUserCommand(()=> this.reset(), evt) });
-    this.addCommand({ id: 'complete-now', name: '立刻结算当前专注（按实际时长）', callback: (evt)=> this.runUserCommand(()=> this.forceCompleteFocusOnce(), evt) });
+    this.addCommand({ id: 'complete-now', name: '完成本段', callback: (evt)=> this.runUserCommand(()=> this.completeCurrentModule(), evt) });
     this.addCommand({ id: 'complete-task', name: '完成当前任务并勾选日记待办', callback: (evt)=> this.runUserCommand(()=> this.completeTask(), evt) });
     this.addCommand({ id: 'open-today', name: '打开当日日记', callback: (evt)=> this.runUserCommand(()=> this.openToday(), evt) });
     this.addCommand({ id: 'quick-capture', name: '快速记录', callback: (evt)=> this.runUserCommand(()=> this.openQuickCaptureModal(), evt) });
@@ -856,6 +924,16 @@ class PomodoroAIO extends Plugin {
     await leaf.setViewState({ type: PomodoroView.VIEW_TYPE, active: true });
     this.app.workspace.revealLeaf(leaf);
   }
+  async activateProjectsView(){
+    if (!this.settings.enableProjects) return false;
+    if (this.shouldBlockFocusLayoutSideEffects({ source:"user" })) return false;
+    const leaves = this.app.workspace.getLeavesOfType(ProjectsView.VIEW_TYPE);
+    if (leaves.length) { this.app.workspace.revealLeaf(leaves[0]); return true; }
+    const leaf = this.app.workspace.getRightLeaf(false);
+    await leaf.setViewState({ type:ProjectsView.VIEW_TYPE, active:true });
+    this.app.workspace.revealLeaf(leaf);
+    return true;
+  }
   broadcast() {
     const snap = this.snapshot();
     this.updateRibbonVisuals(snap.runtime);
@@ -877,9 +955,9 @@ class PomodoroAIO extends Plugin {
   }
   /** @param {{cycle?:boolean, cycleSlot?:number}} [options] */
   requestTaskBlackoutFullscreen(options={}){
-    const enabled = options.cycle
+    const enabled = this.runtime?.moduleRun?.blackout === true || (options.cycle
       ? (options.cycleSlot === 1 ? this.settings.cycleTaskBlackoutB : this.settings.cycleTaskBlackoutA)
-      : this.settings.taskBlackoutEnabled;
+      : this.settings.taskBlackoutEnabled);
     if (enabled !== true) return Promise.resolve(false);
     return this._getBreakBlackoutController()?.requestCurrentDisplayFullscreen() || Promise.resolve(false);
   }
@@ -889,9 +967,19 @@ class PomodoroAIO extends Plugin {
   }
   snapshot(){
     const leftMs = this.getLeftMs();
+    const pendingId = this.runtime.attention?.moduleRun?.moduleId;
+    const movedIndex = pendingId ? this.settings.modules.findIndex(item => item.id === pendingId) : -1;
+    const selectedIndex = this.settings.modules.findIndex(item => item.id === this.runtime.selectedModuleId);
+    const position = movedIndex >= 0 ? movedIndex
+      : this.runtime.status === TIMER_STATUS.IDLE && selectedIndex >= 0 ? selectedIndex
+        : this.runtime.attention?.moduleIndex ?? this.runtime.currentModuleIndex ?? 0;
+    const next = getNextModule(this.settings.modules || [], position, this.runtime.completedLoopCount || 0, this.settings);
+    const nextModule = this.runtime.status === TIMER_STATUS.IDLE
+      ? this.settings.modules?.[position] || null
+      : next.nextIndex !== null ? this.settings.modules?.[next.nextIndex] || null : null;
     return {
       settings: this.settings,
-      runtime: Object.assign({}, this.runtime, { leftMs, leftSec: Math.ceil(leftMs / 1000) })
+      runtime: Object.assign({}, this.runtime, { leftMs, leftSec: Math.ceil(leftMs / 1000), nextModule })
     };
   }
   /** @param {(Runtime & {leftSec?:number}) | null | undefined} [runtime] */
@@ -955,6 +1043,7 @@ class PomodoroAIO extends Plugin {
   }
   async onRibbonClick(){
     if (!this.runtime.attention) return;
+    if (this.runtime.attention.moduleRun) return this.startPendingStage();
     if (!this.settings.ribbonClickAutoNext || this.runtime.attention.nextStarted) {
       await this.stopStrongAlert();
       return;
@@ -965,6 +1054,9 @@ class PomodoroAIO extends Plugin {
   async startPendingStage(options={}){
     const next = this.runtime.attention;
     if (!next || next.nextStarted) { await this.stopStrongAlert(); return; }
+    if (next.moduleRun && Number.isInteger(next.moduleIndex)) {
+      return this.startModule(Number(next.moduleIndex), { moduleRun:next.moduleRun, allowTransition:true, requestFullscreen:options.requestFullscreen === true });
+    }
     if (next.type === TIMER_STAGE.BREAK) await this.startBreak(next.isLong, {
       forceRun:true,
       cause:'manual',
@@ -997,6 +1089,11 @@ class PomodoroAIO extends Plugin {
       durationMs: Math.max(1, Number(nextPhase?.durationMs) || configuredStageDurationMs(this.settings, stage, !!nextPhase?.isLong, cycleSlot))
     };
     if (nextPhase?.taskName !== undefined) attention.taskName = String(nextPhase.taskName || "").trim();
+    if (nextPhase?.moduleRun) {
+      const moduleRun = normalizeModuleRun(nextPhase.moduleRun);
+      if (moduleRun) attention.moduleRun = moduleRun;
+    }
+    if (Number.isInteger(nextPhase?.moduleIndex)) attention.moduleIndex = nextPhase.moduleIndex;
     await this.commitRuntimeEvent({ type:RUNTIME_EVENT.SET_ATTENTION, attention });
   }
   async stopStrongAlert(){
@@ -1009,7 +1106,7 @@ class PomodoroAIO extends Plugin {
   }
   /** @param {unknown} tomatoAmount @param {string} next */
   focusCompletionBody(tomatoAmount, next){
-    const task = String(this.runtime.currentTaskName || this.settings.defaultTaskName || "").trim();
+    const task = String(this.runtime.moduleRun?.name || this.runtime.currentTaskName || this.settings.defaultTaskName || "").trim();
     return `${task ? `完成：${task} · ` : ""}+${formatTomatoNumber(tomatoAmount)}🍅\n下一步：${next}`;
   }
   /** @param {unknown} commandId */
@@ -1056,6 +1153,153 @@ class PomodoroAIO extends Plugin {
         this.runRuntimeEffects(effects);
       }
     }
+  }
+  /** @param {{modules?:import("../types/contracts").ModuleDefinition[], projectAssignments?:Record<string,string>}} patch */
+  async persistModuleSettings(patch){
+    const previousModules = this.settings.modules;
+    const previousAssignments = this.settings.projectAssignments;
+    Object.assign(this.settings, patch);
+    try {
+      await this.saveSettings();
+      this.broadcast();
+    } catch (error) {
+      this.settings.modules = previousModules;
+      this.settings.projectAssignments = previousAssignments;
+      this.broadcast();
+      throw error;
+    }
+  }
+  /** @param {"work" | "rest"} type */
+  async addModule(type){
+    const module = normalizeModuleDefinition({
+      id:createSessionId(), type, name:type === "rest" ? "休息" : "工作",
+      durationMin:type === "rest" ? 5 : 25, blackout:false, workspaceCommandId:""
+    });
+    await this.persistModuleSettings({ modules:[...this.settings.modules, module] });
+    return module;
+  }
+  /** @param {string} id @param {Partial<import("../types/contracts").ModuleDefinition>} patch */
+  async updateModule(id, patch){
+    const index = this.settings.modules.findIndex(item => item.id === id);
+    if (index < 0) return false;
+    const previous = this.settings.modules[index];
+    const next = normalizeModuleDefinition({ ...previous, ...patch, id:previous.id, type:previous.type });
+    await this.persistModuleSettings({ modules:this.settings.modules.map(item => item.id === id ? next : item) });
+    return true;
+  }
+  /** @param {string} id */
+  async removeModule(id){
+    if (!this.settings.modules.some(item => item.id === id)) return false;
+    const modules = this.settings.modules.filter(item => item.id !== id);
+    const assignments = { ...this.settings.projectAssignments };
+    delete assignments[id];
+    await this.persistModuleSettings({ modules, projectAssignments:assignments });
+    return true;
+  }
+  /** @param {string} id @param {number} toIndex */
+  async moveModule(id, toIndex){
+    const list = [...this.settings.modules];
+    const from = list.findIndex(item => item.id === id);
+    if (from < 0 || !Number.isInteger(toIndex) || toIndex < 0 || toIndex >= list.length) return false;
+    const [module] = list.splice(from, 1);
+    list.splice(toIndex, 0, module);
+    await this.persistModuleSettings({ modules:list });
+    return true;
+  }
+  /** @param {string} id @param {unknown} path */
+  async setModuleProject(id, path){
+    const module = this.settings.modules.find(item => item.id === id && item.type === "work");
+    if (!module) return false;
+    const rawPath = String(path || "").trim();
+    const projectPath = rawPath ? tryNormalizeMarkdownPath(rawPath) : "";
+    if (rawPath && !projectPath) { new Notice("项目路径无效"); return false; }
+    await this.persistModuleSettings({ projectAssignments:{ ...this.settings.projectAssignments, [id]:projectPath || "" } });
+    return true;
+  }
+  /** @param {number | AnyRecord} [indexOrOptions] @param {AnyRecord} [options] */
+  async startSequence(indexOrOptions, options={}){
+    const selectedIndex = this.settings.modules.findIndex(item => item.id === this.runtime.selectedModuleId);
+    const index = typeof indexOrOptions === "number" ? indexOrOptions
+      : selectedIndex >= 0 ? selectedIndex : this.runtime.currentModuleIndex || 0;
+    if (typeof indexOrOptions === "object") options = indexOrOptions;
+    if (this.runtime.attention?.moduleRun && Number.isInteger(this.runtime.attention.moduleIndex)) {
+      return this.startPendingStage(options);
+    }
+    if (this.runtime.status !== TIMER_STATUS.IDLE || this.runtime.attention) {
+      new Notice("当前已有计时，请先完成或重置当前模块"); return false;
+    }
+    if (!this.settings.modules.length) { new Notice("请先添加工作或休息模块"); return false; }
+    return this.startModule(index, { ...options, newSequence:true });
+  }
+  /** @param {number} index */
+  async selectModule(index){
+    const definition = this.settings.modules[index];
+    if (!Number.isInteger(index) || !definition) { new Notice("请选择有效的工作或休息模块"); return false; }
+    if (this.runtime.pendingSettlement || this.runtime.pendingBreakTransition) {
+      new Notice("当前结算尚未完成，请先恢复结算"); return false;
+    }
+    const idle = this.runtime.status === TIMER_STATUS.IDLE && !this.runtime.attention;
+    const awaiting = this.runtime.status === TIMER_STATUS.AWAITING && !!this.runtime.attention?.moduleRun;
+    if (!idle && !awaiting) {
+      new Notice("正在执行当前模块，请先完成本段或重置后选择"); return false;
+    }
+    const run = awaiting ? createModuleRunSnapshot(definition, this.settings.projectAssignments,
+      { enableProjects:this.settings.enableProjects, startedAtMs:Date.now() }) : null;
+    const attention = run ? {
+      type:run.type === "work" ? TIMER_STAGE.FOCUS : TIMER_STAGE.BREAK,
+      isLong:false, cycleSlot:null, nextStarted:false,
+      durationMs:run.durationMs, moduleIndex:index, moduleRun:run
+    } : null;
+    try {
+      await this.commitRuntimeEvent({ type:RUNTIME_EVENT.SELECT_MODULE,
+        moduleIndex:index, moduleId:definition.id, attention });
+      new Notice(`已选择${definition.type === "work" ? "工作" : "休息"}：${definition.name}`);
+      return true;
+    } catch (error) {
+      logPluginError("select-module", error, { step:"save-runtime" });
+      new Notice("选择模块失败，请稍后重试");
+      return false;
+    }
+  }
+  /** @param {number} index @param {AnyRecord} [options] */
+  async startModule(index, options={}){
+    if (this.runtime.pendingSettlement && !options.allowPendingSettlement) {
+      new Notice("存在未完成结算，请先重载插件恢复"); return false;
+    }
+    if (this.runtime.pendingBreakTransition && !options.allowPendingBreakTransition) {
+      new Notice("休息转换待恢复，请先重载插件恢复"); return false;
+    }
+    if (!options.allowTransition && (this.runtime.status !== TIMER_STATUS.IDLE || this.runtime.attention)) {
+      new Notice("当前已有计时，请先完成或重置当前模块"); return false;
+    }
+    const pendingRun = normalizeModuleRun(options.moduleRun);
+    const currentIndex = pendingRun
+      ? this.settings.modules.findIndex(item => item.id === pendingRun.moduleId) : index;
+    const resolvedIndex = currentIndex >= 0 ? currentIndex : index;
+    const definition = this.settings.modules[resolvedIndex];
+    const run = normalizeModuleRun(definition ? createModuleRunSnapshot(
+      definition, this.settings.projectAssignments,
+      { enableProjects:this.settings.enableProjects, runId:pendingRun?.runId, startedAtMs:Date.now() }
+    ) : pendingRun);
+    if (!run) { new Notice("模块配置无效，请检查名称与时长"); return false; }
+    const previousRuntime = this.runtime;
+    this.ensureDayFreshness(false);
+    const effects = this.applyRuntimeEvent({
+      type:RUNTIME_EVENT.START_STAGE,
+      stage:run.type === "work" ? TIMER_STAGE.FOCUS : TIMER_STAGE.BREAK,
+      durationMs:run.durationMs, now:Date.now(), sessionId:run.runId,
+      mode:"modules", moduleIndex:resolvedIndex, moduleRun:run, newSequence:options.newSequence === true,
+      currentTaskName:run.type === "work" ? run.name : ""
+    });
+    await this.saveTransition(previousRuntime);
+    this.runRuntimeEffects(effects);
+    if (options.requestFullscreen && run.blackout) this._getBreakBlackoutController()?.requestCurrentDisplayFullscreen();
+    playBeep(run.type === "work" ? this.settings.focusStartSound : this.settings.breakStartSound,
+      this.settings.enableSound, this.settings.soundWaveform);
+    if (!options.suppressNotify) sysNotify(run.type === "work" ? "开始工作" : "开始休息",
+      `${run.name} · ${formatTomatoNumber(run.durationMin)} 分钟`, this.settings.enableNotify);
+    if (run.workspaceCommandId) this.executeStageCommand(run.workspaceCommandId);
+    return true;
   }
   /** @param {boolean | StartFocusOptions} [options] */
   async startFocus(options){
@@ -1210,9 +1454,9 @@ class PomodoroAIO extends Plugin {
     this.runRuntimeEffects(effects);
     const current = this.runtime;
     if (triggerCommand && wasPaused && current.status === TIMER_STATUS.RUNNING) {
-      const focusCommandId = current.mode === 'cycle'
+      const focusCommandId = current.moduleRun?.workspaceCommandId || (current.mode === 'cycle'
         ? (current.cycleSlot === 1 ? this.settings.cycleWorkspaceCommandB : this.settings.cycleWorkspaceCommandA)
-        : this.settings.focusStartCommandId;
+        : this.settings.focusStartCommandId);
       if (current.stage === TIMER_STAGE.FOCUS && focusCommandId) this.executeStageCommand(focusCommandId);
       else if (current.stage === TIMER_STAGE.BREAK && this.settings.breakStartCommandId) this.executeStageCommand(this.settings.breakStartCommandId);
     }
@@ -1228,7 +1472,7 @@ class PomodoroAIO extends Plugin {
     this.ensureDayFreshness(false);
     const effects = this.applyRuntimeEvent({
       type:RUNTIME_EVENT.RESET,
-      mode:this.settings.workMode === 'cycle' ? 'cycle' : 'standard'
+      mode:'modules', selectedModuleId:this.settings.modules?.[0]?.id || null
     });
     await this.saveTransition(previousRuntime);
     this.runRuntimeEffects(effects);
@@ -1259,12 +1503,78 @@ class PomodoroAIO extends Plugin {
       new Notice("当前不在专注阶段"); return;
     }
     if (this._completionInFlight) { new Notice("正在结算当前专注"); return; }
-    if (this.getElapsedMs() <= 0) { new Notice("尚未产生有效专注时长"); return; }
+    if (this.getElapsedMs() <= 0) {
+      if (this.runtime.moduleRun) return this.completeEmptyWorkModule();
+      new Notice("尚未产生有效专注时长"); return;
+    }
     await this.settleFocus(true);
   }
 
-  /** @param {{cycleSlot?:0|1} | 0 | 1 | undefined} [options] */
+  async completeEmptyWorkModule(){
+    const r = this.runtime;
+    if (this._completionInFlight || r.moduleRun?.type !== "work"
+      || !/** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(r.status)) return false;
+    this._completionInFlight = true;
+    const next = this.buildModuleTransition(r, "work");
+    /** @type {BreakTransition} */
+    const transition = {
+      schemaVersion:1, status:"break-completing", mode:"modules", completionType:"work",
+      autoNext:next.autoNext, durationMs:next.durationMs, createdAtMs:Date.now(),
+      moduleIndex:next.moduleIndex, moduleRun:next.moduleRun,
+      completedWorkCountAfter:next.completedWorkCountAfter,
+      sessionCountAfter:(r.sessionCount || 0) + 1,
+      completedLoopCountAfter:next.completedLoopCountAfter
+    };
+    const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.BEGIN_BREAK_TRANSITION, transition });
+    try {
+      await this.saveState({ critical:true });
+      this.runRuntimeEffects(effects);
+      await this.advanceBreakTransition(transition);
+      new Notice("本段已完成；有效工作时长为 0，未记番茄");
+      return true;
+    } catch (error) {
+      this.markSettlementFailed(error, { operation:"completeEmptyWork", step:"advance" });
+      return false;
+    } finally { this._completionInFlight = false; }
+  }
+
+  async completeCurrentModule(){
+    if (this.runtime.moduleRun?.type === "rest"
+      && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(this.runtime.status)) return this.settleBreak(true);
+    if (this.runtime.moduleRun?.type === "work") return this.forceCompleteFocusOnce();
+    new Notice("当前没有可完成的模块");
+    return false;
+  }
+
+  /** @param {{cycleSlot?:0|1, moduleId?:string} | 0 | 1 | undefined} [options] */
   async completeTask(options){
+    if (Array.isArray(this.settings.modules)) {
+      const selectedId = (typeof options === "object" ? options?.moduleId : null) || this.runtime.moduleRun?.moduleId;
+      const module = this.settings.modules.find(item => item.id === selectedId && item.type === "work");
+      if (!module) { new Notice("请先选择要完成的工作模块"); return false; }
+      const activeRun = this.runtime.moduleRun;
+      const task = activeRun && activeRun.moduleId === selectedId ? activeRun.name : module.name;
+      try {
+        const daily = this._getDailyRepository();
+        const current = await daily.readPath(this.todayFilePath());
+        if (!daily.isFile(current.file)) throw new Error("找不到当天任务文件");
+        planTaskLineCompletion(current.text, task);
+        if (this.runtime.moduleRun?.moduleId === selectedId
+          && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(this.runtime.status)) {
+          if (this.getElapsedMs() > 0) await this.settleFocus(true);
+          else await this.completeEmptyWorkModule();
+          if (this.runtime.pendingSettlement || this.runtime.status === TIMER_STATUS.FAILED) return false;
+        }
+        await daily.completeTask({ taskName:task, path:this.todayFilePath() });
+        await this.clearCompletedModuleTask(module.id);
+        new Notice("事情已完成，日记待办已勾选");
+        return true;
+      } catch (error) {
+        logPluginError("complete-module-task", error, { target:this.todayFilePath(), step:"daily-checkbox" });
+        new Notice("完成事情失败，请检查当日日记");
+        return false;
+      }
+    }
     const requestedCycleSlot = typeof options === "number"
       ? (options === 1 ? 1 : 0)
       : (options?.cycleSlot === 1 ? 1 : (options?.cycleSlot === 0 ? 0 : null));
@@ -1309,6 +1619,27 @@ class PomodoroAIO extends Plugin {
       new Notice(message.includes("多个同名") ? message : "完成任务失败，请检查当日日记");
       return false;
     }
+  }
+
+  /** @param {string} id */
+  async clearCompletedModuleTask(id){
+    const module = this.settings.modules.find(item => item.id === id && item.type === "work");
+    if (!module) return false;
+    const modules = this.settings.modules.map(item => item.id === id
+      ? { ...item, name:"工作", workspaceCommandId:"", blackout:false } : item);
+    const assignments = { ...this.settings.projectAssignments };
+    delete assignments[id];
+    await this.persistModuleSettings({ modules, projectAssignments:assignments });
+    if (this.runtime.attention?.moduleRun?.moduleId === id && Number.isInteger(this.runtime.attention.moduleIndex)) {
+      const index = this.runtime.attention.moduleIndex;
+      const replacement = createModuleRunSnapshot(this.settings.modules[Number(index)], {}, { enableProjects:false });
+      await this.beginStrongAlert({
+        type:TIMER_STAGE.FOCUS, autoStarted:false, durationMs:replacement.durationMs,
+        moduleIndex:Number(index), moduleRun:replacement
+      });
+    }
+    this.broadcast();
+    return true;
   }
 
   /** @param {string} task @param {0|1|null} cycleSlot */
@@ -1385,7 +1716,9 @@ class PomodoroAIO extends Plugin {
       const current = this.runtime;
       if (!current.pendingSettlement || current.pendingSettlement.sessionId !== current.sessionId) {
         const sessionCountAfter = (current.sessionCount || 0) + 1;
-        const transition = buildNextStageTransition(this.settings, current, sessionCountAfter);
+        const transition = current.moduleRun
+          ? this.buildModuleTransition(current, "work")
+          : buildNextStageTransition(this.settings, current, sessionCountAfter);
         const journal = await this.prepareSettlement(tomatoAmount, transition, sessionCountAfter, manual);
         this.applyRuntimeEvent({ type:RUNTIME_EVENT.SET_PENDING_SETTLEMENT, journal });
         await this.saveState({ critical:true });
@@ -1398,12 +1731,32 @@ class PomodoroAIO extends Plugin {
       this._completionInFlight = false;
     }
   }
+  /** @param {Runtime} runtime @param {"work"|"rest"} completedType @returns {StageTransition} */
+  buildModuleTransition(runtime, completedType){
+    const modules = this.settings.modules || [];
+    const found = modules.findIndex(item => item.id === runtime.moduleRun?.moduleId);
+    const index = found >= 0 ? found : Math.min(runtime.currentModuleIndex || 0, modules.length - 1);
+    const position = getNextModule(modules, index, runtime.completedLoopCount || 0, this.settings);
+    const nextDefinition = position.nextIndex !== null ? modules[position.nextIndex] : null;
+    const nextRun = nextDefinition ? createModuleRunSnapshot(nextDefinition, this.settings.projectAssignments,
+      { enableProjects:this.settings.enableProjects, startedAtMs:Date.now() }) : null;
+    return {
+      mode:"modules",
+      durationMs:nextRun?.durationMs || 1,
+      autoNext:!!this.settings.autoAdvance && !!nextRun,
+      moduleIndex:nextRun ? position.nextIndex : null,
+      moduleRun:nextRun,
+      completedWorkCountAfter:(runtime.completedWorkCount || 0) + (completedType === "work" ? 1 : 0),
+      completedRestCountAfter:(runtime.completedRestCount || 0) + (completedType === "rest" ? 1 : 0),
+      completedLoopCountAfter:position.completedLoopCount
+    };
+  }
   /** @param {number} amount @param {StageTransition} transition @param {number} sessionCountAfter @param {boolean} [manual] @returns {Promise<SettlementJournal>} */
   async prepareSettlement(amount, transition, sessionCountAfter, manual=false){
     const path = this.todayFilePath();
     const dailyRepository = this._getDailyRepository();
     const { text: sourceText } = await dailyRepository.readPath(path);
-    const taskName = String(this.runtime.currentTaskName || this.settings.defaultTaskName || "").trim();
+    const taskName = String(this.runtime.moduleRun?.name || this.runtime.currentTaskName || this.settings.defaultTaskName || "").trim();
     const daily = buildDailySettlementPlan(sourceText, {
       path,
       taskName,
@@ -1424,8 +1777,21 @@ class PomodoroAIO extends Plugin {
       project: await this.prepareProjectSettlement(amount)
     });
   }
-  /** @param {number} amount */
-  prepareProjectSettlement(amount){
+  /** @param {number} amount @returns {Promise<ProjectSettlementPlan>} */
+  async prepareProjectSettlement(amount){
+    if (this.runtime.moduleRun) {
+      const projectPath = this.runtime.moduleRun.projectPath || "";
+      const key = this.settings.projectFmKey || "番茄数";
+      if (!this.settings.enableProjects || !projectPath) return { path:"", key, amount, status:"skipped" };
+      try {
+        return await this._getProjectRepository().prepareSettlementPlan({
+          path:projectPath, key, amount, enabled:true
+        });
+      } catch (error) {
+        logPluginError("project-plan", error, { sessionId:this.runtime.sessionId, stage:this.runtime.stage, target:projectPath, step:"prepare" });
+        return { path:projectPath, key, amount, status:"missing", deferred:true };
+      }
+    }
     return this._getProjectRepository().prepareSettlementPlan({
       path: this.settings.currentProjectPath,
       key: this.settings.projectFmKey,
@@ -1504,6 +1870,12 @@ class PomodoroAIO extends Plugin {
   /** @param {SettlementJournal} journal */
   async applyProjectSettlement(journal){
     const project = journal.project;
+    if (journal.transition.mode === "modules" && !this.settings.enableProjects && project && project.status !== "applied") {
+      project.status = "skipped";
+      journal.status = "projectApplied";
+      await this.saveState({ critical:true });
+      return;
+    }
     if (!project || project.status === "skipped") {
       journal.status = "projectApplied";
       await this.saveState({ critical:true });
@@ -1591,6 +1963,7 @@ class PomodoroAIO extends Plugin {
     if (changed) await this.saveState();
   }
   async drainProjectQueue(){
+    if (Array.isArray(this.settings.modules) && !this.settings.enableProjects) return;
     const queue = this.runtime.projectQueue || [];
     let changed = false;
     let i = 0;
@@ -1637,7 +2010,12 @@ class PomodoroAIO extends Plugin {
 
     if (!journal.notified) {
       playBeep(this.settings.focusEndSound, this.settings.enableSound, this.settings.soundWaveform);
-      if (journal.transition.mode === "cycle") {
+      if (journal.transition.mode === "modules") {
+        const nextRun = journal.transition.moduleRun;
+        sysNotify(journal.manual ? "工作段完成（手动）" : "工作段完成",
+          this.focusCompletionBody(journal.amount, nextRun ? `${nextRun.name}${journal.transition.autoNext ? "（已开始）" : "（等待确认）"}` : "序列已完成"),
+          this.settings.enableNotify);
+      } else if (journal.transition.mode === "cycle") {
         const nextTask = Object.prototype.hasOwnProperty.call(journal.transition, "taskName")
           ? String(journal.transition.taskName || "").trim()
           : String((journal.transition.cycleSlot === 1 ? this.settings.cycleTaskB : this.settings.cycleTaskA) || "").trim();
@@ -1652,6 +2030,38 @@ class PomodoroAIO extends Plugin {
       }
       journal.notified = true;
       await this.saveState({ critical:true });
+    }
+
+    if (journal.transition.mode === "modules") {
+      const nextRun = normalizeModuleRun(journal.transition.moduleRun);
+      const nextIndex = journal.transition.moduleIndex;
+      if (!nextRun || !Number.isInteger(nextIndex)) {
+        if (this.runtime.status !== TIMER_STATUS.IDLE) this.applyRuntimeEvent({ type:RUNTIME_EVENT.FINISH_SEQUENCE });
+      } else if (journal.transition.autoNext) {
+        const alreadyRunning = this.runtime.moduleRun?.runId === nextRun.runId
+          && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED]).includes(this.runtime.status);
+        if (!alreadyRunning) await this.startModule(Number(nextIndex), {
+          moduleRun:nextRun, allowTransition:true, allowPendingSettlement:true, suppressNotify:true
+        });
+        else if (/** @type {string[]} */ ([TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED]).includes(this.runtime.status)) {
+          this.applyRuntimeEvent({ type:RUNTIME_EVENT.RESTORE_ACTIVE_STAGE });
+        }
+      } else {
+        const alreadyAwaiting = this.runtime.status === TIMER_STATUS.AWAITING
+          && this.runtime.attention?.moduleRun?.runId === nextRun.runId;
+        if (!alreadyAwaiting) {
+          this.applyRuntimeEvent({ type:RUNTIME_EVENT.AWAIT_STAGE,
+            durationMs:nextRun.durationMs, mode:"modules", moduleIndex:nextIndex });
+          await this.beginStrongAlert({ type:nextRun.type === "work" ? TIMER_STAGE.FOCUS : TIMER_STAGE.BREAK,
+            autoStarted:false, durationMs:nextRun.durationMs, moduleIndex:Number(nextIndex), moduleRun:nextRun });
+        }
+      }
+      journal.status = "settled";
+      await this.saveState({ critical:true });
+      const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.CLEAR_PENDING_SETTLEMENT });
+      await this.saveState({ critical:true });
+      this.runRuntimeEffects(effects);
+      return;
     }
 
     if (journal.transition.mode === "cycle") {
@@ -1788,6 +2198,42 @@ class PomodoroAIO extends Plugin {
   }
   /** @param {BreakTransition} transition */
   async advanceBreakTransition(transition){
+    if (transition.mode === "modules") {
+      this.applyRuntimeEvent(transition.completionType === "work"
+        ? { type:RUNTIME_EVENT.COMPLETE_EMPTY_WORK,
+          completedWorkCountAfter:transition.completedWorkCountAfter,
+          sessionCountAfter:transition.sessionCountAfter,
+          completedLoopCountAfter:transition.completedLoopCountAfter }
+        : { type:RUNTIME_EVENT.COMPLETE_REST,
+          completedRestCountAfter:transition.completedRestCountAfter,
+          completedLoopCountAfter:transition.completedLoopCountAfter });
+      const nextRun = normalizeModuleRun(transition.moduleRun);
+      const nextIndex = transition.moduleIndex;
+      if (!nextRun || !Number.isInteger(nextIndex)) {
+        if (this.runtime.status !== TIMER_STATUS.IDLE) this.applyRuntimeEvent({ type:RUNTIME_EVENT.FINISH_SEQUENCE });
+      } else if (transition.autoNext) {
+        const alreadyRunning = this.runtime.moduleRun?.runId === nextRun.runId
+          && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED]).includes(this.runtime.status);
+        if (!alreadyRunning) await this.startModule(Number(nextIndex), {
+          moduleRun:nextRun, allowTransition:true, allowPendingBreakTransition:true, suppressNotify:true
+        });
+        else if (this.runtime.status === TIMER_STATUS.FAILED) this.applyRuntimeEvent({ type:RUNTIME_EVENT.RESTORE_FOCUS });
+      } else {
+        const alreadyAwaiting = this.runtime.status === TIMER_STATUS.AWAITING
+          && this.runtime.attention?.moduleRun?.runId === nextRun.runId;
+        if (!alreadyAwaiting) {
+          this.applyRuntimeEvent({ type:RUNTIME_EVENT.AWAIT_STAGE,
+            durationMs:nextRun.durationMs, mode:"modules", moduleIndex:nextIndex });
+          await this.beginStrongAlert({ type:nextRun.type === "work" ? TIMER_STAGE.FOCUS : TIMER_STAGE.BREAK,
+            autoStarted:false, durationMs:nextRun.durationMs, moduleIndex:Number(nextIndex), moduleRun:nextRun });
+        }
+      }
+      const previousRuntime = this.runtime;
+      const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.CLEAR_BREAK_TRANSITION });
+      await this.saveTransition(previousRuntime);
+      this.runRuntimeEffects(effects);
+      return;
+    }
     const r = this.runtime;
     const isCycle = transition.mode === "cycle";
     const focusStarted = transition.autoNext
@@ -1842,10 +2288,34 @@ class PomodoroAIO extends Plugin {
       this._completionInFlight = false;
     }
   }
-  async settleBreak(){
+  async settleBreak(manual=false){
     const r = this.runtime;
-    if (this._completionInFlight || r.status !== TIMER_STATUS.RUNNING || r.stage !== TIMER_STAGE.BREAK) return;
+    if (this._completionInFlight || !/** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(r.status) || r.stage !== TIMER_STAGE.BREAK) return;
     this._completionInFlight = true;
+    if (r.moduleRun) {
+      const next = this.buildModuleTransition(r, "rest");
+      /** @type {BreakTransition} */
+      const transition = {
+        schemaVersion:1, status:"break-completing", mode:"modules",
+        autoNext:next.autoNext, durationMs:next.durationMs, createdAtMs:Date.now(),
+        moduleIndex:next.moduleIndex, moduleRun:next.moduleRun,
+        completedRestCountAfter:next.completedRestCountAfter,
+        completedLoopCountAfter:next.completedLoopCountAfter
+      };
+      const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.BEGIN_BREAK_TRANSITION, transition });
+      try {
+        await this.saveState({ critical:true });
+        this.runRuntimeEffects(effects);
+        playBeep(this.settings.breakEndSound, this.settings.enableSound, this.settings.soundWaveform);
+        sysNotify(manual ? "休息段完成（手动）" : "休息段完成",
+          next.moduleRun ? `下一项：${next.moduleRun.name}${next.autoNext ? "（已开始）" : "（等待确认）"}` : "序列已完成",
+          this.settings.enableNotify);
+        await this.advanceBreakTransition(transition);
+      } catch (error) {
+        this.markSettlementFailed(error, { operation:"settleRestModule", step:"advance" });
+      } finally { this._completionInFlight = false; }
+      return;
+    }
     /** @type {BreakContinuation | null} */
     const cycleContinuation = r.breakContinuation?.mode === "cycle" ? r.breakContinuation : null;
     /** @type {BreakTransition} */
@@ -2048,6 +2518,22 @@ class PomodoroAIO extends Plugin {
         return checked === 1 && unchecked === 0;
       };
       let changed = false;
+      if (Array.isArray(this.settings.modules)) {
+        for (const module of this.settings.modules) {
+          if (module.type !== "work") continue;
+          const task = this.runtime.moduleRun?.moduleId === module.id
+            ? this.runtime.moduleRun.name : module.name;
+          if (!isCompleted(task)) continue;
+          if (this.runtime.moduleRun?.moduleId === module.id
+            && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(this.runtime.status)) {
+            if (this.getElapsedMs() > 0) await this.settleFocus(true);
+            else await this.completeEmptyWorkModule();
+            if (this.runtime.pendingSettlement || String(this.runtime.status) === TIMER_STATUS.FAILED) continue;
+          }
+          changed = (await this.clearCompletedModuleTask(module.id)) || changed;
+        }
+        return changed;
+      }
       const currentTask = String(this.runtime.currentTaskName || "").trim();
       const currentSlot = this.runtime.mode === "cycle" ? (this.runtime.cycleSlot === 1 ? 1 : 0) : null;
       if (isCompleted(currentTask) && await this.settleOrEndActiveTaskForCompletion(currentTask, currentSlot)) {
@@ -2093,10 +2579,12 @@ class PomodoroAIO extends Plugin {
     return modal;
   }
   projectCandidates(){
+    if (!this.settings.enableProjects) return [];
     return this._getProjectRepository().listCandidates({
       tag: this.settings.projectTag,
       statusKey: this.settings.projectStatusKey,
-      statusWhitelist: this.settings.projectStatusWhitelist
+      statusWhitelist: this.settings.projectStatusWhitelist,
+      projectFmKey:this.settings.projectFmKey
     });
   }
   /** @param {unknown} name */
@@ -2171,6 +2659,18 @@ class PomodoroAIO extends Plugin {
     const f = projectRepository.getFile(p);
     if (!projectRepository.isFile(f)) { new Notice("项目文件不存在"); return; }
     await this.app.workspace.getLeaf(true).openFile(f);
+  }
+  /** @param {string} path */
+  async openProject(path){
+    if (!this.settings.enableProjects) return false;
+    if (this.shouldBlockFocusLayoutSideEffects({ source:"user" })) return false;
+    const normalized = tryNormalizeMarkdownPath(path);
+    if (!normalized) { new Notice("项目路径无效"); return false; }
+    const repository = this._getProjectRepository();
+    const file = repository.getFile(normalized);
+    if (!repository.isFile(file)) { new Notice("项目文件不存在"); return false; }
+    await this.app.workspace.getLeaf(true).openFile(file);
+    return true;
   }
 }
 
