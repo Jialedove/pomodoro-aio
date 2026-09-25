@@ -192,8 +192,9 @@ class PomodoroView extends ItemView {
           else this.plugin.runUserCommand(() => this.plugin.updateModule(module.id, patch));
         };
         if (editing && draft) {
-          const grip = role.createEl("button", { cls:"pmd-module-grip", text:"↕", attr:{ type:"button", title:"拖动排序，或用上下方向键移动", "aria-label":`排序第 ${index + 1} 个模块`, draggable:"true" } });
-          const remove = role.createEl("button", { cls:"pmd-module-remove", text:"×", attr:{ type:"button", title:"删除模块", "aria-label":`删除第 ${index + 1} 个模块` } });
+          const tools = role.createDiv({ cls:"pmd-module-tools" });
+          const grip = tools.createEl("button", { cls:"pmd-module-grip", text:"↕", attr:{ type:"button", title:"拖动排序，或用上下方向键移动", "aria-label":`排序第 ${index + 1} 个模块`, draggable:"true" } });
+          const remove = tools.createEl("button", { cls:"pmd-module-remove", text:"×", attr:{ type:"button", title:"删除模块", "aria-label":`删除第 ${index + 1} 个模块` } });
           remove.onclick = () => { draft.modules = draft.modules.filter(item => item.id !== module.id); refreshEditor(this.plugin.snapshot(), true); };
           /** @param {number} target */
           const moveTo = target => {

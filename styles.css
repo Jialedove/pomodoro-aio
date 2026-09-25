@@ -87,7 +87,7 @@
 .pmd-actions > .pmd-btn { flex: 1 1 auto; }
 .pmd-hidden { display: none !important; }
 .pmd-capture { margin-top: 8px; padding: 8px; border: 1px solid var(--background-modifier-border); border-radius: 10px; background: var(--background-secondary); }
-.pmd-editor-heading { display: flex; justify-content: flex-end; margin: 10px 0 7px; }
+.pmd-editor-heading { display: flex; justify-content: flex-end; align-items: center; min-height: 36px; margin: 10px 0 7px; }
 .pmd-settings-button { min-width: 72px; }
 .pmd-edit-status { min-height: 18px; margin-top: 6px; color: var(--text-muted); font-size: 12px; }
 .pmd-edit-status:empty { display: none; }
@@ -101,10 +101,13 @@
 .pmd-root button.pmd-module-select:disabled { cursor: default; opacity: 1; }
 .pmd-root button.pmd-module-select:hover, .pmd-root button.pmd-module-select:focus-visible { background: var(--background-modifier-hover); }
 .pmd-module-row.is-current .pmd-module-select { color: var(--text-accent); }
-.pmd-module-grip { display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 0; background: transparent; color: var(--text-muted); cursor: grab; user-select: none; }
+.pmd-module-tools { display: flex; align-items: center; justify-content: center; gap: 2px; width: 100%; }
+.pmd-root button.pmd-module-grip, .pmd-root button.pmd-module-remove { flex: 0 0 22px; display: grid; place-items: center; width: 22px; min-width: 0; height: 22px; min-height: 0; padding: 0; border: 0; border-radius: 4px; appearance: none; box-shadow: none; background: transparent; color: var(--text-muted); line-height: 1; }
+.pmd-root button.pmd-module-grip { font-size: 14px; cursor: grab; user-select: none; }
 .pmd-module-grip:active { cursor: grabbing; }
-.pmd-module-remove { width: 40px; height: 40px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); cursor: pointer; }
-.pmd-module-remove:hover { color: var(--text-error); background: var(--background-modifier-hover); }
+.pmd-root button.pmd-module-remove { font-size: 16px; cursor: pointer; }
+.pmd-root button.pmd-module-grip:hover, .pmd-root button.pmd-module-remove:hover { background: var(--background-modifier-hover); }
+.pmd-root button.pmd-module-remove:hover { color: var(--text-error); }
 .pmd-module-fields { display: grid; grid-template-columns: minmax(0, 1fr) max-content; grid-template-areas: "name duration" "workspace blackout"; gap: 6px 8px; align-items: center; min-width: 0; }
 .pmd-module-row.is-rest .pmd-module-fields { grid-template-areas: "name duration" ". blackout"; }
 .pmd-module-name { grid-area: name; display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -128,7 +131,7 @@
 .pmd-blackout-check::after { content: "✓"; position: absolute; inset: 7px; display: grid; place-items: center; color: transparent; font-size: 17px; font-weight: 700; }
 .pmd-blackout-option[aria-pressed="true"] .pmd-blackout-check::before { border-color: var(--interactive-accent); background: var(--interactive-accent); }
 .pmd-blackout-option[aria-pressed="true"] .pmd-blackout-check::after { color: var(--text-on-accent); }
-.pmd-blackout-option:focus-visible, .pmd-module-grip:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; border-radius: 6px; }
+.pmd-blackout-option:focus-visible, .pmd-module-grip:focus-visible, .pmd-module-remove:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; border-radius: 6px; }
 .pmd-add-module-actions > .pmd-btn { flex: 1 1 90px; }
 .pmd-rest-presets { display: grid; gap: 6px; margin-top: 12px; color: var(--text-muted); font-size: 12px; }
 .pmd-rest-presets textarea { width: 100%; min-height: 90px; resize: vertical; background: var(--background-primary); }
@@ -161,6 +164,7 @@
   .pmd-root { padding: 8px; }
   .pmd-head > .pmd-btn { flex: 1 1 auto; }
   .pmd-module-row { grid-template-columns: 42px minmax(0, 1fr); gap: 6px; }
+  .pmd-root button.pmd-module-grip, .pmd-root button.pmd-module-remove { flex-basis: 19px; width: 19px; }
   .pmd-module-fields { grid-template-columns: minmax(0, 1fr) max-content; grid-template-areas: "name duration" "workspace workspace" ". blackout"; gap: 6px; }
   .pmd-module-row.is-rest .pmd-module-fields { grid-template-areas: "name duration" ". blackout"; }
   .pmd-module-blackout { justify-self: end; }
