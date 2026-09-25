@@ -5,6 +5,7 @@ Pomodoro AIO 是一个 Obsidian 模块序列计时器。将任意数量的工作
 ## 使用
 
 - 每个工作模块有名称、时长、可选 Workspaces Plus 布局和黑屏设置；休息模块有名称、时长和黑屏设置。模块可新增、编辑、删除和拖动排序。
+- macOS 桌面版的黑屏由原生助手覆盖鼠标所在显示器，显示当前模块名称和倒计时；Esc 或退出按钮只关闭黑屏，计时继续。助手不可用时退回 Obsidian 窗口遮罩；其他平台使用窗口遮罩。
 - 侧栏沿用紧凑计时环与任务行；工作模块的事情输入框可选择当日日记里未勾选的待办，并可在该行清空或完成事情。刷新按钮会重新读取日记候选。
 - 双击某行的“工作”或“休息”可把它选为当前模块，再按“开始序列”。等待开始下一段时也可改选；正在计时的段需先完成或重置，避免丢失已产生的工作时长。
 - 可以无限循环、执行一次，或指定完整循环次数；模块结束后可以等待确认，也可以自动开始下一项。
@@ -30,7 +31,7 @@ npm ci
 npm run check
 ```
 
-`npm run check` 执行类型检查、lint、单元/集成测试、生产构建和产物一致性检查。真实 Obsidian 回归步骤见 [手动清单](docs/manual-regression.md)。
+`npm run check` 执行类型检查、lint、单元/集成测试、生产构建和产物一致性检查，并在 macOS 上编译原生黑屏助手。真实 Obsidian 回归步骤见 [手动清单](docs/manual-regression.md)。
 
 ## 安装到本地 Obsidian 库
 
@@ -38,7 +39,7 @@ npm run check
 npm run install:vault
 ```
 
-此命令只覆盖插件目录中的 `main.js`、`manifest.json` 和 `styles.css`，保留 `data.json`。安装后需重载插件。默认目标是 Dove 的卡片库；可通过 `OBSIDIAN_PLUGIN_DIR` 临时指定其他插件目录。
+此命令覆盖插件目录中的 `main.js`、`manifest.json`、`styles.css`，在 macOS 上另复制 `bin/pomodoro-blackout`；保留 `data.json`。安装后需重载插件。默认目标是 Dove 的卡片库；可通过 `OBSIDIAN_PLUGIN_DIR` 临时指定其他插件目录。
 
 ## 许可证
 

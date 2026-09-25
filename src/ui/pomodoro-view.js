@@ -311,8 +311,8 @@ class PomodoroView extends ItemView {
       if ((await Promise.all([...pendingEdits])).some(saved => !saved)) return false;
       const snap = this.plugin.snapshot();
       if (snap.runtime.status === TIMER_STATUS.PAUSED) return this.plugin.togglePause();
-      if (snap.runtime.moduleRun || snap.runtime.attention) return this.plugin.startPendingStage({ requestFullscreen: true });
-      return this.plugin.startSequence({ requestFullscreen: true });
+      if (snap.runtime.moduleRun || snap.runtime.attention) return this.plugin.startPendingStage();
+      return this.plugin.startSequence();
     });
     pauseButton.onclick = () => this.plugin.runUserCommand(() => this.plugin.togglePause());
     completeSegmentButton.onclick = () => this.plugin.runUserCommand(() => this.plugin.completeCurrentModule());

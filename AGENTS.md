@@ -21,7 +21,7 @@ npm run build
 npm run install:vault
 ```
 
-`npm run check` 会执行类型检查、lint、模块序列与可靠性测试，并重新构建 `main.js`。
+`npm run check` 会执行类型检查、lint、模块序列与可靠性测试，重新构建 `main.js`，并在 macOS 上编译原生黑屏助手。
 
 ## 安装到 Dove 的卡片库
 
@@ -42,6 +42,7 @@ npm run install:vault
 - `main.js`
 - `manifest.json`
 - `styles.css`
+- macOS 上的 `bin/pomodoro-blackout`
 
 绝对不要覆盖、删除或重建目标目录中的 `data.json`；其中包含用户设置。安装完成后，需要在 Obsidian 中重载 Pomodoro AIO。若卸载曾失败并残留视图注册，应完全退出并重启 Obsidian一次。
 

@@ -1,6 +1,7 @@
 declare module "obsidian" {
   export class Plugin {
     app: any;
+    manifest: { id: string; dir?: string };
     constructor(...args: any[]);
     registerView(viewType: string, creator: (leaf: any) => any): any;
     addCommand(command: { id: string; name: string; callback: (event?: Event) => any }): any;

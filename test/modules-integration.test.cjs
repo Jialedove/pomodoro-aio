@@ -24,7 +24,7 @@ test("模块序列将工作、休息和完整循环分别计数，休息不写�
   const clock = new FakeClock(1_000);
   const vault = new FakeVault({ "Daily/today.md":"- [ ] 阅读 0🍅\n" });
   const plugin = createPlugin({ vault, settings:moduleSettings() });
-  await clock.run(() => plugin.startSequence({ requestFullscreen:false }));
+  await clock.run(() => plugin.startSequence());
   const startedRun = clone(plugin.runtime.moduleRun);
   assert.equal(startedRun.type, "work");
   assert.equal(plugin.runtime.durationMs, 30 * 60_000);

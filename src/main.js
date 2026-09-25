@@ -44,6 +44,7 @@ const { ProjectsView } = require("./ui/projects-view");
 const { migrateLegacySettings, normalizeModuleDefinition, normalizeOrchestration, getNextModule, createModuleRunSnapshot } = require("./core/modules");
 const { QuickCaptureModal } = require("./ui/quick-capture-modal");
 const { BreakBlackoutController } = require("./ui/break-blackout");
+const { NativeBlackoutController } = require("./ui/native-blackout");
 const { PomodoroSettingTab } = require("./ui/settings-tab");
 const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/workspaces-plus");
 /** @typedef {import("../types/contracts").Attention} Attention */
@@ -57,8 +58,8 @@ const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/
 /** @typedef {import("../types/contracts").StageTransition} StageTransition */
 /** @typedef {import("../types/contracts").TimerStage} TimerStage */
 /** @typedef {Record<string, any>} AnyRecord */
-/** @typedef {{suppressNotify?:boolean, cause?:string, minutes?:number|null, cycle?:boolean, cycleSlot?:0|1, taskName?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean, newCycle?:boolean, requestFullscreen?:boolean}} StartFocusOptions */
-/** @typedef {{forceRun?:boolean, suppressNotify?:boolean, cause?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean, breakContinuation?:BreakContinuation, requestFullscreen?:boolean}} StartBreakOptions */
+/** @typedef {{suppressNotify?:boolean, cause?:string, minutes?:number|null, cycle?:boolean, cycleSlot?:0|1, taskName?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean, newCycle?:boolean}} StartFocusOptions */
+/** @typedef {{forceRun?:boolean, suppressNotify?:boolean, cause?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean, breakContinuation?:BreakContinuation}} StartBreakOptions */
 /** @typedef {{type?:string, isLong?:boolean, cycleSlot?:number|null, autoStarted?:boolean, durationMs?:number, taskName?:string, moduleIndex?:number, moduleRun?:import("../types/contracts").ModuleRun|null}} NextPhase */
 
 /* ========== 默认设置 ========== */
@@ -622,7 +623,7 @@ class PomodoroAIO extends Plugin {
     this.projectRepository = null;
     /** @type {InstanceType<typeof WorkspacesPlusAdapter> | null} */
     this.workspacesPlus = null;
-    /** @type {InstanceType<typeof BreakBlackoutController> | null} */
+    /** @type {InstanceType<typeof BreakBlackoutController> | InstanceType<typeof NativeBlackoutController> | null} */
     this.breakBlackout = null;
     /** @type {ObsidianElement | null} */
     this.ribbon = null;
@@ -943,6 +944,18 @@ class PomodoroAIO extends Plugin {
   _getBreakBlackoutController(){
     if (this.breakBlackout) return this.breakBlackout;
     if (typeof document === "undefined" || !document.body) return null;
+    const basePath = this.app?.vault?.adapter?.getBasePath?.();
+    const pluginDir = this.manifest?.dir;
+    if (process.platform === "darwin" && basePath && pluginDir) {
+      const path = require("node:path");
+      const binaryPath = path.resolve(basePath, pluginDir, "bin", "pomodoro-blackout");
+      this.breakBlackout = new NativeBlackoutController({
+        document,
+        binaryPath,
+        onUnavailable: reason => new Notice(`原生黑屏不可用，已退回 Obsidian 窗口遮罩：${reason}`)
+      });
+      return this.breakBlackout;
+    }
     this.breakBlackout = new BreakBlackoutController({ document });
     return this.breakBlackout;
   }
@@ -952,18 +965,6 @@ class PomodoroAIO extends Plugin {
     if (!controller) return false;
     const snap = snapshot || this.snapshot();
     return controller.sync(snap.runtime, snap.settings, snap.runtime.leftSec ?? this.getLeftSec());
-  }
-  /** @param {{cycle?:boolean, cycleSlot?:number}} [options] */
-  requestTaskBlackoutFullscreen(options={}){
-    const enabled = this.runtime?.moduleRun?.blackout === true || (options.cycle
-      ? (options.cycleSlot === 1 ? this.settings.cycleTaskBlackoutB : this.settings.cycleTaskBlackoutA)
-      : this.settings.taskBlackoutEnabled);
-    if (enabled !== true) return Promise.resolve(false);
-    return this._getBreakBlackoutController()?.requestCurrentDisplayFullscreen() || Promise.resolve(false);
-  }
-  requestBreakBlackoutFullscreen(){
-    if (this.settings.breakBlackoutEnabled !== true) return Promise.resolve(false);
-    return this._getBreakBlackoutController()?.requestCurrentDisplayFullscreen() || Promise.resolve(false);
   }
   snapshot(){
     const leftMs = this.getLeftMs();
@@ -1050,28 +1051,26 @@ class PomodoroAIO extends Plugin {
     }
     await this.startPendingStage();
   }
-  /** @param {{requestFullscreen?:boolean}} [options] */
-  async startPendingStage(options={}){
+  async startPendingStage(){
     const next = this.runtime.attention;
     if (!next || next.nextStarted) { await this.stopStrongAlert(); return; }
     if (next.moduleRun && Number.isInteger(next.moduleIndex)) {
-      return this.startModule(Number(next.moduleIndex), { moduleRun:next.moduleRun, allowTransition:true, requestFullscreen:options.requestFullscreen === true });
+      return this.startModule(Number(next.moduleIndex), { moduleRun:next.moduleRun, allowTransition:true });
     }
     if (next.type === TIMER_STAGE.BREAK) await this.startBreak(next.isLong, {
       forceRun:true,
       cause:'manual',
       durationMs:next.durationMs,
       allowTransition:true,
-      breakContinuation:this.runtime.breakContinuation || undefined,
-      requestFullscreen:options.requestFullscreen === true
+      breakContinuation:this.runtime.breakContinuation || undefined
     });
     else if (next.type === TIMER_STAGE.FOCUS && Number.isInteger(next.cycleSlot)) {
       /** @type {StartFocusOptions} */
-      const startOptions = { cause:'manual', durationMs:next.durationMs, allowTransition:true, requestFullscreen:options.requestFullscreen === true };
+      const startOptions = { cause:'manual', durationMs:next.durationMs, allowTransition:true };
       if (next.taskName !== undefined) startOptions.taskName = next.taskName;
       await this.startCycle(next.cycleSlot === 1 ? 1 : 0, startOptions);
     }
-    else if (next.type === TIMER_STAGE.FOCUS) await this.startFocus({ cause:'manual', durationMs:next.durationMs, allowTransition:true, requestFullscreen:options.requestFullscreen === true });
+    else if (next.type === TIMER_STAGE.FOCUS) await this.startFocus({ cause:'manual', durationMs:next.durationMs, allowTransition:true });
     else await this.stopStrongAlert();
   }
   /** @param {NextPhase} nextPhase */
@@ -1223,7 +1222,7 @@ class PomodoroAIO extends Plugin {
       : selectedIndex >= 0 ? selectedIndex : this.runtime.currentModuleIndex || 0;
     if (typeof indexOrOptions === "object") options = indexOrOptions;
     if (this.runtime.attention?.moduleRun && Number.isInteger(this.runtime.attention.moduleIndex)) {
-      return this.startPendingStage(options);
+      return this.startPendingStage();
     }
     if (this.runtime.status !== TIMER_STATUS.IDLE || this.runtime.attention) {
       new Notice("当前已有计时，请先完成或重置当前模块"); return false;
@@ -1293,7 +1292,6 @@ class PomodoroAIO extends Plugin {
     });
     await this.saveTransition(previousRuntime);
     this.runRuntimeEffects(effects);
-    if (options.requestFullscreen && run.blackout) this._getBreakBlackoutController()?.requestCurrentDisplayFullscreen();
     playBeep(run.type === "work" ? this.settings.focusStartSound : this.settings.breakStartSound,
       this.settings.enableSound, this.settings.soundWaveform);
     if (!options.suppressNotify) sysNotify(run.type === "work" ? "开始工作" : "开始休息",
@@ -1319,7 +1317,6 @@ class PomodoroAIO extends Plugin {
       new Notice("当前已有计时，请先完成或重置当前阶段");
       return false;
     }
-    if (opts.requestFullscreen) this.requestTaskBlackoutFullscreen({ cycle:opts.cycle, cycleSlot:opts.cycleSlot });
     const previousRuntime = this.runtime;
     this.ensureDayFreshness(false);
     const requestedDurationMs = Number(opts.durationMs);
@@ -1405,7 +1402,6 @@ class PomodoroAIO extends Plugin {
     const forceRun = opts.forceRun ?? true;
     const shouldRun = forceRun !== false && (forceRun || !!this.settings.autoNext);
     const continuation = normalizeBreakContinuation(opts.breakContinuation);
-    if (opts.requestFullscreen && shouldRun) this.requestBreakBlackoutFullscreen();
     const effects = this.applyRuntimeEvent(shouldRun ? {
       type:RUNTIME_EVENT.START_STAGE,
       stage:TIMER_STAGE.BREAK,
