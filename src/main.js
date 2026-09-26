@@ -918,24 +918,35 @@ class PomodoroAIO extends Plugin {
   }
 
   /* ====== 视图与广播 ====== */
-  /** @param {{source?:string}} [opts] */
+  /** @param {{source?:string, leaf?:any}} [opts] */
   async activateView(opts={}) {
     const source = opts.source || "user";
     if (this.shouldBlockFocusLayoutSideEffects({ source })) return;
+    if (opts.leaf) {
+      await opts.leaf.setViewState({ type: PomodoroView.VIEW_TYPE, active: true });
+      await this.app.workspace.revealLeaf(opts.leaf);
+      return;
+    }
     const leaves = this.app.workspace.getLeavesOfType(PomodoroView.VIEW_TYPE);
-    if (leaves.length) { this.app.workspace.revealLeaf(leaves[0]); return; }
+    if (leaves.length) { await this.app.workspace.revealLeaf(leaves[0]); return; }
     const leaf = this.app.workspace.getRightLeaf(false);
     await leaf.setViewState({ type: PomodoroView.VIEW_TYPE, active: true });
-    this.app.workspace.revealLeaf(leaf);
+    await this.app.workspace.revealLeaf(leaf);
   }
-  async activateProjectsView(){
+  /** @param {any} [sourceLeaf] */
+  async activateProjectsView(sourceLeaf){
     if (!this.settings.enableProjects) return false;
     if (this.shouldBlockFocusLayoutSideEffects({ source:"user" })) return false;
+    if (sourceLeaf) {
+      await sourceLeaf.setViewState({ type: ProjectsView.VIEW_TYPE, active: true });
+      await this.app.workspace.revealLeaf(sourceLeaf);
+      return true;
+    }
     const leaves = this.app.workspace.getLeavesOfType(ProjectsView.VIEW_TYPE);
-    if (leaves.length) { this.app.workspace.revealLeaf(leaves[0]); return true; }
+    if (leaves.length) { await this.app.workspace.revealLeaf(leaves[0]); return true; }
     const leaf = this.app.workspace.getRightLeaf(false);
     await leaf.setViewState({ type:ProjectsView.VIEW_TYPE, active:true });
-    this.app.workspace.revealLeaf(leaf);
+    await this.app.workspace.revealLeaf(leaf);
     return true;
   }
   broadcast() {

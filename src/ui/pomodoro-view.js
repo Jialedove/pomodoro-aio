@@ -77,7 +77,7 @@ class PomodoroView extends ItemView {
     todayButton.onclick = () => this.plugin.runUserCommand(() => this.plugin.openToday());
     const projectButton = head.createEl("button", { cls: "pmd-btn pmd-icon-button pmd-project-entry", attr: { type: "button" } });
     setButtonIcon(projectButton, "folder", "推进中的项目");
-    projectButton.onclick = () => this.plugin.activateProjectsView();
+    projectButton.onclick = () => this.plugin.activateProjectsView(this.leaf);
 
     const statusLine = root.createDiv({ cls: "pmd-status-line", attr: { "aria-live": "polite" } });
 

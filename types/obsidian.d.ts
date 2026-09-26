@@ -33,6 +33,7 @@ declare module "obsidian" {
 
   export class ItemView {
     app: any;
+    leaf: any;
     containerEl: ObsidianElement;
     constructor(leaf: any);
   }

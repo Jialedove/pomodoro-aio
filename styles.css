@@ -152,21 +152,26 @@
 .pmd-capture .pmd-row-inline { display: flex; gap: 7px; padding-bottom: 8px; }
 .pmd-capture-status { min-height: 18px; padding-bottom: 5px; color: var(--text-muted); font-size: 12px; }
 .pmd-empty { padding: 14px 8px; color: var(--text-muted); font-size: 13px; text-align: center; }
-.pmd-projects-root .pmd-project-list { display: grid; gap: 10px; }
-.pmd-project-card { min-width: 0; padding: 12px; border: 1px solid var(--background-modifier-border); border-radius: 12px; background: var(--background-secondary); }
-.pmd-project-card-head { display: flex; align-items: start; justify-content: space-between; gap: 10px; }
+.pmd-projects-root .pmd-view-heading { display: flex; align-items: center; min-height: 72px; gap: 8px; }
+.pmd-projects-root .pmd-view-heading h2 { min-width: 0; margin: 0; font-size: 18px; line-height: 1.3; text-wrap: balance; }
+.pmd-projects-root .pmd-projects-back { margin-left: auto; }
+.pmd-project-overview { margin: 10px 0 8px; color: var(--text-muted); font-size: 12px; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.pmd-project-overview:empty { display: none; }
+.pmd-projects-root .pmd-project-list { display: grid; gap: 8px; }
+.pmd-project-card { min-width: 0; padding: 10px; border: 1px solid var(--background-modifier-border); border-radius: 12px; background: var(--background-secondary); }
+.pmd-project-card-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px; }
 .pmd-project-title-group { min-width: 0; }
-.pmd-project-title-group h3 { margin: 0; text-wrap: pretty; overflow-wrap: anywhere; }
+.pmd-project-title-group h3 { margin: 0; font-size: 14px; line-height: 1.35; text-wrap: pretty; overflow-wrap: anywhere; }
 .pmd-project-path { margin-top: 3px; color: var(--text-muted); font-size: 11px; overflow-wrap: anywhere; }
-.pmd-project-tomatoes { flex: 0 0 auto; color: var(--text-accent); font-weight: 650; font-variant-numeric: tabular-nums; }
-.pmd-project-work-list { margin: 12px 0 8px; }
-.pmd-project-work-list h4 { margin: 0 0 5px; font-size: 12px; color: var(--text-muted); }
-.pmd-project-work-row, .pmd-project-add-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; padding: 3px 0; }
+.pmd-project-head-actions { display: flex; align-items: center; gap: 4px; }
+.pmd-project-tomatoes { color: var(--text-accent); font-size: 12px; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pmd-project-work-list { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--background-modifier-border); }
+.pmd-project-work-list h4 { margin: 0 0 4px; font-size: 11px; color: var(--text-muted); }
+.pmd-project-work-row, .pmd-project-add-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .pmd-project-work-name { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
-.pmd-project-add-row { margin: 6px 0; }
-.pmd-project-add-row select { flex: 1 1 100px; min-width: 0; }
-.pmd-project-card > .pmd-btn-primary { width: 100%; margin-top: 4px; }
-.pmd-unassigned-hint { color: var(--text-muted); font-size: 12px; }
+.pmd-project-work-row .pmd-icon-button { margin-left: auto; }
+.pmd-project-add-row { margin-top: 6px; }
+.pmd-project-add-row select { flex: 1 1 auto; min-width: 0; min-height: 36px; }
 @container (max-width: 320px) {
   .pmd-root { padding: 8px; }
   .pmd-head > .pmd-icon-button { flex: 0 0 40px; }
@@ -177,9 +182,6 @@
   .pmd-module-blackout { justify-self: end; }
   .pmd-module-duration .pmd-cycle-min { width: 100%; }
   .pmd-cycle-unit { display: none; }
-  .pmd-project-card-head { display: grid; }
-  .pmd-project-add-row { align-items: stretch; flex-direction: column; }
-  .pmd-project-add-row > * { width: 100%; }
   .pmd-project-work-row { align-items: start; }
 }
 @keyframes pomodoro-ribbon-pulse {

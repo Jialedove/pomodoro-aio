@@ -1,4 +1,4 @@
-const { ItemView, Notice } = require("obsidian");
+const { ItemView, Notice, setIcon } = require("obsidian");
 /** @typedef {{id:string, type:"work"|"rest", name:string, durationMin:number, blackout:boolean, workspaceCommandId?:string}} ModuleDefinition */
 /** @typedef {{label:string, path:string, tomatoes?:number}} ProjectOption */
 
@@ -35,9 +35,11 @@ class ProjectsView extends ItemView {
     root.addClass("pmd-projects-root");
     const heading = root.createDiv({ cls: "pmd-view-heading" });
     heading.createEl("h2", { text: "推进中的项目" });
-    const backButton = heading.createEl("button", { cls: "pmd-btn pmd-btn-secondary", text: "循环工作", attr: { type: "button" } });
-    backButton.onclick = () => this.plugin.activateView();
+    const backButton = heading.createEl("button", { cls: "pmd-btn pmd-icon-button pmd-projects-back", attr: { type: "button", "aria-label": "返回循环工作", title: "返回循环工作" } });
+    setIcon(backButton, "timer");
+    backButton.onclick = () => this.plugin.activateView({ leaf: this.leaf });
     const status = root.createDiv({ cls:"pmd-edit-status", attr:{ role:"status", "aria-live":"polite" } });
+    const overview = root.createDiv({ cls:"pmd-project-overview" });
     const content = root.createDiv({ cls: "pmd-project-list" });
     /** @param {()=>Promise<any>} action @param {string} success */
     const edit = async (action, success) => {
@@ -60,6 +62,7 @@ class ProjectsView extends ItemView {
       if (signature === this._renderSignature) return;
       this._renderSignature = signature;
       content.empty();
+      overview.setText("");
       if (settings.enableProjects !== true) {
         content.createDiv({ cls: "pmd-empty", text: "推进中的项目已关闭。你可以在 Pomodoro AIO 设置中重新启用。" });
         return;
@@ -67,6 +70,8 @@ class ProjectsView extends ItemView {
       /** @type {ModuleDefinition[]} */
       const modules = (Array.isArray(settings.modules) ? settings.modules : []).filter((/** @type {ModuleDefinition} */ module) => module.type === "work");
       const assignments = settings.projectAssignments || {};
+      const unassigned = modules.filter(module => !assignments[module.id]);
+      overview.setText(`${this.projects.length} 个项目 · ${unassigned.length} 项工作待关联`);
       if (!this.projects.length) {
         content.createDiv({ cls: "pmd-empty", text: "没有符合项目标签和状态条件的笔记。" });
         return;
@@ -77,40 +82,42 @@ class ProjectsView extends ItemView {
         const cardHead = card.createDiv({ cls: "pmd-project-card-head" });
         const titleGroup = cardHead.createDiv({ cls: "pmd-project-title-group" });
         titleGroup.createEl("h3", { text: (project.path.split("/").pop() || project.path).replace(/\.md$/i, "") });
-        titleGroup.createDiv({ cls: "pmd-project-path", text: project.path });
+        const folder = project.path.split("/").slice(0, -1).join("/");
+        if (folder) titleGroup.createDiv({ cls: "pmd-project-path", text: folder });
+        const headActions = cardHead.createDiv({ cls: "pmd-project-head-actions" });
         const sum = Number(project.tomatoes) || 0;
-        cardHead.createDiv({ cls: "pmd-project-tomatoes", text: `${sum.toFixed(sum % 1 ? 1 : 0)} 🍅` });
+        headActions.createDiv({ cls: "pmd-project-tomatoes", text: `${sum.toFixed(sum % 1 ? 1 : 0)} 🍅` });
+        const open = headActions.createEl("button", { cls: "pmd-btn pmd-icon-button", attr: { type: "button", "aria-label": `打开项目笔记：${project.path}`, title: "打开项目笔记" } });
+        setIcon(open, "external-link");
+        open.onclick = async () => {
+          try { await this.plugin.openProject(project.path); }
+          catch (error) { logViewError(this.plugin, "open-project", error); new Notice("无法打开项目笔记"); }
+        };
         const section = card.createDiv({ cls: "pmd-project-work-list" });
         section.createEl("h4", { text: "关联工作" });
         if (!related.length) section.createDiv({ cls: "pmd-muted", text: "还没有关联工作。" });
         related.forEach(module => {
           const row = section.createDiv({ cls: "pmd-project-work-row" });
           row.createSpan({ cls: "pmd-project-work-name", text: module.name || "未命名工作" });
-          const unlink = row.createEl("button", { cls: "pmd-btn pmd-btn-tertiary", text: "解除关联", attr: { type: "button", "aria-label": `解除 ${module.name || "未命名工作"} 与此项目的关联` } });
+          const unlink = row.createEl("button", { cls: "pmd-btn pmd-icon-button pmd-project-unlink", attr: { type: "button", "aria-label": `解除 ${module.name || "未命名工作"} 与此项目的关联`, title: "解除关联" } });
+          setIcon(unlink, "unlink");
           unlink.onclick = () => edit(() => this.plugin.setModuleProject(module.id, ""), "关联已解除");
         });
-        const addRow = card.createDiv({ cls: "pmd-project-add-row" });
-        const available = modules.filter(module => !assignments[module.id] || assignments[module.id] === project.path);
-        const select = addRow.createEl("select", { cls: "pmd-input", attr: { "aria-label": `选择关联到 ${project.path} 的工作` } });
-        select.createEl("option", { text: "选择一项工作…", attr: { value: "" } });
-        available.filter(module => assignments[module.id] !== project.path).forEach(module => select.createEl("option", { text: module.name || "未命名工作", attr: { value: module.id } }));
-        const assign = addRow.createEl("button", { cls: "pmd-btn", text: "关联工作", attr: { type: "button" } });
-        assign.disabled = available.filter(module => assignments[module.id] !== project.path).length === 0;
-        assign.onclick = () => {
-          if (!select.value) return;
-          edit(() => this.plugin.setModuleProject(select.value, project.path), "工作已关联到项目");
-        };
-        const open = card.createEl("button", { cls: "pmd-btn pmd-btn-primary", text: "打开项目笔记", attr: { type: "button" } });
-        open.onclick = async () => {
-          try { await this.plugin.openProject(project.path); }
-          catch (error) { logViewError(this.plugin, "open-project", error); new Notice("无法打开项目笔记"); }
-        };
+        if (unassigned.length) {
+          const addRow = card.createDiv({ cls: "pmd-project-add-row" });
+          const select = addRow.createEl("select", { cls: "pmd-input", attr: { "aria-label": `选择关联到 ${project.path} 的工作` } });
+          select.createEl("option", { text: "选择一项工作…", attr: { value: "" } });
+          unassigned.forEach(module => select.createEl("option", { text: module.name || "未命名工作", attr: { value: module.id } }));
+          const assign = addRow.createEl("button", { cls: "pmd-btn pmd-icon-button", attr: { type: "button", "aria-label": "关联选中的工作", title: "关联选中的工作" } });
+          setIcon(assign, "plus");
+          assign.disabled = true;
+          select.onchange = () => { assign.disabled = !select.value; };
+          assign.onclick = () => {
+            if (!select.value) return;
+            edit(() => this.plugin.setModuleProject(select.value, project.path), "工作已关联到项目");
+          };
+        }
       });
-      const unassigned = modules.filter(module => !assignments[module.id]);
-      if (unassigned.length && this.projects.length) {
-        const hint = content.createDiv({ cls: "pmd-unassigned-hint" });
-        hint.setText(`${unassigned.length} 项工作尚未关联项目；可在上方项目卡片中选择关联。`);
-      }
     };
 
     const refreshProjects = () => {
