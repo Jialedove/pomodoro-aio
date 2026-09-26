@@ -93,9 +93,10 @@ class PomodoroView extends ItemView {
     const quickCaptureButton = actions.createEl("button", { cls: "pmd-btn pmd-icon-button", attr: { type: "button", "aria-expanded":"false", "aria-controls":"pmd-quick-capture" } });
     setButtonIcon(quickCaptureButton, "pencil", "快速捕捉");
 
-    const summaryBar = root.createDiv({ cls: "pmd-summary-bar" });
-    const runtimeStats = summaryBar.createDiv({ cls: "pmd-meta" });
-    const editorHeading = summaryBar.createDiv({ cls: "pmd-editor-heading" });
+    const runtimeStats = root.createDiv({ cls: "pmd-meta" });
+    const footer = root.createDiv({ cls: "pmd-footer" });
+    footer.appendChild(actions);
+    const editorHeading = footer.createDiv({ cls: "pmd-editor-heading" });
     const editModeButton = editorHeading.createEl("button", { cls:"pmd-btn pmd-icon-button pmd-settings-button", attr:{ type:"button" } });
     setButtonIcon(editModeButton, "settings", "设置工作与休息模块");
     const editToolbar = editorHeading.createDiv({ cls:"pmd-actions pmd-edit-toolbar pmd-hidden" });
@@ -145,7 +146,7 @@ class PomodoroView extends ItemView {
       if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); void submitCapture(); }
       if (event.key === "Escape") { capture.classList.add("pmd-hidden"); quickCaptureButton.setAttribute("aria-expanded", "false"); quickCaptureButton.focus(); }
     };
-    root.appendChild(actions);
+    root.appendChild(footer);
 
     /** @param {any} command */
     const commandTitle = command => workspaceLayoutLabel(command) || command?.name || command?.id || "工作区";

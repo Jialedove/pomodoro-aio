@@ -86,14 +86,15 @@
 .pmd-btn-secondary { background: var(--background-secondary-alt); }
 .pmd-status-line { margin-top: 4px; color: var(--text-muted); font-size: 12px; }
 .pmd-muted { color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
-.pmd-summary-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px; margin: 10px 0 8px; }
-.pmd-meta { align-self: center; min-width: 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.pmd-meta { min-width: 0; margin: 10px 0 8px; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 .pmd-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
 .pmd-actions > .pmd-btn { flex: 1 1 auto; }
 .pmd-actions > .pmd-icon-button { flex: 0 0 40px; }
 .pmd-hidden { display: none !important; }
 .pmd-capture { margin-top: 8px; padding: 8px; border: 1px solid var(--background-modifier-border); border-radius: 10px; background: var(--background-secondary); }
-.pmd-editor-heading { display: flex; justify-content: flex-end; align-items: center; min-height: 40px; }
+.pmd-footer { display: flex; align-items: flex-end; gap: 8px; min-width: 0; margin-top: 14px; }
+.pmd-footer > .pmd-actions { flex: 1 1 auto; min-width: 0; gap: 4px; margin: 0; }
+.pmd-editor-heading { display: flex; justify-content: flex-end; align-items: center; flex: 0 0 auto; min-height: 40px; margin-left: auto; }
 .pmd-edit-status { min-height: 18px; margin-top: 6px; color: var(--text-muted); font-size: 12px; }
 .pmd-edit-status:empty { display: none; }
 .pmd-module-list { display: grid; gap: 8px; margin-top: 2px; }
@@ -147,7 +148,6 @@
 .pmd-settings-presets button { justify-self: start; }
 .pmd-edit-toolbar { justify-content: flex-end; flex-wrap: nowrap; gap: 6px; margin: 0; }
 .pmd-edit-toolbar > .pmd-btn { flex: 0 0 auto; min-width: 50px; min-height: 32px; padding: 4px 7px; font-size: 12px; }
-.pmd-root > .pmd-actions { gap: 4px; margin-top: 14px; }
 .pmd-snapshot-note { color: var(--text-muted); font-size: 12px; }
 .pmd-capture .pmd-row-inline { display: flex; gap: 7px; padding-bottom: 8px; }
 .pmd-capture-status { min-height: 18px; padding-bottom: 5px; color: var(--text-muted); font-size: 12px; }
