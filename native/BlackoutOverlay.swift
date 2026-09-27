@@ -17,12 +17,18 @@ final class BlackoutWindow: NSWindow {
 }
 
 final class OverlayController: NSObject, NSApplicationDelegate {
-    private var window: BlackoutWindow?
-    private var label: NSTextField?
-    private var title: NSTextField?
-    private var countdown: NSTextField?
-    private var currentScreen: NSScreen?
+    private struct DisplayOverlay {
+        var screen: NSScreen
+        let window: BlackoutWindow
+        let label: NSTextField
+        let title: NSTextField
+        let countdown: NSTextField
+    }
+
+    private var overlays: [String: DisplayOverlay] = [:]
     private var previousApp: NSRunningApplication?
+    private var labelText = "现在应该做什么"
+    private var titleText = ""
     private var remainingMilliseconds = 0.0
     private var countdownUpdatedAt = Date()
     private var paused = false
@@ -66,38 +72,40 @@ final class OverlayController: NSObject, NSApplicationDelegate {
             return
         }
         guard command == "show" || command == "update" else { return }
-        let created = window == nil
-        if created { createWindow() }
-        guard window != nil else {
-            send(["type": "error", "message": "No display available"])
-            terminate()
-            return
-        }
-        if let value = message["label"] as? String { label?.stringValue = value }
-        if let value = message["title"] as? String { title?.stringValue = value }
+        let created = overlays.isEmpty
+        if let value = message["label"] as? String { labelText = value }
+        if let value = message["title"] as? String { titleText = value }
         if let value = message["leftMs"] as? Double, value.isFinite {
             remainingMilliseconds = max(0, value)
             countdownUpdatedAt = Date()
         }
         paused = message["paused"] as? Bool ?? false
+
+        guard synchronizeDisplays() else {
+            send(["type": "error", "message": "No display available"])
+            terminate()
+            return
+        }
+        updateOverlayText()
         updateCountdown()
         if remainingMilliseconds <= 0 && !finished {
             finished = true
             flashOnce()
         }
-        if created { send(["type": "shown", "screen": currentScreen?.localizedName ?? "unknown"]) }
+        if created {
+            send(["type": "shown", "screenCount": overlays.count,
+                  "screens": overlays.values.map { $0.screen.localizedName }])
+        }
     }
 
-    private func selectedScreen() -> NSScreen? {
-        let pointer = NSEvent.mouseLocation
-        return NSScreen.screens.first(where: { NSMouseInRect(pointer, $0.frame, false) })
-            ?? NSScreen.main ?? NSScreen.screens.first
+    private func displayIdentifier(_ screen: NSScreen) -> String {
+        if let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+            return "display-\(number.uint32Value)"
+        }
+        return "\(screen.localizedName)-\(NSStringFromRect(screen.frame))"
     }
 
-    private func createWindow() {
-        guard let screen = selectedScreen() else { return }
-        currentScreen = screen
-        previousApp = NSWorkspace.shared.frontmostApplication
+    private func createOverlay(for screen: NSScreen) -> DisplayOverlay {
         let overlay = BlackoutWindow(contentRect: screen.frame, styleMask: [.borderless],
                                      backing: .buffered, defer: false)
         overlay.level = .screenSaver
@@ -118,11 +126,11 @@ final class OverlayController: NSObject, NSApplicationDelegate {
         stack.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(stack)
 
-        label = makeText(size: 17, weight: .medium, color: NSColor.white.withAlphaComponent(0.72))
-        title = makeText(size: 68, weight: .bold, color: .white)
-        countdown = makeText(size: 52, weight: .medium, color: NSColor.white.withAlphaComponent(0.88))
-        countdown?.font = NSFont.monospacedDigitSystemFont(ofSize: 52, weight: .medium)
-        [label, title, countdown].compactMap { $0 }.forEach { stack.addArrangedSubview($0) }
+        let label = makeText(size: 17, weight: .medium, color: NSColor.white.withAlphaComponent(0.72))
+        let title = makeText(size: 68, weight: .bold, color: .white)
+        let countdown = makeText(size: 52, weight: .medium, color: NSColor.white.withAlphaComponent(0.88))
+        countdown.font = NSFont.monospacedDigitSystemFont(ofSize: 52, weight: .medium)
+        [label, title, countdown].forEach { stack.addArrangedSubview($0) }
 
         let exitButton = NSButton(title: "立即退出（计时继续）", target: self, action: #selector(exitClicked))
         exitButton.isBordered = false
@@ -139,19 +147,78 @@ final class OverlayController: NSObject, NSApplicationDelegate {
         exitButton.setAccessibilityLabel("立即退出黑屏，计时继续")
         exitButton.translatesAutoresizingMaskIntoConstraints = false
         stack.addArrangedSubview(exitButton)
-        stack.setCustomSpacing(30, after: countdown!)
+        stack.setCustomSpacing(30, after: countdown)
         NSLayoutConstraint.activate([
             stack.centerXAnchor.constraint(equalTo: content.centerXAnchor),
             stack.centerYAnchor.constraint(equalTo: content.centerYAnchor),
             stack.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 32),
             stack.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -32),
-            title!.widthAnchor.constraint(lessThanOrEqualTo: content.widthAnchor, multiplier: 0.82),
+            title.widthAnchor.constraint(lessThanOrEqualTo: content.widthAnchor, multiplier: 0.82),
             exitButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 224),
             exitButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
         ])
-        window = overlay
-        NSApp.activate(ignoringOtherApps: true)
-        overlay.makeKeyAndOrderFront(nil)
+        label.stringValue = labelText
+        title.stringValue = titleText
+        return DisplayOverlay(screen: screen, window: overlay, label: label,
+                              title: title, countdown: countdown)
+    }
+
+    @discardableResult
+    private func synchronizeDisplays() -> Bool {
+        let hadOverlays = !overlays.isEmpty
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else {
+            overlays.values.forEach {
+                $0.window.orderOut(nil)
+                $0.window.close()
+            }
+            overlays.removeAll()
+            return false
+        }
+
+        if !hadOverlays { previousApp = NSWorkspace.shared.frontmostApplication }
+        var displaysChanged = !hadOverlays
+        let visibleIDs = Set(screens.map(displayIdentifier))
+        for id in overlays.keys.filter({ !visibleIDs.contains($0) }) {
+            overlays[id]?.window.orderOut(nil)
+            overlays[id]?.window.close()
+            overlays.removeValue(forKey: id)
+            displaysChanged = true
+        }
+        for screen in screens {
+            let id = displayIdentifier(screen)
+            if var existing = overlays[id] {
+                if existing.window.frame != screen.frame {
+                    existing.window.setFrame(screen.frame, display: true)
+                    displaysChanged = true
+                }
+                existing.screen = screen
+                overlays[id] = existing
+            } else {
+                overlays[id] = createOverlay(for: screen)
+                displaysChanged = true
+            }
+        }
+
+        if displaysChanged {
+            NSApp.activate(ignoringOtherApps: true)
+            let pointer = NSEvent.mouseLocation
+            let keyScreen = screens.first(where: { NSMouseInRect(pointer, $0.frame, false) })
+                ?? NSScreen.main ?? screens[0]
+            let keyID = displayIdentifier(keyScreen)
+            for (id, display) in overlays where id != keyID {
+                display.window.orderFrontRegardless()
+            }
+            overlays[keyID]?.window.makeKeyAndOrderFront(nil)
+        }
+        return !overlays.isEmpty
+    }
+
+    private func updateOverlayText() {
+        for display in overlays.values {
+            display.label.stringValue = labelText
+            display.title.stringValue = titleText
+        }
     }
 
     private func makeText(size: CGFloat, weight: NSFont.Weight, color: NSColor) -> NSTextField {
@@ -169,19 +236,20 @@ final class OverlayController: NSObject, NSApplicationDelegate {
     private func updateCountdown() {
         let elapsed = paused ? 0 : Date().timeIntervalSince(countdownUpdatedAt) * 1000
         let seconds = Int(ceil(max(0, remainingMilliseconds - elapsed) / 1000))
-        countdown?.stringValue = String(format: "%02d:%02d", seconds / 60, seconds % 60)
+        let value = String(format: "%02d:%02d", seconds / 60, seconds % 60)
+        for display in overlays.values { display.countdown.stringValue = value }
     }
 
     private func flashOnce() {
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { return }
-        guard let window else { return }
+        guard !overlays.isEmpty else { return }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.16
-            window.animator().alphaValue = 0.84
+            for display in overlays.values { display.window.animator().alphaValue = 0.84 }
         } completionHandler: {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.16
-                window.animator().alphaValue = 1
+                for display in self.overlays.values { display.window.animator().alphaValue = 1 }
             }
         }
     }
@@ -196,12 +264,14 @@ final class OverlayController: NSObject, NSApplicationDelegate {
     }
 
     @objc private func screenConfigurationChanged() {
-        guard let window else { return }
-        guard let screen = currentScreen, NSScreen.screens.contains(screen) else {
+        guard !overlays.isEmpty else { return }
+        guard synchronizeDisplays() else {
+            send(["type": "error", "message": "No display available"])
             terminate()
             return
         }
-        window.setFrame(screen.frame, display: true)
+        updateOverlayText()
+        updateCountdown()
     }
 
     @objc private func exitClicked() { dismiss() }
@@ -213,9 +283,11 @@ final class OverlayController: NSObject, NSApplicationDelegate {
 
     private func terminate() {
         heartbeatTimer?.invalidate()
-        window?.orderOut(nil)
-        window?.close()
-        window = nil
+        overlays.values.forEach {
+            $0.window.orderOut(nil)
+            $0.window.close()
+        }
+        overlays.removeAll()
         previousApp?.activate(options: [])
         NSApp.terminate(nil)
     }
