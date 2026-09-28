@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | Phase 1 长专注迁移 | 旧普通配置只生成工作、休息；正在运行的旧长专注保留原时长并只结算一次 | 未安装本轮产物 | 旧数据在真实库升级待人工核对 |
 | Phase 2–4 兼容与 V5 | 当前设置、运行态和类型收缩为模块模型；旧设置、运行态、状态机、结算与辅助业务移至 `src/legacy/`。旧 journal 幂等恢复和源码边界有定向回归 | 未重载 | 旧数据真实升级待人工核对 |
-| Phase 5 macOS CI | `core` Ubuntu 与 `native-macos` 两个 job；后者编译并检查可执行产物。本机 `npm run check` 编译通过 | 不适用 | GitHub jobs 尚未运行；分支保护需仓库管理员设置 |
+| Phase 5 macOS CI | `core` Ubuntu 与 `native-macos` 两个 job 均在 [GitHub CI #36447312199](https://github.com/Jialedove/pomodoro-aio/actions/runs/36447312199) 通过；后者完成 Swift 编译及可执行产物检查 | 不适用 | 分支保护需仓库管理员设置 |
 | Phase 6 项目即时数值 | 成功结算和重试成功后发项目更新事件；视图先显示事件值，metadata changed 后复核；集成和视图测试通过 | 未重载 | 真实项目页时序待核对 |
 | Phase 7 控制器拆分 | `SequenceController` 管启动、选择、暂停/恢复和重置；`SettlementCoordinator` 管工作/休息结算、队列和恢复；`src/main.js` 从 2707 行缩至 1132 行 | 未重载 | 真实运行回归待核对 |
 | Phase 8 文档与版本 | README、手动清单、状态机说明及本记录已更新；package 与 manifest 为 `0.4.0` | 未安装 | 本轮没有真实 Obsidian 安装与重载 |
@@ -18,7 +18,7 @@
 - `npm run check` 通过：typecheck、lint、133/133 个 Node 测试、生产构建、构建产物一致性及本机 macOS 原生助手编译。
 - `git diff --check` 通过；`test/legacy-boundary.test.cjs` 对 `src/legacy/` 以外的正式源码守护旧字段边界。
 - 迁移回归覆盖旧普通配置不插入长专注、运行中和待确认的旧长专注保留时长、旧 journal 不重复写入、新运行态不带旧字段。项目集成测试验证写入成功发更新事件，视图测试验证即时展示与 metadata 校准。
-- GitHub 上的 `core` 和 `native-macos` jobs 已配置但尚未实际运行；本机 Swift 编译成功不代表 GitHub CI 已通过。分支保护设置不在代码仓库内。
+- `codex/pomodoro-0-4-closeout` 的提交 `242337a` 已推送；[GitHub CI #36447312199](https://github.com/Jialedove/pomodoro-aio/actions/runs/36447312199) 的 `core` 与 `native-macos` 均通过。分支保护设置不在代码仓库内。
 - 本轮未执行 `npm run install:vault`，未覆盖目标库 `data.json`，未重载 Obsidian。真实升级、项目页与多显示器遮罩仍需在安装后核对。
 
 
