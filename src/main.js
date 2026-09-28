@@ -6,23 +6,18 @@ const {
 } = require('obsidian');
 const {
   parseHHMMToMinutes,
-  positiveNumber,
   formatTomatoNumber,
-  isValidHHMM,
-  normalizeTomatoValue,
   normalizeMarkdownPath
 } = require("./core/validation");
 const {
   getTomatoSum,
   stripBaseName,
-  planTaskLineCompletion,
-  settlementConflict
+  planTaskLineCompletion
 } = require("./core/task-lines");
 const {
   TIMER_SCHEMA_VERSION,
   TIMER_STATUS,
   TIMER_STAGE,
-  configuredStageDurationMs,
   plannedTomatoAmount,
   actualTomatoAmount,
   createSessionId,
@@ -30,27 +25,27 @@ const {
   getRemainingMs: calculateRemainingMs
 } = require("./core/timer");
 const { RUNTIME_EVENT, RUNTIME_EFFECT, reduceRuntime } = require("./core/state-machine");
-const {
-  buildNextStageTransition,
-  buildDailySettlementPlan,
-  buildSettlementJournal,
-  validateSettlementJournal
-} = require("./core/settlement");
-const { RuntimeStore, cloneValue } = require("./services/runtime-store");
+const { reduceRuntime: reduceLegacyRuntime, isLegacyRuntimeEvent } = require("./legacy/state-machine");
+const { RuntimeStore } = require("./services/runtime-store");
 const { DailyRepository, ProjectRepository } = require("./services/repositories");
-const { normalizeCaptureHeading, normalizeCaptureText } = require("./core/quick-capture");
+const { normalizeCaptureText } = require("./core/quick-capture");
 const { PomodoroView } = require("./ui/pomodoro-view");
 const { ProjectsView } = require("./ui/projects-view");
-const { migrateLegacySettings, normalizeModuleDefinition, normalizeRestPresets, normalizeOrchestration, getNextModule, createModuleRunSnapshot } = require("./core/modules");
+const { normalizeModuleDefinition, getNextModule, createModuleRunSnapshot } = require("./core/modules");
+const { DEFAULT_SETTINGS, normalizeCurrentSettings } = require("./core/settings");
+const { migrateLegacySettings } = require("./legacy/settings-migration");
+const { createRuntimeDefaults, normalizeRuntime, normalizeModuleRun } = require("./legacy/runtime-normalization");
 const { prepareModuleDraft } = require("./core/module-draft");
 const { QuickCaptureModal } = require("./ui/quick-capture-modal");
 const { BreakBlackoutController } = require("./ui/break-blackout");
 const { NativeBlackoutController } = require("./ui/native-blackout");
 const { PomodoroSettingTab } = require("./ui/settings-tab");
+const { SequenceController } = require("./controllers/sequence-controller");
+const { SettlementCoordinator } = require("./controllers/settlement-coordinator");
+const { LegacyRuntimeController } = require("./legacy/runtime-controller");
 const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/workspaces-plus");
 /** @typedef {import("../types/contracts").Attention} Attention */
 /** @typedef {import("../types/contracts").BreakTransition} BreakTransition */
-/** @typedef {import("../types/contracts").BreakContinuation} BreakContinuation */
 /** @typedef {import("../types/contracts").ProjectSettlementPlan} ProjectSettlementPlan */
 /** @typedef {import("../types/contracts").Runtime} Runtime */
 /** @typedef {import("../types/contracts").RuntimeEvent} RuntimeEvent */
@@ -59,88 +54,6 @@ const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/
 /** @typedef {import("../types/contracts").StageTransition} StageTransition */
 /** @typedef {import("../types/contracts").TimerStage} TimerStage */
 /** @typedef {Record<string, any>} AnyRecord */
-/** @typedef {{suppressNotify?:boolean, cause?:string, minutes?:number|null, cycle?:boolean, cycleSlot?:0|1, taskName?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean, newCycle?:boolean}} StartFocusOptions */
-/** @typedef {{forceRun?:boolean, suppressNotify?:boolean, cause?:string, durationMs?:number, allowTransition?:boolean, allowPendingSettlement?:boolean, allowPendingBreakTransition?:boolean, breakContinuation?:BreakContinuation}} StartBreakOptions */
-/** @typedef {{type?:string, isLong?:boolean, cycleSlot?:number|null, autoStarted?:boolean, durationMs?:number, taskName?:string, moduleIndex?:number, moduleRun?:import("../types/contracts").ModuleRun|null}} NextPhase */
-
-/* ========== 默认设置 ========== */
-/** @type {Settings} */
-const DEFAULT_SETTINGS = {
-  modules: [],
-  restPresets: normalizeRestPresets(),
-  projectAssignments: {},
-  loopMode: "infinite",
-  loopCount: 1,
-  autoAdvance: false,
-  enableProjects: false,
-  // 计时
-  focusMin: 25,
-  breakMin: 5,
-  longBreakMin: 15,
-  longEvery: 4,
-  autoNext: true,
-
-  // 当日逻辑日期
-  dayStartHHMM: "00:00",
-
-  // 当日日记路径模板（不依赖 Daily Notes）
-  fallbackPattern: "Daily/{{date:YYYY-MM-DD}}.md",
-  allowCreateDaily: true,
-
-  // 任务写入
-  fmKey: "番茄数",
-  allowAutoCreateTask: true,
-  tasksHeading: "",
-  defaultTaskName: "",
-  captureHeading: "Inbox",
-  // 留空时复用“当日路径模板”；也可写入另一个按日期归档的 Markdown 文件。
-  capturePathPattern: "",
-
-  // 项目同步
-  projectEnable: true,
-  projectTag: "#project",
-  projectStatusKey: "项目状态",
-  projectStatusWhitelist: "进行中,筹划中",
-  projectFmKey: "番茄数",
-  currentProjectPath: "",
-  showProjectSelector: true,
-
-  // 可视化与提醒
-  dailyGoal: 8,
-  enableSound: true,
-  enableNotify: true
-  , soundWaveform: "sine",
-  focusStartSound: "focus-start",
-  breakStartSound: "break-start",
-  focusEndSound: "focus-end",
-  breakEndSound: "break-end",
-  focusAlertSound: "focus-alert",
-  breakAlertSound: "break-alert",
-  strongAlertDelaySec: 30,
-  strongAlertIntervalSec: 60,
-  longFocusDefaultMin: 50,
-  persistentAlertSound: true,
-  ribbonClickAutoNext: true,
-  focusStartCommandId: "",
-  breakStartCommandId: "",
-  breakBlackoutEnabled: false,
-  taskBlackoutEnabled: false,
-
-  // 循环工作：两项任务交替；可选地在若干完整 A→B 轮次后提示短休
-  workMode: "standard",
-  cycleTaskA: "",
-  cycleMinA: 15,
-  cycleWorkspaceCommandA: "",
-  cycleTaskBlackoutA: false,
-  cycleTaskB: "",
-  cycleMinB: 15,
-  cycleWorkspaceCommandB: "",
-  cycleTaskBlackoutB: false,
-  cycleBreakEvery: 0,
-
-  // 兼容性
-  respectModalInputFocus: true
-};
 
 /* ========== 工具函数 ========== */
 /** @param {Date} now @param {unknown} startHHMM */
@@ -162,391 +75,11 @@ function tryNormalizeMarkdownPath(value) {
   try { return normalizeMarkdownPath(value, normalizePath); }
   catch (error) { return null; }
 }
-/** @param {Settings} settings @returns {Runtime} */
-function createRuntimeDefaults(settings) {
-  return {
-    schemaVersion: TIMER_SCHEMA_VERSION,
-    status: TIMER_STATUS.IDLE,
-    stage: null,
-    mode: "modules",
-    moduleRun: null,
-    currentModuleIndex: 0,
-    selectedModuleId: settings.modules?.[0]?.id || null,
-    completedWorkCount: 0,
-    completedRestCount: 0,
-    completedLoopCount: 0,
-    cycleSlot: 0,
-    durationMs: 0,
-    startedAtMs: 0,
-    elapsedMs: 0,
-    remainingMs: 0,
-    pausedAtMs: 0,
-    sessionId: null,
-    plannedTomatoCredit: plannedTomatoAmount((Number(settings.focusMin) || 25) * 60 * 1000),
-    attention: null,
-    pendingSettlement: null,
-    pendingBreakTransition: null,
-    breakContinuation: null,
-    cycleRoundCount: 0,
-    quarantinedSettlement: null,
-    projectQueue: [],
-    frontmatterQueue: [],
-    sessionCount: 0,
-    currentTaskName: settings.defaultTaskName || "",
-    longFocusMinutes: Math.max(0.1, Number(settings.longFocusDefaultMin) || Number(settings.focusMin) || 25),
-    dayKey: "",
-    viewWasOpen: false
-  };
-}
 /** @param {Record<string, any>} [raw] @param {Settings} [fallback] @returns {Settings} */
-function normalizeSettings(raw={}, fallback=DEFAULT_SETTINGS) {
-  const base = Object.assign({}, DEFAULT_SETTINGS, fallback || {});
-  const source = raw || {};
-  const migrated = migrateLegacySettings(source);
-  const result = Object.assign({}, base, migrated, { schemaVersion: TIMER_SCHEMA_VERSION });
-  const has = (/** @type {string} */ key) => Object.prototype.hasOwnProperty.call(source, key);
-  const number = (/** @type {keyof Settings} */ key, min=0.1) => {
-    const fallbackValue = positiveNumber(base[key], DEFAULT_SETTINGS[key], min);
-    return has(String(key)) ? positiveNumber(source[key], fallbackValue, min) : fallbackValue;
-  };
-  const integer = (/** @type {keyof Settings} */ key, min=1) => {
-    const fallbackValue = Math.max(min, Math.round(Number(base[key]) || min));
-    const value = Number(source[key]);
-    return has(String(key)) && Number.isFinite(value) && value >= min ? Math.round(value) : fallbackValue;
-  };
-  result.focusMin = number("focusMin");
-  result.breakMin = number("breakMin");
-  result.longBreakMin = number("longBreakMin");
-  result.longFocusDefaultMin = number("longFocusDefaultMin");
-  result.cycleMinA = number("cycleMinA", 1);
-  result.cycleMinB = number("cycleMinB", 1);
-  result.dailyGoal = number("dailyGoal");
-  result.longEvery = integer("longEvery");
-  result.strongAlertDelaySec = integer("strongAlertDelaySec");
-  result.strongAlertIntervalSec = integer("strongAlertIntervalSec");
-  const cycleBreakEveryFallback = Number.isFinite(Number(base.cycleBreakEvery)) && Number(base.cycleBreakEvery) >= 0
-    ? Math.round(Number(base.cycleBreakEvery)) : 0;
-  const cycleBreakEveryValue = Number(source.cycleBreakEvery);
-  result.cycleBreakEvery = has("cycleBreakEvery") && Number.isFinite(cycleBreakEveryValue) && cycleBreakEveryValue >= 0
-    ? Math.round(cycleBreakEveryValue) : cycleBreakEveryFallback;
-  if (!has("cycleBreakEvery") && has("cycleBreakEnabled")) result.cycleBreakEvery = source.cycleBreakEnabled === true ? 1 : 0;
-  delete result.cycleBreakEnabled;
-  result.dayStartHHMM = has("dayStartHHMM") && isValidHHMM(source.dayStartHHMM)
-    ? source.dayStartHHMM : (isValidHHMM(base.dayStartHHMM) ? base.dayStartHHMM : DEFAULT_SETTINGS.dayStartHHMM);
-  result.workMode = source.workMode === "cycle" || (!has("workMode") && base.workMode === "cycle") ? "cycle" : "standard";
-  result.soundWaveform = ["sine", "square", "triangle"].includes(source.soundWaveform)
-    ? source.soundWaveform : base.soundWaveform;
-  const fallbackPattern = tryNormalizeMarkdownPath(base.fallbackPattern) || DEFAULT_SETTINGS.fallbackPattern;
-  result.fallbackPattern = has("fallbackPattern")
-    ? (tryNormalizeMarkdownPath(source.fallbackPattern) || fallbackPattern)
-    : fallbackPattern;
-  const capturePathPattern = has("capturePathPattern") ? String(source.capturePathPattern || "").trim() : String(base.capturePathPattern || "").trim();
-  result.capturePathPattern = capturePathPattern ? (tryNormalizeMarkdownPath(capturePathPattern) || "") : "";
-  const projectPath = has("currentProjectPath") ? source.currentProjectPath : base.currentProjectPath;
-  result.currentProjectPath = String(projectPath || "").trim()
-    ? (tryNormalizeMarkdownPath(projectPath) || "")
-    : "";
-  result.captureHeading = normalizeCaptureHeading(has("captureHeading") ? source.captureHeading : base.captureHeading);
-  for (const key of ["autoNext", "projectEnable", "showProjectSelector", "enableSound", "enableNotify", "persistentAlertSound", "ribbonClickAutoNext", "allowCreateDaily", "allowAutoCreateTask", "respectModalInputFocus", "breakBlackoutEnabled", "taskBlackoutEnabled", "cycleTaskBlackoutA", "cycleTaskBlackoutB"]) {
-    if (typeof source[key] !== "boolean") result[key] = base[key];
-  }
-  result.modules = migrated.modules;
-  result.restPresets = normalizeRestPresets(has("restPresets") ? source.restPresets : base.restPresets);
-  result.projectAssignments = Object.fromEntries((result.modules || [])
-    .filter(item => item.type === "work")
-    .map(item => [item.id, tryNormalizeMarkdownPath(migrated.projectAssignments?.[item.id]) || ""])
-    .filter(([, path]) => !!path));
-  Object.assign(result, normalizeOrchestration(migrated));
-  return result;
-}
-/** @param {unknown} value @param {Settings} settings @returns {Attention | null} */
-function normalizeAttention(value, settings) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const record = /** @type {AnyRecord} */ (value);
-  if (![TIMER_STAGE.FOCUS, TIMER_STAGE.BREAK].includes(record.type)) return null;
-  const cycleSlot = Number.isInteger(record.cycleSlot) ? (record.cycleSlot === 1 ? 1 : 0) : null;
-  const durationMs = Math.max(1, Number(record.durationMs) || configuredStageDurationMs(settings, record.type, !!record.isLong, cycleSlot));
-  /** @type {Attention} */
-  const result = {
-    type: record.type,
-    isLong: !!record.isLong,
-    cycleSlot,
-    nextStarted: !!record.nextStarted,
-    durationMs
-  };
-  if (record.taskName !== undefined) result.taskName = String(record.taskName || "").trim();
-  if (Number.isInteger(record.moduleIndex) && record.moduleIndex >= 0) result.moduleIndex = record.moduleIndex;
-  if (record.moduleRun) {
-    const moduleRun = normalizeModuleRun(record.moduleRun);
-    if (!moduleRun) return null;
-    if (moduleRun) result.moduleRun = moduleRun;
-  }
-  return result;
-}
-/** @param {unknown} value @returns {import("../types/contracts").ModuleRun | null} */
-function normalizeModuleRun(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const run = /** @type {AnyRecord} */ (value);
-  if (!String(run.runId || "").trim() || !String(run.moduleId || "").trim()
-    || !["work", "rest"].includes(run.type) || !String(run.name || "").trim()
-    || !Number.isFinite(run.durationMs) || run.durationMs <= 0) return null;
-  const projectPath = String(run.projectPath || "").trim();
-  const normalizedProjectPath = projectPath ? tryNormalizeMarkdownPath(projectPath) : "";
-  if (projectPath && !normalizedProjectPath) return null;
-  return {
-    runId:String(run.runId), moduleId:String(run.moduleId), type:run.type,
-    name:String(run.name).trim(), durationMin:run.durationMs / 60_000,
-    durationMs:Math.round(run.durationMs), blackout:run.blackout === true,
-    workspaceCommandId:String(run.workspaceCommandId || ""),
-    projectPath:normalizedProjectPath || null, startedAtMs:Number(run.startedAtMs) || 0
-  };
-}
-/** @param {unknown} value @returns {{journal:SettlementJournal|null, error:string|null}} */
-function normalizeSettlement(value) {
-  if (!value) return { journal: null, error: null };
-  const error = validateSettlementJournal(value);
-  if (error) return { journal: null, error };
-  const journal = /** @type {SettlementJournal} */ (cloneValue(value));
-  try {
-    journal.daily.path = normalizeMarkdownPath(journal.daily.path, normalizePath);
-    if (journal.project.path) journal.project.path = normalizeMarkdownPath(journal.project.path, normalizePath);
-    return { journal, error:null };
-  } catch (pathError) {
-    return { journal:null, error:`journal 路径非法：${pathError instanceof Error ? pathError.message : String(pathError)}` };
-  }
-}
-/** @param {unknown} value @returns {BreakTransition | null} */
-function normalizeBreakTransition(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const record = /** @type {AnyRecord} */ (value);
-  if (record.schemaVersion !== 1 || record.status !== "break-completing") return null;
-  if (typeof record.autoNext !== "boolean" || !Number.isFinite(record.durationMs) || record.durationMs <= 0) return null;
-  if (!Number.isFinite(record.createdAtMs) || record.createdAtMs <= 0) return null;
-  if (record.mode !== undefined && !["standard", "cycle", "modules"].includes(record.mode)) return null;
-  if (record.mode === "cycle" && (![0, 1].includes(record.cycleSlot) || typeof record.taskName !== "string")) return null;
-  if (record.mode === "modules" && (record.moduleIndex !== null && (!Number.isInteger(record.moduleIndex) || record.moduleIndex < 0))) return null;
-  if (record.mode === "modules" && record.moduleRun && !normalizeModuleRun(record.moduleRun)) return null;
-  if (record.mode === "modules" && record.completionType === "work"
-    && (!Number.isInteger(record.completedWorkCountAfter) || !Number.isInteger(record.sessionCountAfter))) return null;
-  return /** @type {BreakTransition} */ (cloneValue(record));
-}
-/** @param {unknown} value @returns {BreakContinuation | null} */
-function normalizeBreakContinuation(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const record = /** @type {AnyRecord} */ (value);
-  if (record.mode !== "cycle" || ![0, 1].includes(record.cycleSlot) || typeof record.taskName !== "string") return null;
-  if (!Number.isFinite(record.durationMs) || record.durationMs <= 0) return null;
-  return {
-    mode: "cycle",
-    cycleSlot: record.cycleSlot === 1 ? 1 : 0,
-    taskName: String(record.taskName || "").trim(),
-    durationMs: Math.round(record.durationMs)
-  };
-}
-/** @param {unknown} value @returns {AnyRecord[]} */
-function normalizeProjectQueue(value) {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap(item => {
-    const path = tryNormalizeMarkdownPath(item?.path);
-    return item && typeof item === "object" && String(item.sessionId || "") && path
-      ? [{ ...cloneValue(item), path }]
-      : [];
-  });
-}
-/** @param {unknown} value @returns {AnyRecord[]} */
-function normalizeFrontmatterQueue(value) {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap(item => {
-    const path = tryNormalizeMarkdownPath(item?.path);
-    return item && typeof item === "object" && String(item.key || "") && path
-      ? [{ ...cloneValue(item), path }]
-      : [];
-  });
-}
-/** @param {unknown} raw @param {Settings} settings @param {number} [now] @returns {Runtime} */
-function normalizeRuntime(raw, settings, now=Date.now()) {
-  const defaults = createRuntimeDefaults(settings);
-  const source = raw && typeof raw === "object" && !Array.isArray(raw) ? /** @type {AnyRecord} */ (raw) : {};
-  const legacy = !source.status;
-  const legacyPhase = source.phase === TIMER_STAGE.FOCUS || source.phase === TIMER_STAGE.BREAK ? source.phase : null;
-  const legacyPending = source.strongAlert && source.pendingPhase ? {
-    type: source.pendingPhase,
-    isLong: !!source.pendingIsLong,
-    cycleSlot: Number.isInteger(source.pendingCycleSlot) ? source.pendingCycleSlot : null,
-    nextStarted: !!source.pendingAutoStarted || source.phase === source.pendingPhase,
-    durationMs: configuredStageDurationMs(settings, source.pendingPhase, !!source.pendingIsLong, source.pendingCycleSlot)
-  } : null;
-  const attention = normalizeAttention(source.attention || legacyPending, settings);
-  const settlement = normalizeSettlement(source.pendingSettlement);
-  const breakTransition = normalizeBreakTransition(source.pendingBreakTransition);
-  const breakContinuation = normalizeBreakContinuation(source.breakContinuation);
-  const mode = source.mode === "modules" || (!legacyPhase && !source.attention && (!source.status || source.status === TIMER_STATUS.IDLE))
-    ? "modules" : (source.mode === "cycle" || source.cycleActive || (legacy && settings.workMode === "cycle") ? "cycle" : "standard");
-  let status = Object.values(TIMER_STATUS).includes(source.status) ? source.status : TIMER_STATUS.IDLE;
-  let stage = source.stage === TIMER_STAGE.FOCUS || source.stage === TIMER_STAGE.BREAK ? source.stage : null;
-  const durationMs = Math.max(0, Number(source.durationMs) || Number(source.durationSec || 0) * 1000);
-  let startedAtMs = Number(source.startedAtMs) || Number(source.startedAt) || 0;
-  let elapsedMs = Math.max(0, Number(source.elapsedMs) || 0);
-  let remainingMs = Math.max(0, Number(source.remainingMs) || 0);
-  let pausedAtMs = Number(source.pausedAtMs) || 0;
-
-  if (legacy) {
-    stage = legacyPhase;
-    if (legacyPhase) status = source.paused ? TIMER_STATUS.PAUSED : TIMER_STATUS.RUNNING;
-    if (attention && !attention.nextStarted) status = TIMER_STATUS.AWAITING;
-    if (source.paused) {
-      remainingMs = Math.max(0, Number(source.pausedLeftSec || 0) * 1000);
-      elapsedMs = Math.max(0, durationMs - remainingMs);
-      pausedAtMs = now;
-      startedAtMs = 0;
-    }
-    if (status === TIMER_STATUS.AWAITING) {
-      stage = null;
-      remainingMs = attention?.durationMs || 0;
-    }
-  }
-
-  const result = Object.assign({}, defaults, {
-    schemaVersion: TIMER_SCHEMA_VERSION,
-    status,
-    stage,
-    mode,
-    moduleRun:normalizeModuleRun(source.moduleRun),
-    currentModuleIndex:Math.max(0, Math.floor(Number(source.currentModuleIndex) || 0)),
-    selectedModuleId:String(source.selectedModuleId || "") || null,
-    completedWorkCount:Math.max(0, Math.floor(Number(source.completedWorkCount) || 0)),
-    completedRestCount:Math.max(0, Math.floor(Number(source.completedRestCount) || 0)),
-    completedLoopCount:Math.max(0, Math.floor(Number(source.completedLoopCount) || 0)),
-    cycleSlot: Number(source.cycleSlot) === 1 ? 1 : 0,
-    durationMs,
-    startedAtMs,
-    elapsedMs,
-    remainingMs,
-    pausedAtMs,
-    sessionId: source.sessionId || (source.moduleRun?.runId || (stage === TIMER_STAGE.FOCUS && [TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED].includes(status) ? createSessionId() : null)),
-    plannedTomatoCredit: stage === TIMER_STAGE.FOCUS ? plannedTomatoAmount(durationMs || (Number(settings.focusMin) || 25) * 60 * 1000) : 0,
-    attention,
-    pendingSettlement: settlement.journal,
-    pendingBreakTransition: breakTransition,
-    breakContinuation,
-    quarantinedSettlement: settlement.error ? {
-      sessionId: String(source.pendingSettlement?.sessionId || "") || null,
-      schemaVersion: Number.isFinite(source.pendingSettlement?.schemaVersion) ? source.pendingSettlement.schemaVersion : null,
-      atMs: now,
-      error: settlement.error
-    } : (source.quarantinedSettlement && typeof source.quarantinedSettlement === "object" ? cloneValue(source.quarantinedSettlement) : null),
-    projectQueue: normalizeProjectQueue(source.projectQueue),
-    frontmatterQueue: normalizeFrontmatterQueue(source.frontmatterQueue),
-    sessionCount: Math.max(0, Math.floor(Number(source.sessionCount) || 0)),
-    cycleRoundCount: Math.max(0, Math.floor(Number(source.cycleRoundCount) || 0)),
-    currentTaskName: String(source.currentTaskName ?? defaults.currentTaskName),
-    longFocusMinutes: Math.max(0.1, Number(source.longFocusMinutes) || defaults.longFocusMinutes),
-    dayKey: String(source.dayKey || defaults.dayKey),
-    viewWasOpen: !!source.viewWasOpen,
-    failure: source.failure && typeof source.failure === "object" ? source.failure : null
-  });
-
-  const moduleDefinitions = Array.isArray(settings.modules) ? settings.modules : [];
-  const selectedId = result.attention?.moduleRun?.moduleId || result.moduleRun?.moduleId || result.selectedModuleId;
-  const selectedIndex = moduleDefinitions.findIndex(item => item.id === selectedId);
-  const fallbackIndex = Math.min(result.currentModuleIndex || 0, Math.max(0, moduleDefinitions.length - 1));
-  result.selectedModuleId = moduleDefinitions[selectedIndex >= 0 ? selectedIndex : fallbackIndex]?.id || null;
-  if (result.status === TIMER_STATUS.IDLE) result.currentModuleIndex = selectedIndex >= 0 ? selectedIndex : fallbackIndex;
-
-  if (result.attention && !result.attention.nextStarted) result.status = TIMER_STATUS.AWAITING;
-  if (result.status === TIMER_STATUS.AWAITING && !result.attention) result.status = TIMER_STATUS.IDLE;
-  if (result.status === TIMER_STATUS.AWAITING && result.attention?.nextStarted) result.attention.nextStarted = false;
-  if ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED].includes(result.status)
-    && result.attention?.nextStarted && result.stage !== result.attention.type) result.attention = null;
-
-  if (result.status === TIMER_STATUS.IDLE) {
-    result.stage = null;
-    result.durationMs = 0;
-    result.startedAtMs = 0;
-    result.elapsedMs = 0;
-    result.remainingMs = 0;
-    result.pausedAtMs = 0;
-    result.sessionId = null;
-    result.plannedTomatoCredit = defaults.plannedTomatoCredit;
-    result.attention = null;
-    result.breakContinuation = null;
-    result.moduleRun = null;
-    result.cycleRoundCount = 0;
-    result.failure = null;
-  } else if (result.status === TIMER_STATUS.AWAITING) {
-    result.stage = null;
-    result.durationMs = 0;
-    result.startedAtMs = 0;
-    result.elapsedMs = 0;
-    result.pausedAtMs = 0;
-    result.remainingMs = result.attention?.durationMs || result.remainingMs;
-    result.sessionId = null;
-    result.plannedTomatoCredit = 0;
-    result.breakContinuation = result.attention?.type === TIMER_STAGE.BREAK ? breakContinuation : null;
-    result.moduleRun = null;
-    result.failure = null;
-  } else if (![TIMER_STAGE.FOCUS, TIMER_STAGE.BREAK].includes(result.stage)) {
-    result.status = TIMER_STATUS.IDLE;
-    result.durationMs = 0;
-    result.startedAtMs = 0;
-    result.elapsedMs = 0;
-    result.remainingMs = 0;
-    result.pausedAtMs = 0;
-    result.sessionId = null;
-    result.plannedTomatoCredit = defaults.plannedTomatoCredit;
-    result.breakContinuation = null;
-    result.moduleRun = null;
-    result.cycleRoundCount = 0;
-    result.attention = null;
-    result.failure = null;
-  } else if (result.status === TIMER_STATUS.PAUSED) {
-    result.remainingMs = Math.min(result.durationMs, Math.max(0, result.remainingMs));
-    if (!result.durationMs || result.remainingMs <= 0) {
-      result.status = TIMER_STATUS.FAILED;
-      result.failure = { stage: result.stage, sessionId: result.sessionId || null, atMs: now, message: "暂停状态缺少有效剩余时间" };
-    } else {
-      result.startedAtMs = 0;
-      result.elapsedMs = result.durationMs - result.remainingMs;
-      result.pausedAtMs = Number(result.pausedAtMs) || now;
-    }
-  } else if (result.status === TIMER_STATUS.RUNNING && (!result.durationMs || !result.startedAtMs)) {
-    result.status = TIMER_STATUS.FAILED;
-    result.failure = { stage: result.stage, sessionId: result.sessionId || null, atMs: now, message: "运行状态缺少有效开始时间" };
-  }
-  if (mode === "modules" && [TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED].includes(result.status) && !result.moduleRun) {
-    result.status = TIMER_STATUS.FAILED;
-    result.failure = { stage:result.stage, sessionId:result.sessionId, atMs:now, message:"模块执行快照缺失" };
-  }
-  if (result.stage !== TIMER_STAGE.BREAK && result.attention?.type !== TIMER_STAGE.BREAK && !result.pendingBreakTransition) result.breakContinuation = null;
-  if (result.status === TIMER_STATUS.SETTLING && !result.pendingSettlement && !result.pendingBreakTransition) {
-    result.status = TIMER_STATUS.FAILED;
-    result.failure = { stage: result.stage, sessionId: result.sessionId || null, atMs: now, message: "转换状态缺少 journal" };
-  }
-  if ([TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED].includes(result.status)) result.attention = null;
-  if (result.stage === TIMER_STAGE.FOCUS && result.status !== TIMER_STATUS.AWAITING) result.plannedTomatoCredit = plannedTomatoAmount(result.durationMs);
-  if (result.stage === TIMER_STAGE.BREAK) result.plannedTomatoCredit = 0;
-  if (settlement.error) {
-    result.status = TIMER_STATUS.FAILED;
-    result.stage = null;
-    result.durationMs = 0;
-    result.startedAtMs = 0;
-    result.elapsedMs = 0;
-    result.remainingMs = 0;
-    result.pausedAtMs = 0;
-    result.sessionId = null;
-    result.plannedTomatoCredit = 0;
-    result.attention = null;
-    result.failure = {
-      operation: "quarantineSettlement",
-      sessionId: result.quarantinedSettlement.sessionId,
-      stage: TIMER_STAGE.FOCUS,
-      target: null,
-      step: "validate",
-      atMs: now,
-      message: `无效结算 journal 已隔离：${settlement.error}`
-    };
-  }
-  return result;
+function normalizeSettings(raw = {}, fallback = DEFAULT_SETTINGS) {
+  const input = Number(raw?.schemaVersion) >= TIMER_SCHEMA_VERSION || Array.isArray(raw?.modules)
+    ? raw : migrateLegacySettings(raw);
+  return normalizeCurrentSettings(input, fallback, normalizePath);
 }
 /** @param {string} kind @param {boolean} [enabled] @param {"sine" | "square" | "triangle"} [waveform] @param {boolean} [strong] */
 function playBeep(kind, enabled=true, waveform='sine', strong=false) {
@@ -792,7 +325,9 @@ class PomodoroAIO extends Plugin {
   }
   /** @param {RuntimeEvent} event */
   applyRuntimeEvent(event){
-    const transition = reduceRuntime(this.runtime, event);
+    const transition = this.runtime.mode === "modules" && !isLegacyRuntimeEvent(event)
+      ? reduceRuntime(this.runtime, event)
+      : reduceLegacyRuntime(this.runtime, event);
     this.runtime = transition.runtime;
     return transition.effects;
   }
@@ -819,7 +354,9 @@ class PomodoroAIO extends Plugin {
   }
   async loadSettings(){
     const data = await this._getRuntimeStore().loadSettings();
-    this.settings = normalizeSettings(data || {});
+    const record = data && typeof data === "object" && !Array.isArray(data) ? /** @type {AnyRecord} */ (data) : {};
+    this.settings = normalizeSettings(record);
+    if (!Number.isFinite(Number(record.schemaVersion)) || Number(record.schemaVersion) < TIMER_SCHEMA_VERSION) await this.saveSettings();
     return this.settings;
   }
   async saveSettings(){
@@ -1065,48 +602,19 @@ class PomodoroAIO extends Plugin {
     }
     await this.startPendingStage();
   }
-  async startPendingStage(){
-    const next = this.runtime.attention;
-    if (!next || next.nextStarted) { await this.stopStrongAlert(); return; }
-    if (next.moduleRun && Number.isInteger(next.moduleIndex)) {
-      return this.startModule(Number(next.moduleIndex), { moduleRun:next.moduleRun, allowTransition:true });
-    }
-    if (next.type === TIMER_STAGE.BREAK) await this.startBreak(next.isLong, {
-      forceRun:true,
-      cause:'manual',
-      durationMs:next.durationMs,
-      allowTransition:true,
-      breakContinuation:this.runtime.breakContinuation || undefined
-    });
-    else if (next.type === TIMER_STAGE.FOCUS && Number.isInteger(next.cycleSlot)) {
-      /** @type {StartFocusOptions} */
-      const startOptions = { cause:'manual', durationMs:next.durationMs, allowTransition:true };
-      if (next.taskName !== undefined) startOptions.taskName = next.taskName;
-      await this.startCycle(next.cycleSlot === 1 ? 1 : 0, startOptions);
-    }
-    else if (next.type === TIMER_STAGE.FOCUS) await this.startFocus({ cause:'manual', durationMs:next.durationMs, allowTransition:true });
-    else await this.stopStrongAlert();
-  }
-  /** @param {NextPhase} nextPhase */
+  startPendingStage(){ return this._getSequenceController().startPendingStage(); }
+  /** @param {{type?:string,autoStarted?:boolean,durationMs?:number,moduleIndex?:number,moduleRun?:import("../types/contracts").ModuleRun|null}} nextPhase */
   async beginStrongAlert(nextPhase){
-    const type = nextPhase?.type;
-    if (type !== TIMER_STAGE.FOCUS && type !== TIMER_STAGE.BREAK) return;
-    const stage = /** @type {TimerStage} */ (type);
-    const cycleSlot = Number.isInteger(nextPhase?.cycleSlot) ? (nextPhase.cycleSlot === 1 ? 1 : 0) : null;
-    /** @type {Attention} */
+    if (!nextPhase?.moduleRun) return this._getLegacyController().beginStrongAlert(nextPhase);
+    const run = normalizeModuleRun(nextPhase.moduleRun);
+    if (!run) return;
     const attention = {
-      type:stage,
-      isLong: !!nextPhase?.isLong,
-      cycleSlot,
-      nextStarted: !!nextPhase?.autoStarted,
-      durationMs: Math.max(1, Number(nextPhase?.durationMs) || configuredStageDurationMs(this.settings, stage, !!nextPhase?.isLong, cycleSlot))
+      type:run.type === "work" ? TIMER_STAGE.FOCUS : TIMER_STAGE.BREAK,
+      nextStarted:nextPhase.autoStarted === true,
+      durationMs:Math.max(1, Number(nextPhase.durationMs) || run.durationMs),
+      moduleIndex:Number.isInteger(nextPhase.moduleIndex) ? nextPhase.moduleIndex : 0,
+      moduleRun:run
     };
-    if (nextPhase?.taskName !== undefined) attention.taskName = String(nextPhase.taskName || "").trim();
-    if (nextPhase?.moduleRun) {
-      const moduleRun = normalizeModuleRun(nextPhase.moduleRun);
-      if (moduleRun) attention.moduleRun = moduleRun;
-    }
-    if (Number.isInteger(nextPhase?.moduleIndex)) attention.moduleIndex = nextPhase.moduleIndex;
     await this.commitRuntimeEvent({ type:RUNTIME_EVENT.SET_ATTENTION, attention });
   }
   async stopStrongAlert(){
@@ -1119,8 +627,8 @@ class PomodoroAIO extends Plugin {
   }
   /** @param {unknown} tomatoAmount @param {string} next */
   focusCompletionBody(tomatoAmount, next){
-    const task = String(this.runtime.moduleRun?.name || this.runtime.currentTaskName || this.settings.defaultTaskName || "").trim();
-    return `${task ? `完成：${task} · ` : ""}+${formatTomatoNumber(tomatoAmount)}🍅\n下一步：${next}`;
+    if (!this.runtime.moduleRun) return this._getLegacyController().focusCompletionBody(tomatoAmount, next);
+    return `完成：${this.runtime.moduleRun.name} · +${formatTomatoNumber(tomatoAmount)}🍅\n下一步：${next}`;
   }
   /** @param {unknown} commandId */
   executeStageCommand(commandId){
@@ -1143,6 +651,19 @@ class PomodoroAIO extends Plugin {
   /** @param {unknown} commandId */
   isWorkspaceLayoutActive(commandId){
     return this._getWorkspacesPlus().isLayoutActive(commandId);
+  }
+
+  _getLegacyController(){
+    if (!this.legacyController) this.legacyController = new LegacyRuntimeController(this, { playBeep, sysNotify, logPluginError, normalizeSettings, tryNormalizeMarkdownPath });
+    return this.legacyController;
+  }
+  _getSettlementCoordinator(){
+    if (!this.settlementCoordinator) this.settlementCoordinator = new SettlementCoordinator(this, { playBeep, sysNotify, logPluginError });
+    return this.settlementCoordinator;
+  }
+  _getSequenceController(){
+    if (!this.sequenceController) this.sequenceController = new SequenceController(this, { playBeep, sysNotify, logPluginError });
+    return this.sequenceController;
   }
 
   /* ====== 计时控制 ====== */
@@ -1241,264 +762,21 @@ class PomodoroAIO extends Plugin {
     return true;
   }
   /** @param {number | AnyRecord} [indexOrOptions] @param {AnyRecord} [options] */
-  async startSequence(indexOrOptions, options={}){
-    const selectedIndex = this.settings.modules.findIndex(item => item.id === this.runtime.selectedModuleId);
-    const index = typeof indexOrOptions === "number" ? indexOrOptions
-      : selectedIndex >= 0 ? selectedIndex : this.runtime.currentModuleIndex || 0;
-    if (typeof indexOrOptions === "object") options = indexOrOptions;
-    if (this.runtime.attention?.moduleRun && Number.isInteger(this.runtime.attention.moduleIndex)) {
-      return this.startPendingStage();
-    }
-    if (this.runtime.status !== TIMER_STATUS.IDLE || this.runtime.attention) {
-      new Notice("当前已有计时，请先完成或重置当前模块"); return false;
-    }
-    if (!this.settings.modules.length) { new Notice("请先添加工作或休息模块"); return false; }
-    return this.startModule(index, { ...options, newSequence:true });
-  }
+  startSequence(indexOrOptions, options={}) { return this._getSequenceController().startSequence(indexOrOptions, options); }
   /** @param {number} index */
-  async selectModule(index){
-    const definition = this.settings.modules[index];
-    if (!Number.isInteger(index) || !definition) { new Notice("请选择有效的工作或休息模块"); return false; }
-    if (this.runtime.pendingSettlement || this.runtime.pendingBreakTransition) {
-      new Notice("当前结算尚未完成，请先恢复结算"); return false;
-    }
-    const idle = this.runtime.status === TIMER_STATUS.IDLE && !this.runtime.attention;
-    const awaiting = this.runtime.status === TIMER_STATUS.AWAITING && !!this.runtime.attention?.moduleRun;
-    if (!idle && !awaiting) {
-      new Notice("正在执行当前模块，请先完成本段或重置后选择"); return false;
-    }
-    const run = awaiting ? createModuleRunSnapshot(definition, this.settings.projectAssignments,
-      { enableProjects:this.settings.enableProjects, startedAtMs:Date.now() }) : null;
-    const attention = run ? {
-      type:run.type === "work" ? TIMER_STAGE.FOCUS : TIMER_STAGE.BREAK,
-      isLong:false, cycleSlot:null, nextStarted:false,
-      durationMs:run.durationMs, moduleIndex:index, moduleRun:run
-    } : null;
-    try {
-      await this.commitRuntimeEvent({ type:RUNTIME_EVENT.SELECT_MODULE,
-        moduleIndex:index, moduleId:definition.id, attention });
-      return true;
-    } catch (error) {
-      logPluginError("select-module", error, { step:"save-runtime" });
-      new Notice("选择模块失败，请稍后重试");
-      return false;
-    }
-  }
+  selectModule(index) { return this._getSequenceController().selectModule(index); }
   /** @param {number} index @param {AnyRecord} [options] */
-  async startModule(index, options={}){
-    if (this.runtime.pendingSettlement && !options.allowPendingSettlement) {
-      new Notice("存在未完成结算，请先重载插件恢复"); return false;
-    }
-    if (this.runtime.pendingBreakTransition && !options.allowPendingBreakTransition) {
-      new Notice("休息转换待恢复，请先重载插件恢复"); return false;
-    }
-    if (!options.allowTransition && (this.runtime.status !== TIMER_STATUS.IDLE || this.runtime.attention)) {
-      new Notice("当前已有计时，请先完成或重置当前模块"); return false;
-    }
-    const pendingRun = normalizeModuleRun(options.moduleRun);
-    const currentIndex = pendingRun
-      ? this.settings.modules.findIndex(item => item.id === pendingRun.moduleId) : index;
-    const resolvedIndex = currentIndex >= 0 ? currentIndex : index;
-    const definition = this.settings.modules[resolvedIndex];
-    const run = normalizeModuleRun(definition ? createModuleRunSnapshot(
-      definition, this.settings.projectAssignments,
-      { enableProjects:this.settings.enableProjects, runId:pendingRun?.runId, startedAtMs:Date.now() }
-    ) : pendingRun);
-    if (!run) { new Notice("模块配置无效，请检查名称与时长"); return false; }
-    const previousRuntime = this.runtime;
-    this.ensureDayFreshness(false);
-    const effects = this.applyRuntimeEvent({
-      type:RUNTIME_EVENT.START_STAGE,
-      stage:run.type === "work" ? TIMER_STAGE.FOCUS : TIMER_STAGE.BREAK,
-      durationMs:run.durationMs, now:Date.now(), sessionId:run.runId,
-      mode:"modules", moduleIndex:resolvedIndex, moduleRun:run, newSequence:options.newSequence === true,
-      currentTaskName:run.type === "work" ? run.name : ""
-    });
-    await this.saveTransition(previousRuntime);
-    this.runRuntimeEffects(effects);
-    playBeep(run.type === "work" ? this.settings.focusStartSound : this.settings.breakStartSound,
-      this.settings.enableSound, this.settings.soundWaveform);
-    if (!options.suppressNotify) sysNotify(run.type === "work" ? "开始工作" : "开始休息",
-      `${run.name} · ${formatTomatoNumber(run.durationMin)} 分钟`, this.settings.enableNotify);
-    if (run.workspaceCommandId) this.executeStageCommand(run.workspaceCommandId);
-    return true;
-  }
-  /** @param {boolean | StartFocusOptions} [options] */
-  async startFocus(options){
-    /** @type {StartFocusOptions} */
-    let opts = { suppressNotify:false, cause:'manual', minutes:null, cycle:false };
-    if (typeof options === 'boolean') opts.suppressNotify = options;
-    else if (options && typeof options === 'object') opts = Object.assign(opts, options);
-    if (this.runtime.pendingSettlement && !opts.allowPendingSettlement) {
-      new Notice("存在未完成结算，请先重载插件恢复");
-      return false;
-    }
-    if (this.runtime.pendingBreakTransition && !opts.allowPendingBreakTransition) {
-      new Notice("休息转换待恢复，请重载插件或重置");
-      return false;
-    }
-    if (!opts.allowTransition && (this.runtime.status !== TIMER_STATUS.IDLE || this.runtime.attention)) {
-      new Notice("当前已有计时，请先完成或重置当前阶段");
-      return false;
-    }
-    const previousRuntime = this.runtime;
-    this.ensureDayFreshness(false);
-    const requestedDurationMs = Number(opts.durationMs);
-    const durationMs = Number.isFinite(requestedDurationMs) && requestedDurationMs > 0 ? Math.round(requestedDurationMs) : 0;
-    const minutesRaw = typeof opts.minutes === 'number' && isFinite(opts.minutes) && opts.minutes > 0 ? opts.minutes : (this.settings.focusMin || 25);
-    const minutes = durationMs ? durationMs / 60_000 : Math.max(0.1, minutesRaw);
-    const effects = this.applyRuntimeEvent({
-      type:RUNTIME_EVENT.START_STAGE,
-      stage:TIMER_STAGE.FOCUS,
-      durationMs:durationMs || minutes * 60 * 1000,
-      now:Date.now(),
-      sessionId:createSessionId(),
-      mode:opts.cycle ? "cycle" : "standard",
-      cycleSlot:opts.cycle ? (opts.cycleSlot === 1 ? 1 : 0) : 0,
-      currentTaskName:opts.cycle && opts.taskName !== undefined ? opts.taskName : undefined,
-      longFocusMinutes:opts.minutes != null && !opts.cycle ? minutes : undefined,
-      cycleRoundCount:opts.cycle && opts.newCycle ? 0 : undefined
-    });
-    await this.saveTransition(previousRuntime);
-    this.runRuntimeEffects(effects);
-    playBeep(this.settings.focusStartSound, this.settings.enableSound, this.settings.soundWaveform);
-    if (!opts.suppressNotify) {
-      const task = String(this.runtime.currentTaskName || this.settings.defaultTaskName || "").trim();
-      sysNotify("开始专注", `${formatTomatoNumber(minutes)} 分钟${task ? ` · 任务：${task}` : ""}`, this.settings.enableNotify);
-    }
-    const commandId = opts.cycle
-      ? (this.runtime.cycleSlot === 1 ? this.settings.cycleWorkspaceCommandB : this.settings.cycleWorkspaceCommandA)
-      : this.settings.focusStartCommandId;
-    if (opts.cause !== 'auto' && commandId) this.executeStageCommand(commandId);
-  }
-  /** @param {number} [slot] @param {StartFocusOptions} [options] */
-  async startCycle(slot=this.runtime.cycleSlot, options={}){
-    if (this.runtime.pendingSettlement) {
-      new Notice("存在未完成结算，请先重载插件恢复");
-      return false;
-    }
-    if (this.runtime.pendingBreakTransition) {
-      new Notice("休息转换待恢复，请重载插件或重置");
-      return false;
-    }
-    if (!options?.allowTransition && (this.runtime.status !== TIMER_STATUS.IDLE || this.runtime.attention)) {
-      new Notice("当前已有计时，请先完成或重置当前阶段");
-      return false;
-    }
-    const cycleSlot = slot === 1 ? 1 : 0;
-    const newCycle = !options?.allowTransition && this.runtime.status === TIMER_STATUS.IDLE && !this.runtime.attention;
-    const hasTaskSnapshot = Object.prototype.hasOwnProperty.call(options || {}, "taskName");
-    const configuredTask = cycleSlot ? this.settings.cycleTaskB : this.settings.cycleTaskA;
-    const task = String(hasTaskSnapshot ? options.taskName : configuredTask || "").trim();
-    const requestedDurationMs = Number(options?.durationMs);
-    const minutes = Number.isFinite(requestedDurationMs) && requestedDurationMs > 0
-      ? requestedDurationMs / 60_000
-      : Number(cycleSlot ? this.settings.cycleMinB : this.settings.cycleMinA);
-    if (!task) { new Notice(`请先填写任务 ${cycleSlot ? "B" : "A"}`); return; }
-    if (!isFinite(minutes) || minutes <= 0) { new Notice(`请设置任务 ${cycleSlot ? "B" : "A"} 的时长`); return; }
-    return this.startFocus(Object.assign({ cause:'manual' }, options, { minutes, cycle:true, cycleSlot, taskName:task, newCycle }));
-  }
-  /** @param {boolean} [isLong] @param {boolean | StartBreakOptions} [options] */
-  async startBreak(isLong=false, options){
-    /** @type {StartBreakOptions} */
-    let opts = { forceRun:true, suppressNotify:false, cause:'manual' };
-    if (typeof options === 'boolean') opts.forceRun = options;
-    else if (options && typeof options === 'object') opts = Object.assign(opts, options);
-    if (this.runtime.pendingSettlement && !opts.allowPendingSettlement) {
-      new Notice("存在未完成结算，请先重载插件恢复");
-      return false;
-    }
-    if (this.runtime.pendingBreakTransition && !opts.allowPendingBreakTransition) {
-      new Notice("休息转换待恢复，请重载插件或重置");
-      return false;
-    }
-    if (!opts.allowTransition && (this.runtime.status !== TIMER_STATUS.IDLE || this.runtime.attention)) {
-      new Notice("当前已有计时，请先完成或重置当前阶段");
-      return false;
-    }
-    const previousRuntime = this.runtime;
-    this.ensureDayFreshness(false);
-    const requestedDurationMs = Number(opts.durationMs);
-    const durationMs = Number.isFinite(requestedDurationMs) && requestedDurationMs > 0
-      ? Math.round(requestedDurationMs)
-      : Math.max(1, Math.round((isLong ? (this.settings.longBreakMin||15) : (this.settings.breakMin||5)) * 60 * 1000));
-    const minutes = durationMs / 60_000;
-    const forceRun = opts.forceRun ?? true;
-    const shouldRun = forceRun !== false && (forceRun || !!this.settings.autoNext);
-    const continuation = normalizeBreakContinuation(opts.breakContinuation);
-    const effects = this.applyRuntimeEvent(shouldRun ? {
-      type:RUNTIME_EVENT.START_STAGE,
-      stage:TIMER_STAGE.BREAK,
-      durationMs,
-      now:Date.now(),
-      sessionId:null,
-      mode:continuation ? "cycle" : "standard",
-      cycleSlot:continuation ? continuation.cycleSlot : 0,
-      breakContinuation:continuation
-    } : {
-      type:RUNTIME_EVENT.AWAIT_STAGE,
-      durationMs,
-      mode:"standard",
-      cycleSlot:0,
-      breakContinuation:null
-    });
-    await this.saveTransition(previousRuntime);
-    this.runRuntimeEffects(effects);
-    playBeep(this.settings.breakStartSound, this.settings.enableSound, this.settings.soundWaveform);
-    if (!opts.suppressNotify) {
-      const task = String(this.runtime.currentTaskName || this.settings.defaultTaskName || "").trim();
-      sysNotify("开始休息", `${formatTomatoNumber(minutes)} 分钟${task ? ` · 刚完成：${task}` : ""}`, this.settings.enableNotify);
-    }
-    if (opts.cause !== 'auto' && this.settings.breakStartCommandId) this.executeStageCommand(this.settings.breakStartCommandId);
-  }
+  startModule(index, options={}) { return this._getSequenceController().startModule(index, options); }
+  /** @param {any} [options] */
+  startFocus(options){ return this._getLegacyController().startFocus(options); }
+  /** @param {number} [slot] @param {any} [options] */
+  startCycle(slot, options={}){ return this._getLegacyController().startCycle(slot, options); }
+  /** @param {boolean} [isLong] @param {any} [options] */
+  startBreak(isLong=false, options){ return this._getLegacyController().startBreak(isLong, options); }
   /** @param {boolean} [triggerCommand] */
-  async togglePause(triggerCommand=false){
-    const r = this.runtime;
-    if (!/** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(r.status)) return false;
-    const previousRuntime = this.runtime;
-    this.ensureDayFreshness(false);
-    const wasPaused = r.status === TIMER_STATUS.PAUSED;
-    let effects;
-    if (!wasPaused){
-      const now = Date.now();
-      const elapsedMs = this.getElapsedMs(now);
-      if (elapsedMs >= r.durationMs) {
-        await (r.stage === TIMER_STAGE.FOCUS ? this.settleFocus(false) : this.settleBreak());
-        return false;
-      }
-      effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.PAUSE, now, elapsedMs });
-    } else {
-      effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.RESUME, now:Date.now() });
-    }
-    await this.saveTransition(previousRuntime);
-    this.runRuntimeEffects(effects);
-    const current = this.runtime;
-    if (triggerCommand && wasPaused && current.status === TIMER_STATUS.RUNNING) {
-      const focusCommandId = current.moduleRun?.workspaceCommandId || (current.mode === 'cycle'
-        ? (current.cycleSlot === 1 ? this.settings.cycleWorkspaceCommandB : this.settings.cycleWorkspaceCommandA)
-        : this.settings.focusStartCommandId);
-      if (current.stage === TIMER_STAGE.FOCUS && focusCommandId) this.executeStageCommand(focusCommandId);
-      else if (current.stage === TIMER_STAGE.BREAK && this.settings.breakStartCommandId) this.executeStageCommand(this.settings.breakStartCommandId);
-    }
-    return true;
-  }
+  togglePause(triggerCommand=false){ return this._getSequenceController().togglePause(triggerCommand); }
   /** @param {boolean} [showNotice] */
-  async reset(showNotice=true){
-    if (this.runtime.pendingSettlement) {
-      new Notice("存在未完成结算，请先重载插件恢复");
-      return false;
-    }
-    const previousRuntime = this.runtime;
-    this.ensureDayFreshness(false);
-    const effects = this.applyRuntimeEvent({
-      type:RUNTIME_EVENT.RESET,
-      mode:'modules', selectedModuleId:this.settings.modules?.[0]?.id || null
-    });
-    await this.saveTransition(previousRuntime);
-    this.runRuntimeEffects(effects);
-    if (showNotice) new Notice("已重置");
-    return true;
-  }
+  reset(showNotice=true) { return this._getSequenceController().reset(showNotice); }
 
   /* ====== 到点/补记 ====== */
   async tick(){
@@ -1530,33 +808,7 @@ class PomodoroAIO extends Plugin {
     await this.settleFocus(true);
   }
 
-  async completeEmptyWorkModule(){
-    const r = this.runtime;
-    if (this._completionInFlight || r.moduleRun?.type !== "work"
-      || !/** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(r.status)) return false;
-    this._completionInFlight = true;
-    const next = this.buildModuleTransition(r, "work");
-    /** @type {BreakTransition} */
-    const transition = {
-      schemaVersion:1, status:"break-completing", mode:"modules", completionType:"work",
-      autoNext:next.autoNext, durationMs:next.durationMs, createdAtMs:Date.now(),
-      moduleIndex:next.moduleIndex, moduleRun:next.moduleRun,
-      completedWorkCountAfter:next.completedWorkCountAfter,
-      sessionCountAfter:(r.sessionCount || 0) + 1,
-      completedLoopCountAfter:next.completedLoopCountAfter
-    };
-    const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.BEGIN_BREAK_TRANSITION, transition });
-    try {
-      await this.saveState({ critical:true });
-      this.runRuntimeEffects(effects);
-      await this.advanceBreakTransition(transition);
-      new Notice("本段已完成；有效工作时长为 0，未记番茄");
-      return true;
-    } catch (error) {
-      this.markSettlementFailed(error, { operation:"completeEmptyWork", step:"advance" });
-      return false;
-    } finally { this._completionInFlight = false; }
-  }
+  completeEmptyWorkModule(){ return this._getSettlementCoordinator().completeEmptyWorkModule(); }
 
   async completeCurrentModule(){
     if (this.runtime.moduleRun?.type === "rest"
@@ -1566,77 +818,31 @@ class PomodoroAIO extends Plugin {
     return false;
   }
 
-  /** @param {{cycleSlot?:0|1, moduleId?:string} | 0 | 1 | undefined} [options] */
+  /** @param {{moduleId?:string} | undefined} [options] */
   async completeTask(options){
-    if (Array.isArray(this.settings.modules)) {
-      const selectedId = (typeof options === "object" ? options?.moduleId : null) || this.runtime.moduleRun?.moduleId;
-      const module = this.settings.modules.find(item => item.id === selectedId && item.type === "work");
-      if (!module) { new Notice("请先选择要完成的工作模块"); return false; }
-      const activeRun = this.runtime.moduleRun;
-      const task = activeRun && activeRun.moduleId === selectedId ? activeRun.name : module.name;
-      try {
-        const daily = this._getDailyRepository();
-        const current = await daily.readPath(this.todayFilePath());
-        if (!daily.isFile(current.file)) throw new Error("找不到当天任务文件");
-        planTaskLineCompletion(current.text, task);
-        if (this.runtime.moduleRun?.moduleId === selectedId
-          && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(this.runtime.status)) {
-          if (this.getElapsedMs() > 0) await this.settleFocus(true);
-          else await this.completeEmptyWorkModule();
-          if (this.runtime.pendingSettlement || this.runtime.status === TIMER_STATUS.FAILED) return false;
-        }
-        await daily.completeTask({ taskName:task, path:this.todayFilePath() });
-        await this.clearCompletedModuleTask(module.id);
-        new Notice("事情已完成，日记待办已勾选");
-        return true;
-      } catch (error) {
-        logPluginError("complete-module-task", error, { target:this.todayFilePath(), step:"daily-checkbox" });
-        new Notice("完成事情失败，请检查当日日记");
-        return false;
-      }
-    }
-    const requestedCycleSlot = typeof options === "number"
-      ? (options === 1 ? 1 : 0)
-      : (options?.cycleSlot === 1 ? 1 : (options?.cycleSlot === 0 ? 0 : null));
-    const cycleSlot = requestedCycleSlot === null && this.runtime.mode === "cycle"
-      ? (this.runtime.cycleSlot === 1 ? 1 : 0)
-      : requestedCycleSlot;
-    const taskName = cycleSlot === 0
-      ? this.settings.cycleTaskA
-      : cycleSlot === 1
-        ? this.settings.cycleTaskB
-        : (this.runtime.currentTaskName || this.settings.defaultTaskName);
-    const task = String(taskName || "").trim();
-    if (!task) {
-      new Notice("请先选择要完成的任务");
-      return false;
-    }
-    const activeSameName = this.runtime.stage === TIMER_STAGE.FOCUS
-      && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(this.runtime.status)
-      && String(this.runtime.currentTaskName || "").trim().toLowerCase() === task.toLowerCase();
-    if (activeSameName && !this.isActiveFocusTask(task, cycleSlot)) {
-      new Notice("当前正在执行另一循环项，无法完成同名任务");
-      return false;
-    }
+    const selectedId = (typeof options === "object" ? options?.moduleId : null) || this.runtime.moduleRun?.moduleId;
+    const module = this.settings.modules.find(item => item.id === selectedId && item.type === "work");
+    if (!module) { new Notice("请先选择要完成的工作模块"); return false; }
+    const activeRun = this.runtime.moduleRun;
+    const task = activeRun && activeRun.moduleId === selectedId ? activeRun.name : module.name;
     try {
       const daily = this._getDailyRepository();
       const current = await daily.readPath(this.todayFilePath());
       if (!daily.isFile(current.file)) throw new Error("找不到当天任务文件");
-      // Reject missing or ambiguous checkboxes before ending a running focus.
-      // The atomic write below checks again in case the note changes meanwhile.
       planTaskLineCompletion(current.text, task);
-      if (!(await this.settleOrEndActiveTaskForCompletion(task, cycleSlot))) {
-        new Notice("当前专注尚未安全结算，任务没有标记完成");
-        return false;
+      if (this.runtime.moduleRun?.moduleId === selectedId
+        && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(this.runtime.status)) {
+        if (this.getElapsedMs() > 0) await this.settleFocus(true);
+        else await this.completeEmptyWorkModule();
+        if (this.runtime.pendingSettlement || this.runtime.status === TIMER_STATUS.FAILED) return false;
       }
-      await this._getDailyRepository().completeTask({ taskName:task, path:this.todayFilePath() });
-      await this.clearCompletedTaskSelection(task, cycleSlot);
-      new Notice("任务已完成，日记与任务选择已同步");
+      await daily.completeTask({ taskName:task, path:this.todayFilePath() });
+      await this.clearCompletedModuleTask(module.id);
+      new Notice("事情已完成，日记待办已勾选");
       return true;
     } catch (error) {
-      logPluginError("complete-task", error, { target:this.todayFilePath(), step:"daily-checkbox" });
-      const message = String(error instanceof Error ? error.message : error);
-      new Notice(message.includes("多个同名") ? message : "完成任务失败，请检查当日日记");
+      logPluginError("complete-module-task", error, { target:this.todayFilePath(), step:"daily-checkbox" });
+      new Notice("完成事情失败，请检查当日日记");
       return false;
     }
   }
@@ -1662,732 +868,52 @@ class PomodoroAIO extends Plugin {
     return true;
   }
 
-  /** @param {string} task @param {0|1|null} cycleSlot */
-  isActiveFocusTask(task, cycleSlot){
-    const isCycle = cycleSlot !== null;
-    return this.runtime.stage === TIMER_STAGE.FOCUS
-      && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(this.runtime.status)
-      && this.runtime.mode === (isCycle ? "cycle" : "standard")
-      && (!isCycle || this.runtime.cycleSlot === cycleSlot)
-      && String(this.runtime.currentTaskName || "").trim().toLowerCase() === String(task || "").trim().toLowerCase();
-  }
-
-  /** @param {string} task @param {0|1|null} cycleSlot */
-  async settleOrEndActiveTaskForCompletion(task, cycleSlot){
-    if (!this.isActiveFocusTask(task, cycleSlot)) return true;
-    if (this._completionInFlight) return false;
-    if (this.getElapsedMs() > 0) {
-      await this.settleFocus(true);
-      return !this.runtime.pendingSettlement && this.runtime.status !== TIMER_STATUS.FAILED;
-    }
-    return this.reset(false);
-  }
-
-  /** @param {string} task @param {0|1|null} cycleSlot */
-  async clearCompletedTaskSelection(task, cycleSlot){
-    const normalized = String(task || "").trim();
-    if (!normalized) return false;
-    /** @param {unknown} value */
-    const isSameTask = value => String(value || "").trim().toLowerCase() === normalized.toLowerCase();
-    let settingsChanged = false;
-    let runtimeChanged = false;
-    if (cycleSlot === 0 && isSameTask(this.settings.cycleTaskA)) {
-      Object.assign(this.settings, { cycleTaskA:"", cycleWorkspaceCommandA:"", cycleTaskBlackoutA:false });
-      settingsChanged = true;
-    } else if (cycleSlot === 1 && isSameTask(this.settings.cycleTaskB)) {
-      Object.assign(this.settings, { cycleTaskB:"", cycleWorkspaceCommandB:"", cycleTaskBlackoutB:false });
-      settingsChanged = true;
-    } else if (cycleSlot === null) {
-      if (isSameTask(this.settings.defaultTaskName)) {
-        this.settings.defaultTaskName = "";
-        settingsChanged = true;
-      }
-      if (this.settings.taskBlackoutEnabled) {
-        this.settings.taskBlackoutEnabled = false;
-        settingsChanged = true;
-      }
-      runtimeChanged = isSameTask(this.runtime.currentTaskName);
-    }
-    if (settingsChanged) await this.saveSettings();
-    if (runtimeChanged) {
-      const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.SET_TASK, name:"" });
-      await this.saveState({ critical:true });
-      this.runRuntimeEffects(effects);
-    } else if (settingsChanged) {
-      this.broadcast();
-    }
-    const changed = settingsChanged || runtimeChanged;
-    if (changed) this.app?.workspace?.trigger?.("pomodoro:aio-task-selection-cleared", { taskName:normalized, cycleSlot });
-    return changed;
-  }
+  /** @param {string} task @param {0|1|null} slot */
+  isActiveFocusTask(task, slot){ return this._getLegacyController().isActiveFocusTask(task, slot); }
+  /** @param {string} task @param {0|1|null} slot */
+  settleOrEndActiveTaskForCompletion(task, slot){ return this._getLegacyController().settleOrEndActiveTaskForCompletion(task, slot); }
+  /** @param {string} task @param {0|1|null} slot */
+  clearCompletedTaskSelection(task, slot){ return this._getLegacyController().clearCompletedTaskSelection(task, slot); }
 
   /** @param {boolean} [manual] */
-  async settleFocus(manual=false){
-    const r = this.runtime;
-    if (this._completionInFlight || !/** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(r.status) || r.stage !== TIMER_STAGE.FOCUS) return;
-    this._completionInFlight = true;
-    const elapsedMs = this.getElapsedMs();
-    const tomatoAmount = manual ? actualTomatoAmount(elapsedMs) : plannedTomatoAmount(r.durationMs);
-    const settlementEffects = this.applyRuntimeEvent({
-      type:RUNTIME_EVENT.BEGIN_FOCUS_SETTLEMENT,
-      sessionId:r.sessionId || createSessionId()
-    });
-    try {
-      const current = this.runtime;
-      if (!current.pendingSettlement || current.pendingSettlement.sessionId !== current.sessionId) {
-        const sessionCountAfter = (current.sessionCount || 0) + 1;
-        const transition = current.moduleRun
-          ? this.buildModuleTransition(current, "work")
-          : buildNextStageTransition(this.settings, current, sessionCountAfter);
-        const journal = await this.prepareSettlement(tomatoAmount, transition, sessionCountAfter, manual);
-        this.applyRuntimeEvent({ type:RUNTIME_EVENT.SET_PENDING_SETTLEMENT, journal });
-        await this.saveState({ critical:true });
-      }
-      this.runRuntimeEffects(settlementEffects);
-      await this.resumePendingSettlement();
-    } catch (error) {
-      this.markSettlementFailed(error, { operation:"settleFocus", step:"prepareOrResume" });
-    } finally {
-      this._completionInFlight = false;
-    }
-  }
-  /** @param {Runtime} runtime @param {"work"|"rest"} completedType @returns {StageTransition} */
-  buildModuleTransition(runtime, completedType){
-    const modules = this.settings.modules || [];
-    const found = modules.findIndex(item => item.id === runtime.moduleRun?.moduleId);
-    const index = found >= 0 ? found : Math.min(runtime.currentModuleIndex || 0, modules.length - 1);
-    const position = getNextModule(modules, index, runtime.completedLoopCount || 0, this.settings);
-    const nextDefinition = position.nextIndex !== null ? modules[position.nextIndex] : null;
-    const nextRun = nextDefinition ? createModuleRunSnapshot(nextDefinition, this.settings.projectAssignments,
-      { enableProjects:this.settings.enableProjects, startedAtMs:Date.now() }) : null;
-    return {
-      mode:"modules",
-      durationMs:nextRun?.durationMs || 1,
-      autoNext:!!this.settings.autoAdvance && !!nextRun,
-      moduleIndex:nextRun ? position.nextIndex : null,
-      moduleRun:nextRun,
-      completedWorkCountAfter:(runtime.completedWorkCount || 0) + (completedType === "work" ? 1 : 0),
-      completedRestCountAfter:(runtime.completedRestCount || 0) + (completedType === "rest" ? 1 : 0),
-      completedLoopCountAfter:position.completedLoopCount
-    };
-  }
-  /** @param {number} amount @param {StageTransition} transition @param {number} sessionCountAfter @param {boolean} [manual] @returns {Promise<SettlementJournal>} */
-  async prepareSettlement(amount, transition, sessionCountAfter, manual=false){
-    const path = this.todayFilePath();
-    const dailyRepository = this._getDailyRepository();
-    const { text: sourceText } = await dailyRepository.readPath(path);
-    const taskName = String(this.runtime.moduleRun?.name || this.runtime.currentTaskName || this.settings.defaultTaskName || "").trim();
-    const daily = buildDailySettlementPlan(sourceText, {
-      path,
-      taskName,
-      frontmatterKey: this.settings.fmKey || "番茄数",
-      amount,
-      settings: this.settings
-    });
-    return buildSettlementJournal({
-      sessionId: this.runtime.sessionId || createSessionId(),
-      durationMs: this.runtime.durationMs,
-      taskName,
-      amount,
-      manual,
-      sessionCountAfter,
-      transition,
-      createdAtMs: Date.now(),
-      daily,
-      project: await this.prepareProjectSettlement(amount)
-    });
-  }
-  /** @param {number} amount @returns {Promise<ProjectSettlementPlan>} */
-  async prepareProjectSettlement(amount){
-    if (this.runtime.moduleRun) {
-      const projectPath = this.runtime.moduleRun.projectPath || "";
-      const key = this.settings.projectFmKey || "番茄数";
-      if (!this.settings.enableProjects || !projectPath) return { path:"", key, amount, status:"skipped" };
-      try {
-        return await this._getProjectRepository().prepareSettlementPlan({
-          path:projectPath, key, amount, enabled:true
-        });
-      } catch (error) {
-        logPluginError("project-plan", error, { sessionId:this.runtime.sessionId, stage:this.runtime.stage, target:projectPath, step:"prepare" });
-        return { path:projectPath, key, amount, status:"missing", deferred:true };
-      }
-    }
-    return this._getProjectRepository().prepareSettlementPlan({
-      path: this.settings.currentProjectPath,
-      key: this.settings.projectFmKey,
-      amount,
-      enabled: this.settings.projectEnable
-    });
-  }
+  settleFocus(manual=false){ return this._getSettlementCoordinator().settleFocus(manual); }
+  /** @param {Runtime} runtime @param {"work"|"rest"} completedType */
+  buildModuleTransition(runtime, completedType){ return this._getSettlementCoordinator().buildModuleTransition(runtime, completedType); }
+  /** @param {number} amount @param {StageTransition} transition @param {number} sessionCountAfter @param {boolean} [manual] */
+  prepareSettlement(amount, transition, sessionCountAfter, manual=false){ return this._getSettlementCoordinator().prepareSettlement(amount, transition, sessionCountAfter, manual); }
+  /** @param {number} amount */
+  prepareProjectSettlement(amount){ return this._getSettlementCoordinator().prepareProjectSettlement(amount); }
   /** @param {SettlementJournal} journal */
-  async applyDailySettlement(journal){
-    const daily = journal.daily;
-    if (!daily || !daily.path) throw new Error("结算 journal 缺少日记写入计划");
-    const dailyRepository = this._getDailyRepository();
-    let file = dailyRepository.getFile(daily.path);
-    if (!file) {
-      if (daily.rowStatus === "applied") throw settlementConflict("已完成的日记文件不存在，无法安全恢复");
-      file = await dailyRepository.ensureFileAtPath(daily.path);
-    }
-    if (!dailyRepository.isFile(file)) throw new Error("当天路径不是文件");
-
-    let currentText = "";
-    if (daily.rowStatus !== "applied") {
-      let mutation;
-      try {
-        mutation = await dailyRepository.applyPlannedMutation(file, daily);
-      } catch (error) {
-        if (daily.kind !== "insert"
-          || !error || typeof error !== "object" || !("code" in error) || error.code !== "SETTLEMENT_CONFLICT") throw error;
-        const rebased = buildDailySettlementPlan(await dailyRepository.read(file), {
-          path:daily.path,
-          taskName:daily.taskName,
-          frontmatterKey:daily.frontmatterKey,
-          amount:journal.amount,
-          settings:{ ...this.settings, allowAutoCreateTask:true, tasksHeading:daily.heading || "" }
-        });
-        Object.assign(daily, rebased);
-        await this.saveState({ critical:true });
-        mutation = await dailyRepository.applyPlannedMutation(file, daily);
-      }
-      currentText = mutation.text;
-      daily.rowStatus = "applied";
-      daily.alreadyApplied = mutation.alreadyApplied;
-    }
-    if (!currentText) currentText = await dailyRepository.read(file);
-    daily.expectedSum = getTomatoSum(currentText);
-    if (daily.frontmatterStatus !== "applied") {
-      try {
-        await dailyRepository.processFrontMatter(file, fm=>{ fm[daily.frontmatterKey] = daily.expectedSum; });
-        daily.frontmatterStatus = "applied";
-        this.removeFrontmatterRepair(daily.path, daily.frontmatterKey);
-      } catch (error) {
-        daily.frontmatterStatus = "pending";
-        daily.frontmatterError = String(error instanceof Error ? error.message : error);
-        logPluginError("daily-settlement", error, {
-          sessionId: journal.sessionId,
-          stage: journal.stage,
-          target: daily.path,
-          step: "frontmatter"
-        });
-        this.upsertFrontmatterRepair({
-          sessionId: journal.sessionId,
-          path: daily.path,
-          key: daily.frontmatterKey,
-          expectedSum: daily.expectedSum,
-          error: daily.frontmatterError
-        });
-        new Notice("日记任务已记录，但汇总字段待修复");
-      }
-    }
-    journal.status = "dailyApplied";
-    await this.saveState({ critical:true });
-  }
+  applyDailySettlement(journal){ return this._getSettlementCoordinator().applyDailySettlement(journal); }
   /** @param {ProjectSettlementPlan} plan */
-  async applyProjectPlan(plan){
-    return this._getProjectRepository().applyPlan(plan);
-  }
+  applyProjectPlan(plan){ return this._getSettlementCoordinator().applyProjectPlan(plan); }
   /** @param {SettlementJournal} journal */
-  async applyProjectSettlement(journal){
-    const project = journal.project;
-    if (journal.transition.mode === "modules" && !this.settings.enableProjects && project && project.status !== "applied") {
-      project.status = "skipped";
-      journal.status = "projectApplied";
-      await this.saveState({ critical:true });
-      return;
-    }
-    if (!project || project.status === "skipped") {
-      journal.status = "projectApplied";
-      await this.saveState({ critical:true });
-      return;
-    }
-    const result = await this.applyProjectPlan(project);
-    project.status = result.status;
-    if (result.error) project.error = result.error;
-    if (result.error) {
-      logPluginError("project-settlement", new Error(result.error), {
-        sessionId: journal.sessionId,
-        stage: journal.stage,
-        target: project.path,
-        step: result.status === "conflict" ? "conflict" : "write"
-      });
-    }
-    if (result.status === "applied") this.removeProjectRetry(project.sessionId || journal.sessionId, project.path);
-    else this.upsertProjectRetry({ ...project, sessionId: journal.sessionId });
-    journal.status = "projectApplied";
-    await this.saveState({ critical:true });
-  }
+  applyProjectSettlement(journal){ return this._getSettlementCoordinator().applyProjectSettlement(journal); }
   /** @param {AnyRecord} item */
-  upsertProjectRetry(item){
-    const queue = this.runtime.projectQueue || (this.runtime.projectQueue = []);
-    const copy = cloneValue(item);
-    const index = queue.findIndex(entry=> entry.sessionId === copy.sessionId && entry.path === copy.path);
-    if (index === -1) queue.push(copy);
-    else queue[index] = copy;
-  }
+  upsertProjectRetry(item){ return this._getSettlementCoordinator().upsertProjectRetry(item); }
   /** @param {unknown} sessionId @param {unknown} path */
-  removeProjectRetry(sessionId, path){
-    this.runtime.projectQueue = (this.runtime.projectQueue || []).filter(item=> !(item.sessionId === sessionId && item.path === path));
-  }
+  removeProjectRetry(sessionId, path){ return this._getSettlementCoordinator().removeProjectRetry(sessionId, path); }
+  /** @param {ProjectSettlementPlan} plan */
+  notifyProjectUpdated(plan){ return this._getSettlementCoordinator().notifyProjectUpdated(plan); }
   /** @param {AnyRecord[]} queue @param {number} startIndex @param {AnyRecord} predecessor */
-  rebaseProjectSuccessors(queue, startIndex, predecessor){
-    if (predecessor.afterValue === undefined) return;
-    const key = `${predecessor.path}\u0000${predecessor.key}`;
-    let afterValue = normalizeTomatoValue(predecessor.afterValue);
-    for (let i=startIndex; i<queue.length; i++) {
-      const item = queue[i];
-      if (`${item.path}\u0000${item.key}` !== key) continue;
-      const amount = Math.max(0, Number(item.amount) || 0);
-      item.beforeValue = afterValue;
-      item.afterValue = normalizeTomatoValue(afterValue + amount);
-      item.deferred = false;
-      afterValue = item.afterValue;
-    }
-  }
+  rebaseProjectSuccessors(queue, startIndex, predecessor){ return this._getSettlementCoordinator().rebaseProjectSuccessors(queue, startIndex, predecessor); }
   /** @param {AnyRecord} item */
-  upsertFrontmatterRepair(item){
-    const queue = this.runtime.frontmatterQueue || (this.runtime.frontmatterQueue = []);
-    const copy = cloneValue(item);
-    const index = queue.findIndex(entry=> entry.sessionId === copy.sessionId && entry.path === copy.path && entry.key === copy.key);
-    if (index === -1) queue.push(copy);
-    else queue[index] = copy;
-  }
-  /** @param {unknown} path @param {unknown} key @param {unknown} [sessionId] */
-  removeFrontmatterRepair(path, key, sessionId){
-    this.runtime.frontmatterQueue = (this.runtime.frontmatterQueue || []).filter(item=> !(item.path === path && item.key === key && (!sessionId || item.sessionId === sessionId)));
-  }
-  async repairFrontmatterQueue(){
-    const dailyRepository = this._getDailyRepository();
-    const queue = this.runtime.frontmatterQueue || [];
-    let changed = false;
-    for (let i=queue.length-1; i>=0; i--) {
-      const item = queue[i];
-      try {
-        const file = this.app.vault.getAbstractFileByPath(item.path);
-        if (!file || !(file instanceof TFile)) continue;
-        item.expectedSum = getTomatoSum(await dailyRepository.read(file));
-        await dailyRepository.processFrontMatter(file, fm=>{ fm[item.key] = normalizeTomatoValue(item.expectedSum); });
-        queue.splice(i, 1);
-        changed = true;
-      } catch (error) {
-        item.error = String(error instanceof Error ? error.message : error);
-        changed = true;
-        logPluginError("frontmatter-repair", error, {
-          sessionId: item.sessionId,
-          stage: TIMER_STAGE.FOCUS,
-          target: item.path,
-          step: "retry"
-        });
-      }
-    }
-    if (changed) await this.saveState();
-  }
-  async drainProjectQueue(){
-    if (Array.isArray(this.settings.modules) && !this.settings.enableProjects) return;
-    const queue = this.runtime.projectQueue || [];
-    let changed = false;
-    let i = 0;
-    const blockedKeys = new Set();
-    while (i < queue.length) {
-      const item = queue[i];
-      const key = `${item.path}\u0000${item.key}`;
-      if (blockedKeys.has(key)) {
-        i += 1;
-        continue;
-      }
-      let result;
-      try {
-        result = await this.applyProjectPlan(/** @type {ProjectSettlementPlan} */ (item));
-      } catch (error) {
-        result = { status: "pending", error: String(error instanceof Error ? error.message : error) };
-      }
-      item.status = result.status;
-      if (result.error) item.error = result.error;
-      if (result.error) {
-        logPluginError("project-retry", new Error(result.error), {
-          sessionId: item.sessionId,
-          stage: TIMER_STAGE.FOCUS,
-          target: item.path,
-          step: result.status === "conflict" ? "conflict" : "retry"
-        });
-      }
-      if (result.status === "applied" || result.status === "skipped") {
-        if (result.status === "applied") this.rebaseProjectSuccessors(queue, i + 1, item);
-        queue.splice(i, 1);
-      } else {
-        blockedKeys.add(key);
-        i += 1;
-      }
-      changed = true;
-    }
-    if (changed) await this.saveState();
-  }
+  upsertFrontmatterRepair(item){ return this._getSettlementCoordinator().upsertFrontmatterRepair(item); }
+  /** @param {unknown} path @param {unknown} key @param {unknown} sessionId */
+  removeFrontmatterRepair(path, key, sessionId){ return this._getSettlementCoordinator().removeFrontmatterRepair(path, key, sessionId); }
+  repairFrontmatterQueue(){ return this._getSettlementCoordinator().repairFrontmatterQueue(); }
+  drainProjectQueue(){ return this._getSettlementCoordinator().drainProjectQueue(); }
   /** @param {SettlementJournal} journal */
-  async finalizeFocusSettlement(journal){
-    this.applyRuntimeEvent({ type:RUNTIME_EVENT.FINALIZE_SETTLEMENT, journal });
-    journal.status = "runtimeFinalizing";
-    await this.saveState({ critical:true });
-
-    if (!journal.notified) {
-      playBeep(this.settings.focusEndSound, this.settings.enableSound, this.settings.soundWaveform);
-      if (journal.transition.mode === "modules") {
-        const nextRun = journal.transition.moduleRun;
-        sysNotify(journal.manual ? "工作段完成（手动）" : "工作段完成",
-          this.focusCompletionBody(journal.amount, nextRun ? `${nextRun.name}${journal.transition.autoNext ? "（已开始）" : "（等待确认）"}` : "序列已完成"),
-          this.settings.enableNotify);
-      } else if (journal.transition.mode === "cycle") {
-        const nextTask = Object.prototype.hasOwnProperty.call(journal.transition, "taskName")
-          ? String(journal.transition.taskName || "").trim()
-          : String((journal.transition.cycleSlot === 1 ? this.settings.cycleTaskB : this.settings.cycleTaskA) || "").trim();
-        const cycleRestDurationMs = Math.max(0, Number(journal.transition.cycleRestDurationMs) || 0);
-        const next = cycleRestDurationMs
-          ? `本轮完成，短休 ${formatTomatoNumber(cycleRestDurationMs / 60_000)} 分钟（点击番茄图标开始）`
-          : `${nextTask || "下一段专注"}（点击番茄图标开始）`;
-        sysNotify(journal.manual ? "专注完成（手动）" : "专注完成", this.focusCompletionBody(journal.amount, next), this.settings.enableNotify);
-      } else {
-        const breakMinutes = journal.transition.durationMs / 60 / 1000;
-        sysNotify(journal.manual ? "专注完成（手动）" : "专注完成", this.focusCompletionBody(journal.amount, `${journal.transition.isLong ? "长休" : "短休"} ${formatTomatoNumber(breakMinutes)} 分钟${journal.transition.autoNext ? "（已开始）" : "（点击番茄图标开始）"}`), this.settings.enableNotify);
-      }
-      journal.notified = true;
-      await this.saveState({ critical:true });
-    }
-
-    if (journal.transition.mode === "modules") {
-      const nextRun = normalizeModuleRun(journal.transition.moduleRun);
-      const nextIndex = journal.transition.moduleIndex;
-      if (!nextRun || !Number.isInteger(nextIndex)) {
-        if (this.runtime.status !== TIMER_STATUS.IDLE) this.applyRuntimeEvent({ type:RUNTIME_EVENT.FINISH_SEQUENCE });
-      } else if (journal.transition.autoNext) {
-        const alreadyRunning = this.runtime.moduleRun?.runId === nextRun.runId
-          && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED]).includes(this.runtime.status);
-        if (!alreadyRunning) await this.startModule(Number(nextIndex), {
-          moduleRun:nextRun, allowTransition:true, allowPendingSettlement:true, suppressNotify:true
-        });
-        else if (/** @type {string[]} */ ([TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED]).includes(this.runtime.status)) {
-          this.applyRuntimeEvent({ type:RUNTIME_EVENT.RESTORE_ACTIVE_STAGE });
-        }
-      } else {
-        const alreadyAwaiting = this.runtime.status === TIMER_STATUS.AWAITING
-          && this.runtime.attention?.moduleRun?.runId === nextRun.runId;
-        if (!alreadyAwaiting) {
-          this.applyRuntimeEvent({ type:RUNTIME_EVENT.AWAIT_STAGE,
-            durationMs:nextRun.durationMs, mode:"modules", moduleIndex:nextIndex });
-          await this.beginStrongAlert({ type:nextRun.type === "work" ? TIMER_STAGE.FOCUS : TIMER_STAGE.BREAK,
-            autoStarted:false, durationMs:nextRun.durationMs, moduleIndex:Number(nextIndex), moduleRun:nextRun });
-        }
-      }
-      journal.status = "settled";
-      await this.saveState({ critical:true });
-      const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.CLEAR_PENDING_SETTLEMENT });
-      await this.saveState({ critical:true });
-      this.runRuntimeEffects(effects);
-      return;
-    }
-
-    if (journal.transition.mode === "cycle") {
-      const r = this.runtime;
-      const cycleRestDurationMs = Math.max(0, Number(journal.transition.cycleRestDurationMs) || 0);
-      if (cycleRestDurationMs > 0) {
-        /** @type {BreakContinuation} */
-        const continuation = {
-          mode: "cycle",
-          cycleSlot: journal.transition.cycleSlot === 1 ? 1 : 0,
-          taskName: String(journal.transition.taskName || "").trim(),
-          durationMs: Math.max(1, Math.round(Number(journal.transition.durationMs) || 1))
-        };
-        const existingRest = r.stage === TIMER_STAGE.BREAK
-          && r.mode === "cycle"
-          && Math.round(Number(r.durationMs) || 0) === Math.round(cycleRestDurationMs)
-          && r.breakContinuation?.mode === "cycle"
-          && r.breakContinuation?.cycleSlot === continuation.cycleSlot
-          && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED]).includes(r.status)
-          && (Number(r.startedAtMs) > 0 || (Number(r.pausedAtMs) > 0 && Number(r.remainingMs) > 0));
-        const alreadyAwaiting = r.status === TIMER_STATUS.AWAITING
-          && r.attention?.type === TIMER_STAGE.BREAK
-          && r.attention?.cycleSlot === continuation.cycleSlot
-          && Math.round(Number(r.attention?.durationMs) || 0) === Math.round(cycleRestDurationMs)
-          && r.breakContinuation?.mode === "cycle";
-        if (!existingRest && !alreadyAwaiting) {
-          this.applyRuntimeEvent({
-            type:RUNTIME_EVENT.AWAIT_STAGE,
-            durationMs: cycleRestDurationMs,
-            mode:"cycle",
-            cycleSlot:continuation.cycleSlot,
-            breakContinuation:continuation
-          });
-          await this.beginStrongAlert({
-            type:TIMER_STAGE.BREAK,
-            isLong:false,
-            autoStarted:false,
-            durationMs:cycleRestDurationMs,
-            cycleSlot:continuation.cycleSlot,
-            taskName:continuation.taskName
-          });
-        } else if (existingRest && r.status === TIMER_STATUS.SETTLING) {
-          this.applyRuntimeEvent({ type:RUNTIME_EVENT.RESTORE_ACTIVE_STAGE });
-          await this.beginStrongAlert({
-            type:TIMER_STAGE.BREAK,
-            isLong:false,
-            autoStarted:true,
-            durationMs:cycleRestDurationMs,
-            cycleSlot:continuation.cycleSlot,
-            taskName:continuation.taskName
-          });
-        } else if (existingRest && !r.attention) {
-          await this.beginStrongAlert({
-            type:TIMER_STAGE.BREAK,
-            isLong:false,
-            autoStarted:true,
-            durationMs:cycleRestDurationMs,
-            cycleSlot:continuation.cycleSlot,
-            taskName:continuation.taskName
-          });
-        }
-      } else {
-        const already = r.status === TIMER_STATUS.AWAITING
-          && r.attention?.type === TIMER_STAGE.FOCUS
-          && r.attention?.cycleSlot === journal.transition.cycleSlot;
-        if (!already) {
-          this.applyRuntimeEvent({
-            type:RUNTIME_EVENT.AWAIT_STAGE,
-            durationMs:journal.transition.durationMs,
-            mode:"cycle",
-            cycleSlot:journal.transition.cycleSlot
-          });
-          await this.beginStrongAlert({ type:TIMER_STAGE.FOCUS, cycleSlot:journal.transition.cycleSlot, taskName:journal.transition.taskName, autoStarted:false, durationMs:journal.transition.durationMs });
-        }
-      }
-    } else {
-      const r = this.runtime;
-      const attentionMatches = !r.attention
-        || (r.attention.type === TIMER_STAGE.BREAK && !!r.attention.isLong === !!journal.transition.isLong);
-      const existingBreak = journal.transition.autoNext
-        && r.stage === TIMER_STAGE.BREAK
-        && Math.round(Number(r.durationMs) || 0) === Math.round(Number(journal.transition.durationMs) || 0)
-        && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING]).includes(r.status)
-        && (Number(r.startedAtMs) > 0 || (Number(r.pausedAtMs) > 0 && Number(r.remainingMs) > 0))
-        && attentionMatches;
-      const alreadyAwaiting = !journal.transition.autoNext
-        && r.status === TIMER_STATUS.AWAITING
-        && r.attention?.type === TIMER_STAGE.BREAK
-        && !!r.attention?.isLong === !!journal.transition.isLong;
-      if (!existingBreak && !alreadyAwaiting) {
-        await this.startBreak(journal.transition.isLong, {
-          forceRun: journal.transition.autoNext,
-          cause: journal.manual ? "manual" : "auto",
-          suppressNotify: true,
-          durationMs: journal.transition.durationMs,
-          allowTransition: true,
-          allowPendingSettlement: true
-        });
-      } else if (existingBreak && r.status === TIMER_STATUS.SETTLING) {
-        this.applyRuntimeEvent({ type:RUNTIME_EVENT.RESTORE_ACTIVE_STAGE });
-      }
-      await this.beginStrongAlert({
-        type:TIMER_STAGE.BREAK,
-        isLong:journal.transition.isLong,
-        autoStarted:journal.transition.autoNext,
-        durationMs:journal.transition.durationMs
-      });
-    }
-    journal.status = "settled";
-    await this.saveState({ critical:true });
-    const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.CLEAR_PENDING_SETTLEMENT });
-    await this.saveState({ critical:true });
-    this.runRuntimeEffects(effects);
-  }
-  async resumePendingSettlement(){
-    const journal = this.runtime.pendingSettlement;
-    if (!journal) return;
-    const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.RESUME_SETTLEMENT, journal });
-    this.runRuntimeEffects(effects);
-    await this.applyDailySettlement(journal);
-    await this.applyProjectSettlement(journal);
-    await this.finalizeFocusSettlement(journal);
-  }
-  async recoverPendingSettlement(){
-    if (!this.runtime.pendingSettlement) return;
-    this._completionInFlight = true;
-    try {
-      await this.resumePendingSettlement();
-    } catch (error) {
-      this.markSettlementFailed(error, { operation:"recoverPendingSettlement", step:"resume" });
-    } finally {
-      this._completionInFlight = false;
-    }
-  }
+  finalizeFocusSettlement(journal){ return this._getSettlementCoordinator().finalizeFocusSettlement(journal); }
+  resumePendingSettlement(){ return this._getSettlementCoordinator().resumePendingSettlement(); }
+  recoverPendingSettlement(){ return this._getSettlementCoordinator().recoverPendingSettlement(); }
   /** @param {BreakTransition} transition */
-  async advanceBreakTransition(transition){
-    if (transition.mode === "modules") {
-      this.applyRuntimeEvent(transition.completionType === "work"
-        ? { type:RUNTIME_EVENT.COMPLETE_EMPTY_WORK,
-          completedWorkCountAfter:transition.completedWorkCountAfter,
-          sessionCountAfter:transition.sessionCountAfter,
-          completedLoopCountAfter:transition.completedLoopCountAfter }
-        : { type:RUNTIME_EVENT.COMPLETE_REST,
-          completedRestCountAfter:transition.completedRestCountAfter,
-          completedLoopCountAfter:transition.completedLoopCountAfter });
-      const nextRun = normalizeModuleRun(transition.moduleRun);
-      const nextIndex = transition.moduleIndex;
-      if (!nextRun || !Number.isInteger(nextIndex)) {
-        if (this.runtime.status !== TIMER_STATUS.IDLE) this.applyRuntimeEvent({ type:RUNTIME_EVENT.FINISH_SEQUENCE });
-      } else if (transition.autoNext) {
-        const alreadyRunning = this.runtime.moduleRun?.runId === nextRun.runId
-          && /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED]).includes(this.runtime.status);
-        if (!alreadyRunning) await this.startModule(Number(nextIndex), {
-          moduleRun:nextRun, allowTransition:true, allowPendingBreakTransition:true, suppressNotify:true
-        });
-        else if (this.runtime.status === TIMER_STATUS.FAILED) this.applyRuntimeEvent({ type:RUNTIME_EVENT.RESTORE_FOCUS });
-      } else {
-        const alreadyAwaiting = this.runtime.status === TIMER_STATUS.AWAITING
-          && this.runtime.attention?.moduleRun?.runId === nextRun.runId;
-        if (!alreadyAwaiting) {
-          this.applyRuntimeEvent({ type:RUNTIME_EVENT.AWAIT_STAGE,
-            durationMs:nextRun.durationMs, mode:"modules", moduleIndex:nextIndex });
-          await this.beginStrongAlert({ type:nextRun.type === "work" ? TIMER_STAGE.FOCUS : TIMER_STAGE.BREAK,
-            autoStarted:false, durationMs:nextRun.durationMs, moduleIndex:Number(nextIndex), moduleRun:nextRun });
-        }
-      }
-      const previousRuntime = this.runtime;
-      const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.CLEAR_BREAK_TRANSITION });
-      await this.saveTransition(previousRuntime);
-      this.runRuntimeEffects(effects);
-      return;
-    }
-    const r = this.runtime;
-    const isCycle = transition.mode === "cycle";
-    const focusStarted = transition.autoNext
-      && r.stage === TIMER_STAGE.FOCUS
-      && Math.round(Number(r.durationMs) || 0) === Math.round(transition.durationMs)
-      && (/** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.FAILED]).includes(r.status) && Number(r.startedAtMs) > 0
-        || /** @type {string[]} */ ([TIMER_STATUS.PAUSED, TIMER_STATUS.FAILED]).includes(r.status) && Number(r.pausedAtMs) > 0 && Number(r.remainingMs) > 0);
-    if (focusStarted && r.status === TIMER_STATUS.FAILED) {
-      this.applyRuntimeEvent({ type:RUNTIME_EVENT.RESTORE_FOCUS });
-    }
-    if (transition.autoNext && !focusStarted) {
-      if (isCycle && Number.isInteger(transition.cycleSlot)) {
-        await this.startCycle(transition.cycleSlot === 1 ? 1 : 0, {
-          suppressNotify:true,
-          cause:'auto',
-          allowTransition:true,
-          allowPendingBreakTransition:true,
-          durationMs:transition.durationMs,
-          taskName:transition.taskName
-        });
-      } else {
-        await this.startFocus({
-          suppressNotify:true,
-          cause:'auto',
-          allowTransition:true,
-          allowPendingBreakTransition:true,
-          durationMs:transition.durationMs
-        });
-      }
-    }
-    await this.beginStrongAlert({
-      type:TIMER_STAGE.FOCUS,
-      autoStarted:transition.autoNext,
-      durationMs:transition.durationMs,
-      cycleSlot:isCycle && Number.isInteger(transition.cycleSlot) ? transition.cycleSlot : null,
-      taskName:isCycle ? transition.taskName : undefined
-    });
-    const previousRuntime = this.runtime;
-    const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.CLEAR_BREAK_TRANSITION });
-    await this.saveTransition(previousRuntime);
-    this.runRuntimeEffects(effects);
-  }
-  async recoverPendingBreakTransition(){
-    const transition = this.runtime.pendingBreakTransition;
-    if (!transition) return;
-    this._completionInFlight = true;
-    try {
-      await this.advanceBreakTransition(transition);
-    } catch (error) {
-      this.markSettlementFailed(error, { operation:"recoverBreakTransition", step:"advanceFocus" });
-    } finally {
-      this._completionInFlight = false;
-    }
-  }
-  async settleBreak(manual=false){
-    const r = this.runtime;
-    if (this._completionInFlight || !/** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(r.status) || r.stage !== TIMER_STAGE.BREAK) return;
-    this._completionInFlight = true;
-    if (r.moduleRun) {
-      const next = this.buildModuleTransition(r, "rest");
-      /** @type {BreakTransition} */
-      const transition = {
-        schemaVersion:1, status:"break-completing", mode:"modules",
-        autoNext:next.autoNext, durationMs:next.durationMs, createdAtMs:Date.now(),
-        moduleIndex:next.moduleIndex, moduleRun:next.moduleRun,
-        completedRestCountAfter:next.completedRestCountAfter,
-        completedLoopCountAfter:next.completedLoopCountAfter
-      };
-      const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.BEGIN_BREAK_TRANSITION, transition });
-      try {
-        await this.saveState({ critical:true });
-        this.runRuntimeEffects(effects);
-        playBeep(this.settings.breakEndSound, this.settings.enableSound, this.settings.soundWaveform);
-        sysNotify(manual ? "休息段完成（手动）" : "休息段完成",
-          next.moduleRun ? `下一项：${next.moduleRun.name}${next.autoNext ? "（已开始）" : "（等待确认）"}` : "序列已完成",
-          this.settings.enableNotify);
-        await this.advanceBreakTransition(transition);
-      } catch (error) {
-        this.markSettlementFailed(error, { operation:"settleRestModule", step:"advance" });
-      } finally { this._completionInFlight = false; }
-      return;
-    }
-    /** @type {BreakContinuation | null} */
-    const cycleContinuation = r.breakContinuation?.mode === "cycle" ? r.breakContinuation : null;
-    /** @type {BreakTransition} */
-    const transition = {
-      schemaVersion:1,
-      status:"break-completing",
-      autoNext:cycleContinuation ? false : !!this.settings.autoNext,
-      durationMs:cycleContinuation
-        ? cycleContinuation.durationMs
-        : configuredStageDurationMs(this.settings, TIMER_STAGE.FOCUS),
-      createdAtMs:Date.now()
-    };
-    if (cycleContinuation) {
-      transition.mode = "cycle";
-      transition.cycleSlot = cycleContinuation.cycleSlot;
-      transition.taskName = cycleContinuation.taskName;
-    }
-    const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.BEGIN_BREAK_TRANSITION, transition });
-    try {
-      await this.saveState({ critical:true });
-      this.runRuntimeEffects(effects);
-      playBeep(this.settings.breakEndSound, this.settings.enableSound, this.settings.soundWaveform);
-      const task = transition.mode === "cycle"
-        ? String(transition.taskName || "").trim()
-        : String(this.runtime.currentTaskName || this.settings.defaultTaskName || "").trim();
-      sysNotify("休息结束", `下一步：${transition.autoNext ? "已开始" : "点击番茄图标开始"}专注${task ? ` · 任务：${task}` : ""}`, this.settings.enableNotify);
-      await this.advanceBreakTransition(transition);
-    } catch (error) {
-      this.markSettlementFailed(error, { operation:"settleBreak", step:"advanceFocus" });
-    } finally {
-      this._completionInFlight = false;
-    }
-  }
-  /** @param {unknown} error @param {{operation?:string, sessionId?:string|null, stage?:string|null, target?:string|null, step?:string|null}} [context] */
-  markSettlementFailed(error, context={}){
-    const r = this.runtime;
-    const details = logPluginError(context.operation || "settlement", error, {
-      ...context,
-      sessionId: context.sessionId || r.sessionId || r.pendingSettlement?.sessionId,
-      stage: context.stage || r.stage || r.pendingSettlement?.stage,
-      target: context.target || r.pendingSettlement?.daily?.path || r.pendingSettlement?.project?.path
-    });
-    const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.FAIL, failure:{
-      ...details,
-      atMs: Date.now(),
-      message: details.error
-    } });
-    this.saveState();
-    this.runRuntimeEffects(effects);
-    new Notice("结算失败，journal 已保留，请重载插件恢复");
-  }
-
+  advanceBreakTransition(transition){ return this._getSettlementCoordinator().advanceBreakTransition(transition); }
+  recoverPendingBreakTransition(){ return this._getSettlementCoordinator().recoverPendingBreakTransition(); }
+  /** @param {boolean} [manual] */
+  settleBreak(manual=false){ return this._getSettlementCoordinator().settleBreak(manual); }
+  /** @param {unknown} error @param {AnyRecord} [context] */
+  markSettlementFailed(error, context={}){ return this._getSettlementCoordinator().markSettlementFailed(error, context); }
   _resyncTick(){
     if (this._tickTimeout) window.clearTimeout(this._tickTimeout);
     this._scheduleTick && this._scheduleTick();
@@ -2441,58 +967,13 @@ class PomodoroAIO extends Plugin {
   /** @param {unknown} text */
   async listUncheckedTasksFromText(text){ return this._getDailyRepository().listUncheckedTasksFromText(text); }
 
-  // 当日任务行尾追加对应 🍅 数量，并写入 frontmatter[fmKey]；返回今日累计
-  async applyTomatoAndSum(amount=1){
-    const result = await this._getDailyRepository().addTomatoAndSum({
-      taskName: this.runtime.currentTaskName || this.settings.defaultTaskName,
-      amount,
-      settings: this.settings,
-      frontmatterKey: this.settings.fmKey || "番茄数"
-    });
-    if (result.frontmatterError) {
-      logPluginError("daily-settlement", result.frontmatterError, {
-        sessionId: this.runtime.sessionId,
-        stage: this.runtime.stage,
-        target: result.file.path,
-        step: "frontmatter"
-      });
-      this.upsertFrontmatterRepair({
-        path: result.file.path,
-        key: this.settings.fmKey || "番茄数",
-        expectedSum: result.sum,
-        error: String(result.frontmatterError instanceof Error ? result.frontmatterError.message : result.frontmatterError)
-      });
-      this.saveState();
-      new Notice("当日日记 frontmatter 汇总写入失败，任务行记录已保留");
-    }
-    this.broadcast();
-    return result.sum;
-  }
+  /** @param {number} [amount] */
+  applyTomatoAndSum(amount=1){ return this._getLegacyController().applyTomatoAndSum(amount); }
+  /** @param {number} [amount] */
+  bumpProjectTomato(amount=1){ return this._getLegacyController().bumpProjectTomato(amount); }
+  /** @param {number} [amount] */
+  safeBumpProjectTomato(amount=1){ return this._getLegacyController().safeBumpProjectTomato(amount); }
 
-  // 为所选项目文件 frontmatter[projectFmKey] +1
-  async bumpProjectTomato(amount=1){
-    if (!this.settings.projectEnable) return;
-    await this._getProjectRepository().bumpTomato({
-      path: this.settings.currentProjectPath,
-      key: this.settings.projectFmKey,
-      amount
-    });
-  }
-  async safeBumpProjectTomato(amount=1){
-    try {
-      await this.bumpProjectTomato(amount);
-    } catch (err) {
-      logPluginError("project-sync", err, {
-        sessionId: this.runtime.sessionId,
-        stage: this.runtime.stage,
-        target: this.settings.currentProjectPath,
-        step: "write"
-      });
-      new Notice("项目番茄同步失败，已保留当日日记记录");
-    }
-  }
-
-  /* ====== 提供给视图的查询/动作 ====== */
   async refreshTodaySnapshot(){
     const { file, text } = await this.readToday();
     const sum = getTomatoSum(text);
@@ -2554,16 +1035,7 @@ class PomodoroAIO extends Plugin {
         }
         return changed;
       }
-      const currentTask = String(this.runtime.currentTaskName || "").trim();
-      const currentSlot = this.runtime.mode === "cycle" ? (this.runtime.cycleSlot === 1 ? 1 : 0) : null;
-      if (isCompleted(currentTask) && await this.settleOrEndActiveTaskForCompletion(currentTask, currentSlot)) {
-        changed = (await this.clearCompletedTaskSelection(currentTask, currentSlot)) || changed;
-      } else if (isCompleted(this.settings.defaultTaskName) && await this.settleOrEndActiveTaskForCompletion(this.settings.defaultTaskName, null)) {
-        changed = (await this.clearCompletedTaskSelection(this.settings.defaultTaskName, null)) || changed;
-      }
-      if (isCompleted(this.settings.cycleTaskA) && await this.settleOrEndActiveTaskForCompletion(this.settings.cycleTaskA, 0)) changed = (await this.clearCompletedTaskSelection(this.settings.cycleTaskA, 0)) || changed;
-      if (isCompleted(this.settings.cycleTaskB) && await this.settleOrEndActiveTaskForCompletion(this.settings.cycleTaskB, 1)) changed = (await this.clearCompletedTaskSelection(this.settings.cycleTaskB, 1)) || changed;
-      return changed;
+      return this._getLegacyController().syncCompletedTaskSelections(isCompleted);
     } finally {
       this._dailyCompletionSyncBusy = false;
     }
@@ -2608,76 +1080,29 @@ class PomodoroAIO extends Plugin {
     });
   }
   /** @param {unknown} name */
-  setCurrentTaskName(name){
-    const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.SET_TASK, name });
-    this.saveState();
-    this.runRuntimeEffects(effects);
-  }
+  setCurrentTaskName(name){ return this._getLegacyController().setCurrentTaskName(name); }
   /** @param {unknown} open */
   setViewWasOpen(open){
     this.applyRuntimeEvent({ type:RUNTIME_EVENT.SET_VIEW_OPEN, open });
     this.saveState();
   }
   /** @param {unknown} path */
-  setCurrentProjectPath(path){
-    const rawPath = String(path||"").trim();
-    const projectPath = rawPath ? tryNormalizeMarkdownPath(rawPath) : "";
-    if (rawPath && !projectPath) { new Notice("项目路径无效"); return false; }
-    this.settings.currentProjectPath = projectPath || "";
-    this.saveSettings(); this.broadcast();
-    return true;
-  }
+  setCurrentProjectPath(path){ return this._getLegacyController().setCurrentProjectPath(path); }
   /** @param {unknown} mode */
-  setWorkMode(mode){
-    if (this.runtime.status !== TIMER_STATUS.IDLE || this.runtime.attention) { new Notice("请先重置当前计时，再切换工作模式"); return false; }
-    this.settings = normalizeSettings({ ...this.settings, workMode: mode === 'cycle' ? 'cycle' : 'standard' }, this.settings);
-    this.saveSettings(); this.broadcast();
-    return true;
-  }
+  setWorkMode(mode){ return this._getLegacyController().setWorkMode(mode); }
   /** @param {Partial<Settings>} patch */
-  setCycleConfig(patch){
-    this.settings = normalizeSettings({ ...this.settings, ...patch }, this.settings);
-    this.saveSettings(); this.broadcast();
-  }
+  setCycleConfig(patch){ return this._getLegacyController().setCycleConfig(patch); }
   /** @param {unknown} enabled */
-  setTaskBlackoutEnabled(enabled){
-    this.settings = normalizeSettings({ ...this.settings, taskBlackoutEnabled: enabled === true }, this.settings);
-    this.saveSettings(); this.broadcast();
-  }
+  setTaskBlackoutEnabled(enabled){ return this._getLegacyController().setTaskBlackoutEnabled(enabled); }
   /** @param {unknown} slot */
-  selectCycleSlot(slot){
-    if (this.settings.workMode !== 'cycle' || this.runtime.status !== TIMER_STATUS.IDLE || this.runtime.attention) return false;
-    const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.SELECT_CYCLE_SLOT, slot });
-    this.saveState();
-    this.runRuntimeEffects(effects);
-    return true;
-  }
+  selectCycleSlot(slot){ return this._getLegacyController().selectCycleSlot(slot); }
   /** @param {unknown} minutes @param {boolean} [broadcast] */
-  setLongFocusMinutes(minutes, broadcast=true){
-    const num = Number(minutes);
-    if (!isFinite(num)) return;
-    const normalized = Math.max(0.1, Math.round(num * 10) / 10);
-    const effects = this.applyRuntimeEvent({ type:RUNTIME_EVENT.SET_LONG_FOCUS, minutes:normalized, broadcast });
-    if (broadcast) {
-      this.saveState();
-      this.runRuntimeEffects(effects);
-    }
-  }
+  setLongFocusMinutes(minutes, broadcast=true){ return this._getLegacyController().setLongFocusMinutes(minutes, broadcast); }
 
   // 打开当日日记
   async openToday() {
     if (this.shouldBlockFocusLayoutSideEffects({ source:"user" })) return;
     const f = await this.ensureTodayFile();
-    await this.app.workspace.getLeaf(true).openFile(f);
-  }
-  // 打开当前选择的项目文件
-  async openCurrentProject() {
-    if (this.shouldBlockFocusLayoutSideEffects({ source:"user" })) return;
-    const p = this.settings.currentProjectPath;
-    if (!p) { new Notice("未选择项目"); return; }
-    const projectRepository = this._getProjectRepository();
-    const f = projectRepository.getFile(p);
-    if (!projectRepository.isFile(f)) { new Notice("项目文件不存在"); return; }
     await this.app.workspace.getLeaf(true).openFile(f);
   }
   /** @param {string} path */

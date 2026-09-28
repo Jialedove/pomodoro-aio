@@ -107,6 +107,10 @@ test("工作开始时冻结项目关系；关闭项目后不访问项目仓储",
     projectAssignments:{ "work-reading":"Projects/X.md" }, enableProjects:true
   });
   const plugin = createPlugin({ vault, settings });
+  const updates = [];
+  plugin.app.workspace.trigger = (name, payload) => {
+    if (name === "pomodoro:aio-project-updated") updates.push(payload);
+  };
   await clock.run(() => plugin.startSequence());
   await plugin.setModuleProject("work-reading", "Projects/Y.md");
   assert.equal(plugin.runtime.moduleRun.projectPath, "Projects/X.md");
@@ -114,6 +118,7 @@ test("工作开始时冻结项目关系；关闭项目后不访问项目仓储",
   await clock.run(() => plugin.tick());
   assert.equal(x.frontmatter["番茄数"], 1);
   assert.equal(y.frontmatter["番茄数"], 0);
+  assert.deepEqual(updates, [{ path:"Projects/X.md", tomatoes:1 }]);
 
   const noProject = createPlugin({ vault:new FakeVault({ "Daily/today.md":"- [ ] 阅读 0🍅\n" }),
     settings:moduleSettings({ modules:settings.modules, projectAssignments:settings.projectAssignments, enableProjects:false }) });

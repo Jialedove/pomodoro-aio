@@ -5,7 +5,7 @@ const {
   buildDailySettlementPlan,
   buildSettlementJournal,
   validateSettlementJournal
-} = require("../src/core/settlement.js");
+} = require("../src/legacy/settlement-recovery.js");
 
 const settings = {
   focusMin: 25,

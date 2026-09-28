@@ -1,4 +1,4 @@
-const TIMER_SCHEMA_VERSION = 4;
+const TIMER_SCHEMA_VERSION = 5;
 const TIMER_STATUS = Object.freeze({
   IDLE: "idle",
   RUNNING: "running",
@@ -36,19 +36,6 @@ function createSessionId() {
   return `pmd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
-/** @param {Partial<Settings>} settings @param {string} type @param {boolean} [isLong] @param {0 | 1 | null} [cycleSlot] */
-function configuredStageDurationMs(settings = {}, type, isLong = false, cycleSlot = null) {
-  if (type === TIMER_STAGE.BREAK) {
-    const minutes = isLong ? settings.longBreakMin : settings.breakMin;
-    return Math.max(1, Math.round((Number(minutes) || (isLong ? 15 : 5)) * 60 * 1000));
-  }
-  if (Number.isInteger(cycleSlot)) {
-    const minutes = cycleSlot === 1 ? settings.cycleMinB : settings.cycleMinA;
-    return Math.max(1, Math.round((Number(minutes) || 15) * 60 * 1000));
-  }
-  return Math.max(1, Math.round((Number(settings.focusMin) || 25) * 60 * 1000));
-}
-
 /** @param {Partial<Runtime> | null | undefined} runtime @param {number} [at] */
 function getElapsedMs(runtime, at = Date.now()) {
   const duration = Math.max(0, Number(runtime?.durationMs) || 0);
@@ -60,12 +47,8 @@ function getElapsedMs(runtime, at = Date.now()) {
 /** @param {Partial<Runtime> | null | undefined} runtime @param {Partial<Settings> | null | undefined} settings @param {number} [at] */
 function getRemainingMs(runtime, settings, at = Date.now()) {
   if (runtime?.status === TIMER_STATUS.IDLE) {
-    if (Array.isArray(settings?.modules)) {
-      const first = settings.modules[0];
-      return first ? Math.round(Number(first.durationMin) * 60_000) : 0;
-    }
-    const slot = settings?.workMode === "cycle" ? runtime.cycleSlot : null;
-    return configuredStageDurationMs(settings || {}, TIMER_STAGE.FOCUS, false, slot);
+    const first = settings?.modules?.[0];
+    return first ? Math.round(Number(first.durationMin) * 60_000) : 0;
   }
   if (runtime?.status === TIMER_STATUS.AWAITING) {
     return Math.max(0, Number(runtime.attention?.durationMs) || Number(runtime.remainingMs) || 0);
@@ -79,7 +62,6 @@ module.exports = {
   TIMER_SCHEMA_VERSION,
   TIMER_STATUS,
   TIMER_STAGE,
-  configuredStageDurationMs,
   plannedTomatoAmount,
   actualTomatoAmount,
   createSessionId,

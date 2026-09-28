@@ -3,12 +3,12 @@ const assert = require("node:assert/strict");
 const {
   TIMER_STATUS,
   TIMER_STAGE,
-  configuredStageDurationMs,
   plannedTomatoAmount,
   actualTomatoAmount,
   getElapsedMs,
   getRemainingMs
 } = require("../src/core/timer.js");
+const { configuredStageDurationMs } = require("../src/legacy/timer.js");
 
 test("timer 纯函数按毫秒计算阶段时长和番茄额度", () => {
   assert.equal(configuredStageDurationMs({ focusMin: 15 }, TIMER_STAGE.FOCUS), 900_000);

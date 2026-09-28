@@ -1,7 +1,5 @@
 export type TimerStatus = "idle" | "running" | "paused" | "awaiting" | "settling" | "settlement-failed";
 export type TimerStage = "focus" | "break";
-export type WorkMode = "standard" | "cycle" | "modules";
-export type CycleSlot = 0 | 1;
 export type ModuleType = "work" | "rest";
 export interface ModuleDefinition {
   id: string;
@@ -22,31 +20,23 @@ export interface ModuleRun {
   workspaceCommandId: string | null;
   projectPath: string | null;
   startedAtMs: number;
+  recoveryOnly?: boolean;
 }
 
 export interface Settings {
   [key: string]: any;
-  focusMin: number;
-  breakMin: number;
-  longBreakMin: number;
-  longEvery: number;
-  autoNext: boolean;
   dayStartHHMM: string;
   fallbackPattern: string;
   allowCreateDaily: boolean;
   fmKey: string;
   allowAutoCreateTask: boolean;
   tasksHeading: string;
-  defaultTaskName: string;
   captureHeading: string;
   capturePathPattern: string;
-  projectEnable: boolean;
   projectTag: string;
   projectStatusKey: string;
   projectStatusWhitelist: string;
   projectFmKey: string;
-  currentProjectPath: string;
-  showProjectSelector: boolean;
   dailyGoal: number;
   enableSound: boolean;
   enableNotify: boolean;
@@ -59,14 +49,8 @@ export interface Settings {
   breakAlertSound: string;
   strongAlertDelaySec: number;
   strongAlertIntervalSec: number;
-  longFocusDefaultMin: number;
   persistentAlertSound: boolean;
   ribbonClickAutoNext: boolean;
-  focusStartCommandId: string;
-  breakStartCommandId: string;
-  breakBlackoutEnabled: boolean;
-  taskBlackoutEnabled: boolean;
-  workMode: WorkMode;
   modules: ModuleDefinition[];
   restPresets: string[];
   projectAssignments: Record<string, string>;
@@ -74,26 +58,13 @@ export interface Settings {
   loopCount: number;
   autoAdvance: boolean;
   enableProjects: boolean;
-  cycleTaskA: string;
-  cycleMinA: number;
-  cycleWorkspaceCommandA: string;
-  cycleTaskBlackoutA: boolean;
-  cycleTaskB: string;
-  cycleMinB: number;
-  cycleWorkspaceCommandB: string;
-  cycleTaskBlackoutB: boolean;
-  cycleBreakEvery: number;
   respectModalInputFocus: boolean;
   schemaVersion?: number;
 }
-
 export interface Attention {
   type: TimerStage;
-  isLong: boolean;
-  cycleSlot: CycleSlot | null;
   nextStarted: boolean;
   durationMs: number;
-  taskName?: string;
   moduleIndex?: number;
   moduleRun?: ModuleRun;
 }
@@ -113,14 +84,13 @@ export interface Runtime {
   schemaVersion: number;
   status: TimerStatus;
   stage: TimerStage | null;
-  mode: WorkMode;
+  mode: "modules";
   moduleRun?: ModuleRun | null;
   currentModuleIndex?: number;
   selectedModuleId?: string | null;
   completedWorkCount?: number;
   completedRestCount?: number;
   completedLoopCount?: number;
-  cycleSlot: CycleSlot;
   durationMs: number;
   startedAtMs: number;
   elapsedMs: number;
@@ -131,14 +101,10 @@ export interface Runtime {
   attention: Attention | null;
   pendingSettlement: SettlementJournal | null;
   pendingBreakTransition: BreakTransition | null;
-  breakContinuation: BreakContinuation | null;
   quarantinedSettlement: Record<string, any> | null;
   projectQueue: Array<Record<string, any>>;
   frontmatterQueue: Array<Record<string, any>>;
   sessionCount: number;
-  cycleRoundCount: number;
-  currentTaskName: string;
-  longFocusMinutes: number;
   dayKey: string;
   viewWasOpen: boolean;
   failure?: FailureRecord | null;
@@ -150,9 +116,7 @@ export interface BreakTransition {
   autoNext: boolean;
   durationMs: number;
   createdAtMs: number;
-  mode?: WorkMode;
-  cycleSlot?: CycleSlot;
-  taskName?: string;
+  mode: "modules";
   moduleIndex?: number | null;
   moduleRun?: ModuleRun | null;
   completedRestCountAfter?: number;
@@ -160,13 +124,6 @@ export interface BreakTransition {
   completionType?: ModuleType;
   sessionCountAfter?: number;
   completedLoopCountAfter?: number;
-}
-
-export interface BreakContinuation {
-  mode: "cycle";
-  cycleSlot: CycleSlot;
-  taskName: string;
-  durationMs: number;
 }
 
 export interface TaskMutationPlan {
@@ -191,14 +148,9 @@ export interface DailySettlementPlan extends TaskMutationPlan {
 }
 
 export interface StageTransition {
-  mode: WorkMode | "modules";
+  mode: "modules";
   durationMs: number;
   autoNext: boolean;
-  isLong?: boolean;
-  cycleSlot?: CycleSlot;
-  taskName?: string;
-  cycleRoundCountAfter?: number;
-  cycleRestDurationMs?: number;
   moduleIndex?: number | null;
   moduleRun?: ModuleRun | null;
   completedWorkCountAfter?: number;

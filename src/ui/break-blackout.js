@@ -1,4 +1,5 @@
-const { TIMER_STATUS, TIMER_STAGE } = require("../core/timer");
+const { TIMER_STATUS } = require("../core/timer");
+const { shouldShowLegacyBlackout, legacyBlackoutPrompt, legacyBlackoutKey } = require("../legacy/blackout");
 
 // This describes the safe in-window fallback, not the macOS helper.
 function getBlackoutCapability() {
@@ -15,23 +16,14 @@ function shouldShowBlackout(runtime, settings) {
   const active = /** @type {string[]} */ ([TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED]).includes(runtime?.status);
   if (!active) return false;
   if (runtime?.moduleRun) return runtime.moduleRun.blackout === true;
-  if (runtime?.stage === TIMER_STAGE.BREAK) return settings?.breakBlackoutEnabled === true;
-  if (runtime?.stage !== TIMER_STAGE.FOCUS) return false;
-  if (runtime?.mode === "cycle") return runtime?.cycleSlot === 1
-    ? settings?.cycleTaskBlackoutB === true
-    : settings?.cycleTaskBlackoutA === true;
-  return settings?.taskBlackoutEnabled === true;
+  return shouldShowLegacyBlackout(runtime, settings);
 }
 
 /** @param {Record<string, any> | null | undefined} runtime */
 function blackoutKey(runtime) {
   if (!runtime?.stage) return "";
   if (runtime.moduleRun?.runId) return `module:${runtime.moduleRun.runId}`;
-  // A break has no persisted session id. Its phase stays the same across
-  // pause/resume while startedAtMs is deliberately reset, so do not use that
-  // mutable timestamp to decide whether a dismissed screen may reappear.
-  if (runtime.stage === TIMER_STAGE.BREAK) return "break:active";
-  return `${runtime.stage}:${runtime.sessionId || runtime.startedAtMs || "pending"}`;
+  return legacyBlackoutKey(runtime);
 }
 
 /** @param {number} seconds */
@@ -43,12 +35,7 @@ function formatBlackoutTime(seconds) {
 /** @param {Record<string, any>} runtime @param {Record<string, any> | null | undefined} settings */
 function blackoutPrompt(runtime, settings) {
   if (runtime.moduleRun) return { label:"现在应该做什么", title:runtime.moduleRun.name };
-  if (runtime.stage === TIMER_STAGE.BREAK) return { label:"现在应该做什么", title:"休息一下" };
-  const configuredTask = runtime.mode === "cycle"
-    ? (runtime.cycleSlot === 1 ? settings?.cycleTaskB : settings?.cycleTaskA)
-    : settings?.defaultTaskName;
-  const task = String(runtime.currentTaskName || configuredTask || "").trim();
-  return { label:"现在应该做什么", title:task || "专注当前任务" };
+  return legacyBlackoutPrompt(runtime, settings);
 }
 
 class BreakBlackoutController {

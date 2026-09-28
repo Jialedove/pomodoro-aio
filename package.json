@@ -1,6 +1,6 @@
 {
   "name": "pomodoro-aio",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "private": true,
   "description": "Pomodoro AIO Obsidian plugin",
   "main": "main.js",

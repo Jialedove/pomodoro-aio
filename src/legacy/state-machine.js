@@ -1,4 +1,4 @@
-const { TIMER_STATUS, TIMER_STAGE, plannedTomatoAmount } = require("./timer");
+const { TIMER_STATUS, TIMER_STAGE, plannedTomatoAmount } = require("../core/timer");
 /** @typedef {import("../../types/contracts").Runtime} Runtime */
 /** @typedef {import("../../types/contracts").RuntimeEvent} RuntimeEvent */
 /** @typedef {import("../../types/contracts").RuntimeTransition} RuntimeTransition */
@@ -22,9 +22,12 @@ const RUNTIME_EVENT = Object.freeze({
   RESTORE_FOCUS: "restore-focus",
   CLEAR_BREAK_TRANSITION: "clear-break-transition",
   FAIL: "fail",
+  SET_TASK: "set-task",
   SET_VIEW_OPEN: "set-view-open",
   SELECT_MODULE: "select-module",
-  FINISH_SEQUENCE: "finish-sequence"
+  SELECT_CYCLE_SLOT: "select-cycle-slot",
+  SET_LONG_FOCUS: "set-long-focus"
+  , FINISH_SEQUENCE: "finish-sequence"
   , COMPLETE_REST: "complete-rest"
   , COMPLETE_EMPTY_WORK: "complete-empty-work"
 });
@@ -54,6 +57,7 @@ function clearedStage(runtime, status, remainingMs = 0) {
     pausedAtMs: 0,
     sessionId: null,
     plannedTomatoCredit: 0,
+    breakContinuation: null,
     moduleRun: null
   };
 }
@@ -71,6 +75,7 @@ function reduceRuntime(runtime, event) {
         status: TIMER_STATUS.RUNNING,
         stage: event.stage,
         mode: event.mode ?? runtime.mode,
+        cycleSlot: event.cycleSlot ?? runtime.cycleSlot,
         durationMs,
         startedAtMs: event.now,
         elapsedMs: 0,
@@ -84,9 +89,15 @@ function reduceRuntime(runtime, event) {
         completedWorkCount:event.newSequence ? 0 : runtime.completedWorkCount,
         completedRestCount:event.newSequence ? 0 : runtime.completedRestCount,
         completedLoopCount:event.newSequence ? 0 : runtime.completedLoopCount,
+        cycleRoundCount: event.mode === "cycle" && Number.isInteger(event.cycleRoundCount)
+          ? Math.max(0, event.cycleRoundCount)
+          : runtime.cycleRoundCount,
+        breakContinuation: event.stage === TIMER_STAGE.BREAK ? (event.breakContinuation ?? null) : null,
         attention: null,
         failure: null
       };
+      if (event.currentTaskName !== undefined) /** @type {any} */ (next).currentTaskName = String(event.currentTaskName || "").trim();
+      if (event.longFocusMinutes !== undefined) /** @type {any} */ (next).longFocusMinutes = event.longFocusMinutes;
       return result(next, [RUNTIME_EFFECT.ALERT_STOP, RUNTIME_EFFECT.BROADCAST, RUNTIME_EFFECT.RESYNC]);
     }
 
@@ -94,10 +105,13 @@ function reduceRuntime(runtime, event) {
       const next = clearedStage({
         ...runtime,
         mode: event.mode ?? runtime.mode,
+        cycleSlot: event.cycleSlot ?? runtime.cycleSlot,
         attention: null,
         failure: null
       }, TIMER_STATUS.AWAITING, event.durationMs);
+      next.breakContinuation = event.breakContinuation ?? null;
       next.currentModuleIndex = Number.isInteger(event.moduleIndex) ? event.moduleIndex : runtime.currentModuleIndex;
+      if (event.currentTaskName !== undefined) /** @type {any} */ (next).currentTaskName = String(event.currentTaskName || "").trim();
       return result(next, [RUNTIME_EFFECT.ALERT_STOP, RUNTIME_EFFECT.BROADCAST, RUNTIME_EFFECT.RESYNC]);
     }
 
@@ -128,6 +142,8 @@ function reduceRuntime(runtime, event) {
       return result({
         ...clearedStage(runtime, TIMER_STATUS.IDLE),
         mode:event.mode,
+        cycleSlot:0,
+        cycleRoundCount:0,
         currentModuleIndex:0,
         selectedModuleId:event.selectedModuleId ?? null,
         completedWorkCount:0,
@@ -135,14 +151,19 @@ function reduceRuntime(runtime, event) {
         completedLoopCount:0,
         attention:null,
         pendingBreakTransition:null,
+        breakContinuation:null,
         failure:null
       }, [RUNTIME_EFFECT.ALERT_STOP, RUNTIME_EFFECT.BROADCAST, RUNTIME_EFFECT.RESYNC]);
 
     case RUNTIME_EVENT.SET_ATTENTION: {
-      const next = { ...runtime, attention:event.attention,
+      const continuation = event.breakContinuation !== undefined
+        ? event.breakContinuation
+        : event.attention?.type === TIMER_STAGE.BREAK ? (runtime.breakContinuation ?? null) : null;
+      const next = { ...runtime, attention:event.attention, breakContinuation:continuation,
         selectedModuleId:event.attention?.moduleRun?.moduleId ?? runtime.selectedModuleId };
       if (event.attention.nextStarted) return result(next, [RUNTIME_EFFECT.ALERT_START, RUNTIME_EFFECT.BROADCAST]);
       const awaiting = clearedStage(next, TIMER_STATUS.AWAITING, event.attention.durationMs);
+      awaiting.breakContinuation = continuation;
       return result(awaiting, [RUNTIME_EFFECT.ALERT_START, RUNTIME_EFFECT.BROADCAST]);
     }
 
@@ -196,6 +217,9 @@ function reduceRuntime(runtime, event) {
         completedLoopCount:event.journal.transition?.mode === "modules"
           ? Math.max(runtime.completedLoopCount || 0, Number(event.journal.transition.completedLoopCountAfter) || 0)
           : runtime.completedLoopCount,
+        cycleRoundCount:event.journal.transition?.mode === "cycle" && Number.isInteger(event.journal.transition.cycleRoundCountAfter)
+          ? Math.max(runtime.cycleRoundCount || 0, event.journal.transition.cycleRoundCountAfter)
+          : runtime.cycleRoundCount,
         sessionId:event.journal.sessionId
       });
 
@@ -227,7 +251,7 @@ function reduceRuntime(runtime, event) {
       });
 
     case RUNTIME_EVENT.CLEAR_BREAK_TRANSITION:
-      return result({ ...runtime, pendingBreakTransition:null }, [RUNTIME_EFFECT.BROADCAST, RUNTIME_EFFECT.RESYNC]);
+      return result({ ...runtime, pendingBreakTransition:null, breakContinuation:null }, [RUNTIME_EFFECT.BROADCAST, RUNTIME_EFFECT.RESYNC]);
 
     case RUNTIME_EVENT.FAIL:
       return result({
@@ -237,8 +261,17 @@ function reduceRuntime(runtime, event) {
         failure:event.failure
       }, [RUNTIME_EFFECT.ALERT_STOP, RUNTIME_EFFECT.BROADCAST]);
 
+    case RUNTIME_EVENT.SET_TASK:
+      return result({ ...runtime, currentTaskName:String(event.name || "").trim() }, [RUNTIME_EFFECT.BROADCAST]);
+
     case RUNTIME_EVENT.SET_VIEW_OPEN:
       return result({ ...runtime, viewWasOpen:!!event.open });
+
+    case RUNTIME_EVENT.SELECT_CYCLE_SLOT:
+      return result({ ...runtime, cycleSlot:event.slot === 1 ? 1 : 0 }, [RUNTIME_EFFECT.BROADCAST]);
+
+    case RUNTIME_EVENT.SET_LONG_FOCUS:
+      return result({ ...runtime, longFocusMinutes:event.minutes }, event.broadcast ? [RUNTIME_EFFECT.BROADCAST] : []);
 
     case RUNTIME_EVENT.COMPLETE_REST:
       return result({
@@ -265,4 +298,8 @@ function reduceRuntime(runtime, event) {
   }
 }
 
-module.exports = { RUNTIME_EVENT, RUNTIME_EFFECT, reduceRuntime };
+/** @type {Set<string>} */
+const LEGACY_ONLY_EVENTS = new Set([RUNTIME_EVENT.SET_TASK, RUNTIME_EVENT.SELECT_CYCLE_SLOT, RUNTIME_EVENT.SET_LONG_FOCUS]);
+/** @param {{type?:string}} event */
+const isLegacyRuntimeEvent = event => LEGACY_ONLY_EVENTS.has(event?.type || "");
+module.exports = { RUNTIME_EVENT, RUNTIME_EFFECT, reduceRuntime, isLegacyRuntimeEvent };

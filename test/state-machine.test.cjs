@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { RUNTIME_EVENT, RUNTIME_EFFECT, reduceRuntime } = require("../src/core/state-machine");
+const { RUNTIME_EVENT, RUNTIME_EFFECT, reduceRuntime } = require("../src/legacy/state-machine");
 
 const BASE_RUNTIME = {
   status:"idle",
