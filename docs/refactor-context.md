@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | A. Legacy 依赖方向 | V5 默认值、快照与运行态归一化位于 `src/core/runtime.js`；启动按 schema 选择旧数据迁移或直接归一化；V5 事件只走核心 reducer。旧运行段与 journal 迁移回归通过 | 本轮未安装或重载 | 真实旧库升级待人工核对 |
 | B. 项目即时统计 | metadata changed 仅在缓存数值追上结算事件时撤销即时覆盖；新增缓存滞后的回归 | 本轮未安装或重载 | 真实项目页时序待人工核对 |
-| C. 合并与保护 | 本地 `npm run check` 通过；[PR #2](https://github.com/Jialedove/pomodoro-aio/pull/2) 已建立，[CI #36533647832](https://github.com/Jialedove/pomodoro-aio/actions/runs/36533647832) 的 `core` 与 `native-macos` 均通过 | 不适用 | PR 合并到 `main` 与 required checks 保护仍待授权 |
+| C. 合并与保护 | [PR #2](https://github.com/Jialedove/pomodoro-aio/pull/2) 已 squash 合并为 `7c2a18d`；最新 [CI #36533878675](https://github.com/Jialedove/pomodoro-aio/actions/runs/36533878675) 的 `core` 与 `native-macos` 均通过；`main` 已要求 PR 和这两项必需检查，且规则对管理员生效 | 不适用 | 无远端工程配置待办 |
 
 自动检查：typecheck、lint、135/135 个 Node 测试、生产构建与产物一致性、本机 macOS 原生助手编译均通过；`git diff --check` 通过。此次没有执行 `npm run install:vault`，没有改动 Vault 的 `data.json`，也没有在 Obsidian 中重载或人工验收。旧版接口仍留在 `src/legacy/` 供迁移及既有兼容测试使用；新 V5 正常运行路径不调用旧 reducer。
 
