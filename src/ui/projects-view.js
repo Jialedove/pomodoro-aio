@@ -22,6 +22,8 @@ class ProjectsView extends ItemView {
     this.disposers = [];
     /** @type {ProjectOption[]} */
     this.projects = [];
+    /** @type {Map<string, number>} */
+    this.liveTomatoes = new Map();
     this._renderSignature = "";
   }
   getViewType() { return ProjectsView.VIEW_TYPE; }
@@ -122,7 +124,12 @@ class ProjectsView extends ItemView {
 
     const refreshProjects = () => {
       if (this.plugin.settings.enableProjects !== true) { this.projects = []; return; }
-      try { this.projects = this.plugin.projectCandidates(); }
+      try {
+        this.projects = this.plugin.projectCandidates().map((/** @type {ProjectOption} */ project) => ({
+          ...project,
+          tomatoes:this.liveTomatoes.get(project.path) ?? project.tomatoes
+        }));
+      }
       catch (error) { this.projects = []; logViewError(this.plugin, "project-refresh", error); }
     };
     refreshProjects();
@@ -134,6 +141,26 @@ class ProjectsView extends ItemView {
     };
     this.app.workspace.on("pomodoro:aio-state", onState);
     this.disposers.push(() => this.app.workspace.off("pomodoro:aio-state", onState));
+    const onProjectUpdated = (/** @type {{path?:string, tomatoes?:number}} */ update) => {
+      if (!update?.path || !Number.isFinite(update.tomatoes)) return;
+      const cached = this.plugin.projectCandidates().find((/** @type {ProjectOption} */ project) => project.path === update.path);
+      if (cached && Number(cached.tomatoes) === Number(update.tomatoes)) this.liveTomatoes.delete(update.path);
+      else this.liveTomatoes.set(update.path, Number(update.tomatoes));
+      refreshProjects();
+      render(this.plugin.snapshot());
+    };
+    this.app.workspace.on("pomodoro:aio-project-updated", onProjectUpdated);
+    this.disposers.push(() => this.app.workspace.off("pomodoro:aio-project-updated", onProjectUpdated));
+    const onMetadataChanged = (/** @type {{path?:string}} */ file) => {
+      if (!file?.path || !this.liveTomatoes.has(file.path)) return;
+      const cached = this.plugin.projectCandidates().find((/** @type {ProjectOption} */ project) => project.path === file.path);
+      if (!cached || Number(cached.tomatoes) !== this.liveTomatoes.get(file.path)) return;
+      this.liveTomatoes.delete(file.path);
+      refreshProjects();
+      render(this.plugin.snapshot());
+    };
+    this.app.metadataCache.on("changed", onMetadataChanged);
+    this.disposers.push(() => this.app.metadataCache.off("changed", onMetadataChanged));
   }
 
   async onClose() {

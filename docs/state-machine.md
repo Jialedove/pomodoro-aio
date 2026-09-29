@@ -2,9 +2,9 @@
 
 ## 运行模型
 
-配置中的 `settings.modules` 是可编辑的模块定义。每次执行时生成 `runtime.moduleRun`：固定模块 ID、运行 ID、类型、名称、时长、黑屏、工作区及开始时的项目关系。定义修改只影响以后开始的模块。`currentModuleIndex` 记录序列位置；`completedWorkCount`、`completedRestCount`、`completedLoopCount` 分别计数。序列推进由 `src/core/modules.js` 计算，不依赖 A/B 槽位或旧工作模式。
+配置中的 `settings.modules` 是可编辑的模块定义。每次执行时生成 `runtime.moduleRun`：固定模块 ID、运行 ID、类型、名称、时长、黑屏、工作区及开始时的项目关系。定义修改只影响以后开始的模块。`currentModuleIndex` 记录序列位置；`completedWorkCount`、`completedRestCount`、`completedLoopCount` 分别计数。序列推进由 `src/core/modules.js` 计算。
 
-工作映射到计时内核的 `focus` 阶段，休息映射到 `break` 阶段。两者都使用绝对时间、暂停/恢复、到点提醒和重载恢复；只有工作写番茄。状态转换集中在 `src/core/state-machine.js` 的 `reduceRuntime`，并在关键持久化成功后才执行 UI 和调度效果。
+工作映射到计时内核的 `focus` 阶段，休息映射到 `break` 阶段。两者都使用绝对时间、暂停/恢复、到点提醒和重载恢复；只有工作写番茄。当前状态转换由 `src/core/state-machine.js` 的 `reduceRuntime` 处理；序列启动与选择由 `SequenceController` 处理，结算和恢复由 `SettlementCoordinator` 处理。关键持久化成功后才执行 UI 和调度效果。
 
 | 状态 | 含义 |
 | --- | --- |
@@ -31,4 +31,4 @@ awaiting → 确认 → 新 moduleRun → running
 
 ## 旧数据兼容
 
-当前 runtime schema 为 `4`。旧设置只在首次缺少 `modules` 字段时转换；显式空列表不再触发旧迁移。旧 `standard/cycle`、A/B、长专注和按轮插休字段仅供迁移旧配置或恢复升级前仍在执行的阶段与 journal。新 UI、命令和 `startSequence` 路径只运行模块序列。旧待结算记录先按原计划完成，再进入新序列。
+当前 settings/runtime schema 为 `5`。旧设置只在首次缺少 `modules` 字段时转换；显式空列表不再触发旧迁移。旧普通配置生成工作与休息，旧长专注时长不生成额外模块。旧模式、任务槽位与按轮插休字段只在 `src/legacy/` 的迁移和恢复逻辑中读取。升级瞬间仍在执行的旧阶段转为单次恢复快照；旧待结算记录保留既有日记 journal 的幂等性，完成后停止，不插入新序列。之后的新启动和推进只运行模块序列。

@@ -1,5 +1,39 @@
 # Pomodoro AIO 模块化重构上下文
 
+## 0.4 最后三项收口（2026-09-29）
+
+对照 [`refactor-target-v1.md`](refactor-target-v1.md) 第 1–3、17–20、27 节处理审查结论的 A/B/C 三项。
+
+| 范围 | 自动检查 | 真实 Obsidian | 未完成 |
+| --- | --- | --- | --- |
+| A. Legacy 依赖方向 | V5 默认值、快照与运行态归一化位于 `src/core/runtime.js`；启动按 schema 选择旧数据迁移或直接归一化；V5 事件只走核心 reducer。旧运行段与 journal 迁移回归通过 | 本轮未安装或重载 | 真实旧库升级待人工核对 |
+| B. 项目即时统计 | metadata changed 仅在缓存数值追上结算事件时撤销即时覆盖；新增缓存滞后的回归 | 本轮未安装或重载 | 真实项目页时序待人工核对 |
+| C. 合并与保护 | 本地 `npm run check` 通过；[PR #2](https://github.com/Jialedove/pomodoro-aio/pull/2) 已建立，[CI #36533647832](https://github.com/Jialedove/pomodoro-aio/actions/runs/36533647832) 的 `core` 与 `native-macos` 均通过 | 不适用 | PR 合并到 `main` 与 required checks 保护仍待授权 |
+
+自动检查：typecheck、lint、135/135 个 Node 测试、生产构建与产物一致性、本机 macOS 原生助手编译均通过；`git diff --check` 通过。此次没有执行 `npm run install:vault`，没有改动 Vault 的 `data.json`，也没有在 Obsidian 中重载或人工验收。旧版接口仍留在 `src/legacy/` 供迁移及既有兼容测试使用；新 V5 正常运行路径不调用旧 reducer。
+
+## 0.4 收口进度（2026-09-28）
+
+本轮以 `82f591c` 的模块交互为基线，目标仍以 [`refactor-target-v1.md`](refactor-target-v1.md) 第 1–3、17–20、27 节为准。
+
+| 范围 | 代码与自动检查 | 真实 Obsidian | 未完成 |
+| --- | --- | --- | --- |
+| Phase 1 长专注迁移 | 旧普通配置只生成工作、休息；正在运行的旧长专注保留原时长并只结算一次 | 未安装本轮产物 | 旧数据在真实库升级待人工核对 |
+| Phase 2–4 兼容与 V5 | 当前设置、运行态和类型收缩为模块模型；旧设置、运行态、状态机、结算与辅助业务移至 `src/legacy/`。旧 journal 幂等恢复和源码边界有定向回归 | 未重载 | 旧数据真实升级待人工核对 |
+| Phase 5 macOS CI | `core` Ubuntu 与 `native-macos` 两个 job 均在 [GitHub CI #36447312199](https://github.com/Jialedove/pomodoro-aio/actions/runs/36447312199) 通过；后者完成 Swift 编译及可执行产物检查 | 不适用 | 分支保护需仓库管理员设置 |
+| Phase 6 项目即时数值 | 成功结算和重试成功后发项目更新事件；视图先显示事件值，metadata changed 后复核；集成和视图测试通过 | 未重载 | 真实项目页时序待核对 |
+| Phase 7 控制器拆分 | `SequenceController` 管启动、选择、暂停/恢复和重置；`SettlementCoordinator` 管工作/休息结算、队列和恢复；`src/main.js` 从 2707 行缩至 1132 行 | 未重载 | 真实运行回归待核对 |
+| Phase 8 文档与版本 | README、手动清单、状态机说明及本记录已更新；package 与 manifest 为 `0.4.0` | 未安装 | 本轮没有真实 Obsidian 安装与重载 |
+
+### 本轮验收证据
+
+- `npm run check` 通过：typecheck、lint、133/133 个 Node 测试、生产构建、构建产物一致性及本机 macOS 原生助手编译。
+- `git diff --check` 通过；`test/legacy-boundary.test.cjs` 对 `src/legacy/` 以外的正式源码守护旧字段边界。
+- 迁移回归覆盖旧普通配置不插入长专注、运行中和待确认的旧长专注保留时长、旧 journal 不重复写入、新运行态不带旧字段。项目集成测试验证写入成功发更新事件，视图测试验证即时展示与 metadata 校准。
+- `codex/pomodoro-0-4-closeout` 的提交 `242337a` 已推送；[GitHub CI #36447312199](https://github.com/Jialedove/pomodoro-aio/actions/runs/36447312199) 的 `core` 与 `native-macos` 均通过。分支保护设置不在代码仓库内。
+- 本轮未执行 `npm run install:vault`，未覆盖目标库 `data.json`，未重载 Obsidian。真实升级、项目页与多显示器遮罩仍需在安装后核对。
+
+
 ## 长期目标与使用方式
 
 目标原文为 [`refactor-target-v1.md`](refactor-target-v1.md)。每轮改动开始前读目标第 1–3、17–20、27 节；设计具体功能时再读相关章节；验收时逐项复核第 27 节。这里记录实际代码、决策和证据，不以本文件替代目标原文。
@@ -88,11 +122,11 @@
 
 ## 当前决策与风险
 
-- 首次缺少 `modules` 字段时迁移旧配置；显式 `modules: []` 是用户空序列，不重新迁移。旧标准专注映射工作/休息，旧长专注成为普通工作，旧 A/B 及按轮休息展开为线性列表。
+- 首次缺少 `modules` 字段时迁移旧配置；显式 `modules: []` 是用户空序列，不重新迁移。旧普通配置只映射工作/休息，旧长专注设置不额外插入序列；升级瞬间正在运行的旧长专注保留该段快照并在结算后停止。旧 A/B 及按轮休息只在兼容迁移中展开为线性列表。
 - 当前工作快照在真正开始时冻结。等待确认期间可修改模块定义和项目关系；已经运行的段不受修改影响。
 - 关闭项目功能后跳过新项目计划、项目候选和重试队列；已持久化 journal 的未执行项目步骤可安全跳过。重新启用后可继续旧失败队列。
-- 现有兼容恢复方法仍在源码中，避免升级中丢失进行中的旧计时或 pending journal。新产品入口均不调用它们；这部分应在真实迁移验证后考虑移除。
-- 项目累计番茄在独立视图从 Obsidian metadata cache 读取，可能短暂落后于刚写入的 frontmatter；真实界面验收需特别检查刷新时序。
+- 兼容恢复方法集中在 `src/legacy/`，避免升级中丢失进行中的旧计时或 pending journal；新产品入口仍由 `src/main.js` 组合。真实迁移验证前保留兼容层。
+- 项目累计番茄在独立视图从 Obsidian metadata cache 读取；成功写入后先展示结算事件的数值，metadata changed 到来再重新同步。真实界面验收需特别检查事件时序。
 - 界面反馈明确要求延续原侧栏的信息密度和单段工作操作。模块编辑区不显示项目字段；项目页负责建立或解除关系。原版从日记选择未勾选待办和完成事情的操作须保留在每个工作模块上。
 - 完成按钮失效的根因是按钮先 `preventDefault()`，随后将同一事件传入 `runUserCommand`，后者把 `defaultPrevented` 当作拦截信号。修正为按下时仅阻止失焦、在独立 click 事件中执行命令。
 - 当前模块选择仅允许待机或等待下一段时改变；运行中的快照不可被双击覆盖。结束完整序列或重置后，下一次默认回到第一项。

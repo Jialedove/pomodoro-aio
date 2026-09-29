@@ -212,7 +212,8 @@ function loadPomodoro() {
         ItemView: FakeItemView,
         Modal: FakeModal,
         PluginSettingTab: FakePluginSettingTab,
-        Setting: FakeSetting
+        Setting: FakeSetting,
+        setIcon() {}
       }
     : originalLoad(request, parent, isMain);
 
@@ -296,6 +297,9 @@ function createPlugin(options = {}) {
   const commands = options.commands || new CommandSimulator();
   const plugin = new PomodoroAIO();
   plugin.settings = { ...BASE_SETTINGS, ...(options.settings || {}) };
+  if (!Array.isArray(plugin.settings.modules)) {
+    plugin.completeTask = function(completeOptions) { return this._getLegacyController().completeTask(completeOptions); };
+  }
   plugin.runtime = { ...BASE_RUNTIME, ...(options.runtime || {}) };
   plugin.app = createApp({
     vault,

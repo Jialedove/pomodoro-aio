@@ -1,11 +1,12 @@
-const { TIMER_STAGE } = require("./timer");
-const { planTaskLineMutation } = require("./task-lines");
+const { configuredStageDurationMs } = require("./timer");
+const { TIMER_STAGE } = require("../core/timer");
+const { planTaskLineMutation } = require("../core/task-lines");
 /** @typedef {import("../../types/contracts").Settings} Settings */
-/** @typedef {import("../../types/contracts").Runtime} Runtime */
+/** @typedef {import("../../types/legacy-contracts").LegacyRuntime} Runtime */
 /** @typedef {import("../../types/contracts").DailySettlementPlan} DailySettlementPlan */
 /** @typedef {import("../../types/contracts").ProjectSettlementPlan} ProjectSettlementPlan */
-/** @typedef {import("../../types/contracts").SettlementJournal} SettlementJournal */
-/** @typedef {import("../../types/contracts").StageTransition} StageTransition */
+/** @typedef {import("../../types/legacy-contracts").LegacySettlementJournal} SettlementJournal */
+/** @typedef {import("../../types/legacy-contracts").LegacyStageTransition} StageTransition */
 
 const JOURNAL_STATUSES = new Set(["prepared", "dailyApplied", "projectApplied", "runtimeFinalizing", "settled"]);
 const PLAN_STATUSES = new Set(["pending", "applied"]);
@@ -46,9 +47,9 @@ function validateSettlementJournal(value) {
   if (daily.kind === "insert" && (daily.targetIndex !== null || daily.lineBefore !== null)) return "journal daily insert 计划非法";
 
   const transition = value.transition;
-  if (!record(transition) || transition.mode !== "modules") return "journal transition 非法";
+  if (!record(transition) || !["standard", "cycle", "modules"].includes(transition.mode)) return "journal transition 非法";
   if (!positive(transition.durationMs) || typeof transition.autoNext !== "boolean") return "journal transition 字段非法";
-  {
+  if (transition.mode === "modules") {
     if (transition.moduleIndex !== null && (!Number.isInteger(transition.moduleIndex) || transition.moduleIndex < 0)) return "journal moduleIndex 非法";
     if (transition.moduleIndex !== null && (!record(transition.moduleRun) || !text(transition.moduleRun.runId)
       || !text(transition.moduleRun.moduleId) || !["work", "rest"].includes(transition.moduleRun.type)
@@ -56,6 +57,11 @@ function validateSettlementJournal(value) {
     if (!Number.isInteger(transition.completedWorkCountAfter) || transition.completedWorkCountAfter < 1) return "journal work count 非法";
     if (!Number.isInteger(transition.completedLoopCountAfter) || transition.completedLoopCountAfter < 0) return "journal loop count 非法";
   }
+  if (transition.mode === "standard" && typeof transition.isLong !== "boolean") return "journal standard transition 非法";
+  if (transition.mode === "cycle" && (![0, 1].includes(transition.cycleSlot) || typeof transition.taskName !== "string")) return "journal cycle transition 非法";
+  if (transition.cycleRoundCountAfter !== undefined
+    && (!Number.isInteger(transition.cycleRoundCountAfter) || transition.cycleRoundCountAfter < 0)) return "journal cycle round count 非法";
+  if (transition.cycleRestDurationMs !== undefined && !positive(transition.cycleRestDurationMs)) return "journal cycle rest 非法";
 
   const project = value.project;
   if (!record(project) || !PROJECT_STATUSES.has(project.status)) return "journal project 非法";
@@ -65,6 +71,36 @@ function validateSettlementJournal(value) {
   if (project.status !== "skipped" && project.deferred !== true
     && (!Number.isFinite(project.beforeValue) || !Number.isFinite(project.afterValue))) return "journal project 基线非法";
   return null;
+}
+
+/** @param {Settings} settings @param {Runtime} runtime @param {number} sessionCountAfter @returns {StageTransition} */
+function buildNextStageTransition(settings, runtime, sessionCountAfter) {
+  if (runtime?.mode === "cycle") {
+    const cycleSlot = runtime.cycleSlot === 1 ? 0 : 1;
+    const taskName = cycleSlot === 1 ? settings.cycleTaskB : settings.cycleTaskA;
+    /** @type {StageTransition} */
+    const transition = {
+      mode: "cycle",
+      cycleSlot,
+      taskName: String(taskName || "").trim(),
+      autoNext: false,
+      durationMs: configuredStageDurationMs(settings, TIMER_STAGE.FOCUS, false, cycleSlot)
+    };
+    if (runtime.cycleSlot === 1) {
+      transition.cycleRoundCountAfter = Math.max(0, Math.floor(Number(runtime.cycleRoundCount) || 0)) + 1;
+      if (settings.cycleBreakEvery > 0 && transition.cycleRoundCountAfter % settings.cycleBreakEvery === 0) {
+        transition.cycleRestDurationMs = configuredStageDurationMs(settings, TIMER_STAGE.BREAK, false);
+      }
+    }
+    return transition;
+  }
+  const isLong = settings.longEvery > 0 && sessionCountAfter % settings.longEvery === 0;
+  return {
+    mode: "standard",
+    isLong,
+    autoNext: !!settings.autoNext,
+    durationMs: configuredStageDurationMs(settings, TIMER_STAGE.BREAK, isLong)
+  };
 }
 
 /** @param {unknown} sourceText @param {{path:string, taskName:string, amount:number, settings:Settings, frontmatterKey:string}} input @returns {DailySettlementPlan} */
@@ -112,6 +148,7 @@ function buildSettlementJournal({
 }
 
 module.exports = {
+  buildNextStageTransition,
   buildDailySettlementPlan,
   buildSettlementJournal,
   validateSettlementJournal

@@ -4,10 +4,10 @@ const {
   normalizeModuleDefinition,
   normalizeRestPresets,
   normalizeOrchestration,
-  migrateLegacySettings,
   getNextModule,
   createModuleRunSnapshot
 } = require("../src/core/modules.js");
+const { migrateLegacySettings } = require("../src/legacy/settings-migration.js");
 
 test("休息事项预设有默认候选，去重并允许用户清空", () => {
   assert.ok(normalizeRestPresets().includes("NSDR 非睡眠深度休息"));
@@ -36,7 +36,7 @@ test("模块定义规范化保留稳定 ID，并给缺失字段安全默认值",
   });
 });
 
-test("旧 standard 配置迁移成工作、休息和普通长时工作模块", () => {
+test("旧 standard 只迁移工作和休息，不把独立长专注插入序列", () => {
   const migrated = migrateLegacySettings({
     workMode: "standard", focusMin: 25, breakMin: 5, longFocusDefaultMin: 50,
     taskBlackoutEnabled: true, autoNext: true, projectEnable: true,
@@ -44,12 +44,10 @@ test("旧 standard 配置迁移成工作、休息和普通长时工作模块", (
   }, { idFactory: sequentialIds() });
   assert.deepEqual(migrated.modules.map(({ id, type, name, durationMin, blackout }) => ({ id, type, name, durationMin, blackout })), [
     { id: "legacy-standard-work", type: "work", name: "工作", durationMin: 25, blackout: true },
-    { id: "legacy-standard-rest", type: "rest", name: "休息", durationMin: 5, blackout: false },
-    { id: "legacy-long-focus", type: "work", name: "长专注", durationMin: 50, blackout: true }
+    { id: "legacy-standard-rest", type: "rest", name: "休息", durationMin: 5, blackout: false }
   ]);
   assert.deepEqual(migrated.projectAssignments, {
-    "legacy-standard-work": "Projects/Research.md",
-    "legacy-long-focus": "Projects/Research.md"
+    "legacy-standard-work": "Projects/Research.md"
   });
   assert.equal(migrated.autoAdvance, true);
   assert.equal(migrated.enableProjects, true);

@@ -249,10 +249,10 @@ test("插件按快照同步黑屏且设置默认关闭", () => {
   assert.equal(calls[0][0].stage, "break");
   assert.equal(calls[0][1].breakBlackoutEnabled, true);
   assert.equal(calls[0][2], 120);
-  assert.equal(PomodoroAIO.normalizeSettings({}).breakBlackoutEnabled, false);
-  assert.equal(PomodoroAIO.normalizeSettings({ breakBlackoutEnabled:true }).breakBlackoutEnabled, true);
-  assert.equal(PomodoroAIO.normalizeSettings({}).taskBlackoutEnabled, false);
-  assert.equal(PomodoroAIO.normalizeSettings({ cycleTaskBlackoutA:true }).cycleTaskBlackoutA, true);
+  assert.equal(PomodoroAIO.normalizeSettings({}).modules[1].blackout, false);
+  assert.equal(PomodoroAIO.normalizeSettings({ breakBlackoutEnabled:true }).modules[1].blackout, true);
+  assert.equal(PomodoroAIO.normalizeSettings({}).modules[0].blackout, false);
+  assert.equal(PomodoroAIO.normalizeSettings({ cycleTaskBlackoutA:true, workMode:"cycle" }).modules[0].blackout, true);
 });
 
 test("普通模式：开始自定义专注保留任务并折算番茄额度", async () => {
@@ -649,10 +649,10 @@ test("设置和运行态迁移会拒绝非法值并移除旧字段", () => {
     fallbackPattern: "Daily//{{date:YYYY-MM-DD}}.md",
     currentProjectPath: "../Projects/demo.md"
   });
-  assert.equal(settings.focusMin, 25);
+  assert.equal(settings.modules[0].durationMin, 25);
   assert.equal(settings.dayStartHHMM, "00:00");
   assert.equal(settings.fallbackPattern, "Daily/{{date:YYYY-MM-DD}}.md");
-  assert.equal(settings.currentProjectPath, "");
+  assert.equal(settings.currentProjectPath, undefined);
 
   const runtime = PomodoroAIO.normalizeRuntime({
     phase: "focus",
@@ -665,11 +665,14 @@ test("设置和运行态迁移会拒绝非法值并移除旧字段", () => {
   assert.equal(runtime.stage, "focus");
   assert.equal(runtime.durationMs, 1_500_000);
   assert.equal(runtime.plannedTomatoCredit, 1);
+  assert.equal(runtime.mode, "modules");
+  assert.equal(runtime.moduleRun.durationMs, 1_500_000);
   assert.equal(runtime.phase, undefined);
   assert.equal(runtime.startedAt, undefined);
 
   const migratedCycleBreak = PomodoroAIO.normalizeSettings({ cycleBreakEnabled: true });
-  assert.equal(migratedCycleBreak.cycleBreakEvery, 1);
+  assert.deepEqual(migratedCycleBreak.modules.map(module => module.type), ["work", "rest"]);
+  assert.equal(migratedCycleBreak.cycleBreakEvery, undefined);
   assert.equal(migratedCycleBreak.cycleBreakEnabled, undefined);
 });
 
