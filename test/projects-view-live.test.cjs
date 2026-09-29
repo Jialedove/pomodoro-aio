@@ -45,6 +45,9 @@ test("项目页先显示结算事件的数值，再由 metadata cache 校准", a
   workspace.trigger("pomodoro:aio-project-updated", { path:"Projects/X.md", tomatoes:2 });
   assert.match(view.containerEl.textContent, /2 🍅/);
   assert.equal(view.liveTomatoes.get("Projects/X.md"), 2);
+  metadataCache.trigger("changed", { path:"Projects/X.md" });
+  assert.match(view.containerEl.textContent, /2 🍅/);
+  assert.equal(view.liveTomatoes.get("Projects/X.md"), 2);
   cachedTomatoes = 2;
   metadataCache.trigger("changed", { path:"Projects/X.md" });
   assert.match(view.containerEl.textContent, /2 🍅/);

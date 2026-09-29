@@ -19,3 +19,11 @@ test("正式源码不重新引入旧模式字段", () => {
   }
   scan(root);
 });
+
+test("V5 运行归一化和事件处理不依赖旧架构", () => {
+  const root = path.join(__dirname, "..", "src");
+  const runtime = fs.readFileSync(path.join(root, "core", "runtime.js"), "utf8");
+  const main = fs.readFileSync(path.join(root, "main.js"), "utf8");
+  assert.doesNotMatch(runtime, /(?:require|import).*legacy/);
+  assert.doesNotMatch(main, /reduceLegacyRuntime|isLegacyRuntimeEvent/);
+});

@@ -25,7 +25,6 @@ const {
   getRemainingMs: calculateRemainingMs
 } = require("./core/timer");
 const { RUNTIME_EVENT, RUNTIME_EFFECT, reduceRuntime } = require("./core/state-machine");
-const { reduceRuntime: reduceLegacyRuntime, isLegacyRuntimeEvent } = require("./legacy/state-machine");
 const { RuntimeStore } = require("./services/runtime-store");
 const { DailyRepository, ProjectRepository } = require("./services/repositories");
 const { normalizeCaptureText } = require("./core/quick-capture");
@@ -34,7 +33,8 @@ const { ProjectsView } = require("./ui/projects-view");
 const { normalizeModuleDefinition, getNextModule, createModuleRunSnapshot } = require("./core/modules");
 const { DEFAULT_SETTINGS, normalizeCurrentSettings } = require("./core/settings");
 const { migrateLegacySettings } = require("./legacy/settings-migration");
-const { createRuntimeDefaults, normalizeRuntime, normalizeModuleRun } = require("./legacy/runtime-normalization");
+const { createRuntimeDefaults, normalizeCurrentRuntime, normalizeModuleRun } = require("./core/runtime");
+const { normalizeRuntime: normalizeLegacyRuntime } = require("./legacy/runtime-normalization");
 const { prepareModuleDraft } = require("./core/module-draft");
 const { QuickCaptureModal } = require("./ui/quick-capture-modal");
 const { BreakBlackoutController } = require("./ui/break-blackout");
@@ -80,6 +80,15 @@ function normalizeSettings(raw = {}, fallback = DEFAULT_SETTINGS) {
   const input = Number(raw?.schemaVersion) >= TIMER_SCHEMA_VERSION || Array.isArray(raw?.modules)
     ? raw : migrateLegacySettings(raw);
   return normalizeCurrentSettings(input, fallback, normalizePath);
+}
+/** @param {unknown} raw @param {Settings} settings @param {number} [now] @returns {Runtime} */
+function normalizeRuntime(raw, settings, now=Date.now()) {
+  const source = raw && typeof raw === "object" && !Array.isArray(raw) ? /** @type {AnyRecord} */ (raw) : {};
+  if (settings.schemaVersion !== TIMER_SCHEMA_VERSION) return normalizeLegacyRuntime(source, settings, now);
+  const upgraded = Object.keys(source).length === 0 ? createRuntimeDefaults(settings)
+    : Number(source.schemaVersion) >= TIMER_SCHEMA_VERSION
+    ? source : normalizeLegacyRuntime(source, settings, now);
+  return normalizeCurrentRuntime(upgraded, settings, now);
 }
 /** @param {string} kind @param {boolean} [enabled] @param {"sine" | "square" | "triangle"} [waveform] @param {boolean} [strong] */
 function playBeep(kind, enabled=true, waveform='sine', strong=false) {
@@ -325,9 +334,9 @@ class PomodoroAIO extends Plugin {
   }
   /** @param {RuntimeEvent} event */
   applyRuntimeEvent(event){
-    const transition = this.runtime.mode === "modules" && !isLegacyRuntimeEvent(event)
+    const transition = this.runtime.mode === "modules"
       ? reduceRuntime(this.runtime, event)
-      : reduceLegacyRuntime(this.runtime, event);
+      : this._getLegacyController().applyRuntimeEvent(event);
     this.runtime = transition.runtime;
     return transition.effects;
   }

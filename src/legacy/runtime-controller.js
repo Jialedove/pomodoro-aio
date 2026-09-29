@@ -1,7 +1,7 @@
 const { configuredStageDurationMs } = require("./timer");
 const { Notice } = require("obsidian");
 const { TIMER_STATUS, TIMER_STAGE, createSessionId } = require("../core/timer");
-const { RUNTIME_EVENT } = require("./state-machine");
+const { RUNTIME_EVENT, reduceRuntime } = require("./state-machine");
 const { formatTomatoNumber } = require("../core/validation");
 const { planTaskLineCompletion } = require("../core/task-lines");
 const { buildNextStageTransition } = require("./settlement-recovery");
@@ -18,6 +18,14 @@ const { normalizeBreakContinuation, normalizeModuleRun } = require("./runtime-no
 class LegacyRuntimeController {
   /** @param {any} plugin @param {{playBeep:Function,sysNotify:Function,logPluginError:Function,normalizeSettings:Function,tryNormalizeMarkdownPath:Function}} helpers */
   constructor(plugin, helpers){ this.plugin = plugin; this.helpers = helpers; }
+  /** @param {any} event */
+  applyRuntimeEvent(event){ return reduceRuntime(this.plugin.runtime, event); }
+  /** @param {any} event */
+  applyLegacyRuntimeEvent(event){
+    const transition = this.applyRuntimeEvent(event);
+    this.plugin.runtime = transition.runtime;
+    return transition.effects;
+  }
   /** @param {any} runtime @param {number} sessionCountAfter */
   buildNextStageTransition(runtime, sessionCountAfter){
     return buildNextStageTransition(this.plugin.settings, runtime, sessionCountAfter);
@@ -273,7 +281,7 @@ class LegacyRuntimeController {
     }
     if (settingsChanged) await this.plugin.saveSettings();
     if (runtimeChanged) {
-      const effects = this.plugin.applyRuntimeEvent({ type:RUNTIME_EVENT.SET_TASK, name:"" });
+      const effects = this.applyLegacyRuntimeEvent({ type:RUNTIME_EVENT.SET_TASK, name:"" });
       await this.plugin.saveState({ critical:true });
       this.plugin.runRuntimeEffects(effects);
     } else if (settingsChanged) {
@@ -300,7 +308,7 @@ class LegacyRuntimeController {
   }
   /** @param {unknown} name */
   setCurrentTaskName(name){
-    const effects = this.plugin.applyRuntimeEvent({ type:RUNTIME_EVENT.SET_TASK, name });
+    const effects = this.applyLegacyRuntimeEvent({ type:RUNTIME_EVENT.SET_TASK, name });
     this.plugin.saveState();
     this.plugin.runRuntimeEffects(effects);
   }
@@ -333,7 +341,7 @@ class LegacyRuntimeController {
   /** @param {unknown} slot */
   selectCycleSlot(slot){
     if (this.plugin.settings.workMode !== 'cycle' || this.plugin.runtime.status !== TIMER_STATUS.IDLE || this.plugin.runtime.attention) return false;
-    const effects = this.plugin.applyRuntimeEvent({ type:RUNTIME_EVENT.SELECT_CYCLE_SLOT, slot });
+    const effects = this.applyLegacyRuntimeEvent({ type:RUNTIME_EVENT.SELECT_CYCLE_SLOT, slot });
     this.plugin.saveState();
     this.plugin.runRuntimeEffects(effects);
     return true;
@@ -343,7 +351,7 @@ class LegacyRuntimeController {
     const num = Number(minutes);
     if (!isFinite(num)) return;
     const normalized = Math.max(0.1, Math.round(num * 10) / 10);
-    const effects = this.plugin.applyRuntimeEvent({ type:RUNTIME_EVENT.SET_LONG_FOCUS, minutes:normalized, broadcast });
+    const effects = this.applyLegacyRuntimeEvent({ type:RUNTIME_EVENT.SET_LONG_FOCUS, minutes:normalized, broadcast });
     if (broadcast) {
       this.plugin.saveState();
       this.plugin.runRuntimeEffects(effects);

@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { PomodoroAIO, FakeClock, FakeVault, createPlugin } = require("./support.cjs");
 const { createRuntimeDefaults } = require("../src/legacy/runtime-normalization.js");
+const { normalizeCurrentRuntime } = require("../src/core/runtime.js");
 
 test("V5 设置只持久化模块模型，不保留旧模式和长专注字段", () => {
   const settings = PomodoroAIO.normalizeSettings({
@@ -28,6 +29,23 @@ test("新运行态默认值不含旧字段；旧运行段不推断项目归属",
     startedAtMs:1000, durationMs:1_500_000, sessionId:"old-run", currentTaskName:"旧工作"
   }, settings, 2000);
   assert.equal(upgraded.moduleRun.projectPath, null);
+});
+
+test("V5 运行态直接由核心归一化，损坏 journal 不丢失待重试项目", () => {
+  const settings = PomodoroAIO.normalizeSettings({});
+  const runtime = normalizeCurrentRuntime({
+    schemaVersion:5, status:"settling", stage:"focus",
+    pendingSettlement:{ schemaVersion:1, sessionId:"broken" },
+    projectQueue:[{ sessionId:"queued", path:"Projects/X.md", key:"番茄数" }],
+    completedWorkCount:3, dayKey:"2026-09-29",
+    cycleSlot:1
+  }, settings, 2000);
+  assert.equal(runtime.status, "settlement-failed");
+  assert.equal(runtime.pendingSettlement, null);
+  assert.equal(runtime.projectQueue.length, 1);
+  assert.equal(runtime.completedWorkCount, 3);
+  assert.equal(runtime.dayKey, "2026-09-29");
+  assert.equal(Object.hasOwn(runtime, "cycleSlot"), false);
 });
 
 test("升级时运行中的旧长专注保留当前时长并成为可恢复的模块快照", () => {

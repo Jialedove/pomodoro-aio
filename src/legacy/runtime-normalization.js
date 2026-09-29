@@ -5,6 +5,7 @@ const { TIMER_SCHEMA_VERSION, TIMER_STATUS, TIMER_STAGE, plannedTomatoAmount, cr
 const { validateSettlementJournal } = require("./settlement-recovery");
 const { cloneValue } = require("../services/runtime-store");
 const { migrateLegacyRuntime } = require("./runtime-migration");
+const { createRuntimeDefaults, normalizeModuleRun } = require("../core/runtime");
 /** @typedef {import("../../types/legacy-contracts").LegacyAttention} Attention */
 /** @typedef {import("../../types/legacy-contracts").LegacyBreakTransition} BreakTransition */
 /** @typedef {import("../../types/legacy-contracts").BreakContinuation} BreakContinuation */
@@ -18,37 +19,6 @@ function tryNormalizeMarkdownPath(value) {
   catch (_) { return null; }
 }
 
-/** @param {Settings} settings @returns {Runtime} */
-function createRuntimeDefaults(settings) {
-  return {
-    schemaVersion: TIMER_SCHEMA_VERSION,
-    status: TIMER_STATUS.IDLE,
-    stage: null,
-    mode: "modules",
-    moduleRun: null,
-    currentModuleIndex: 0,
-    selectedModuleId: settings.modules?.[0]?.id || null,
-    completedWorkCount: 0,
-    completedRestCount: 0,
-    completedLoopCount: 0,
-    durationMs: 0,
-    startedAtMs: 0,
-    elapsedMs: 0,
-    remainingMs: 0,
-    pausedAtMs: 0,
-    sessionId: null,
-    plannedTomatoCredit: 0,
-    attention: null,
-    pendingSettlement: null,
-    pendingBreakTransition: null,
-    quarantinedSettlement: null,
-    projectQueue: [],
-    frontmatterQueue: [],
-    sessionCount: 0,
-    dayKey: "",
-    viewWasOpen: false
-  };
-}
 /** @param {unknown} value @param {Settings} settings @returns {Attention | null} */
 function normalizeAttention(value, settings) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -72,25 +42,6 @@ function normalizeAttention(value, settings) {
     if (moduleRun) result.moduleRun = moduleRun;
   }
   return result;
-}
-/** @param {unknown} value @returns {import("../../types/contracts").ModuleRun | null} */
-function normalizeModuleRun(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const run = /** @type {AnyRecord} */ (value);
-  if (!String(run.runId || "").trim() || !String(run.moduleId || "").trim()
-    || !["work", "rest"].includes(run.type) || !String(run.name || "").trim()
-    || !Number.isFinite(run.durationMs) || run.durationMs <= 0) return null;
-  const projectPath = String(run.projectPath || "").trim();
-  const normalizedProjectPath = projectPath ? tryNormalizeMarkdownPath(projectPath) : "";
-  if (projectPath && !normalizedProjectPath) return null;
-  return {
-    runId:String(run.runId), moduleId:String(run.moduleId), type:run.type,
-    name:String(run.name).trim(), durationMin:run.durationMs / 60_000,
-    durationMs:Math.round(run.durationMs), blackout:run.blackout === true,
-    workspaceCommandId:String(run.workspaceCommandId || ""),
-    projectPath:normalizedProjectPath || null, startedAtMs:Number(run.startedAtMs) || 0,
-    ...(run.recoveryOnly === true ? { recoveryOnly:true } : {})
-  };
 }
 /** @param {unknown} value @returns {{journal:SettlementJournal|null, error:string|null}} */
 function normalizeSettlement(value) {

@@ -153,6 +153,8 @@ class ProjectsView extends ItemView {
     this.disposers.push(() => this.app.workspace.off("pomodoro:aio-project-updated", onProjectUpdated));
     const onMetadataChanged = (/** @type {{path?:string}} */ file) => {
       if (!file?.path || !this.liveTomatoes.has(file.path)) return;
+      const cached = this.plugin.projectCandidates().find((/** @type {ProjectOption} */ project) => project.path === file.path);
+      if (!cached || Number(cached.tomatoes) !== this.liveTomatoes.get(file.path)) return;
       this.liveTomatoes.delete(file.path);
       refreshProjects();
       render(this.plugin.snapshot());

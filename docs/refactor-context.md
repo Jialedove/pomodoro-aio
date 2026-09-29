@@ -1,5 +1,17 @@
 # Pomodoro AIO 模块化重构上下文
 
+## 0.4 最后三项收口（2026-09-29）
+
+对照 [`refactor-target-v1.md`](refactor-target-v1.md) 第 1–3、17–20、27 节处理审查结论的 A/B/C 三项。
+
+| 范围 | 自动检查 | 真实 Obsidian | 未完成 |
+| --- | --- | --- | --- |
+| A. Legacy 依赖方向 | V5 默认值、快照与运行态归一化位于 `src/core/runtime.js`；启动按 schema 选择旧数据迁移或直接归一化；V5 事件只走核心 reducer。旧运行段与 journal 迁移回归通过 | 本轮未安装或重载 | 真实旧库升级待人工核对 |
+| B. 项目即时统计 | metadata changed 仅在缓存数值追上结算事件时撤销即时覆盖；新增缓存滞后的回归 | 本轮未安装或重载 | 真实项目页时序待人工核对 |
+| C. 合并与保护 | 本地 `npm run check` 通过；远端合并与 required checks 待处理 | 不适用 | 远端操作及核验 |
+
+自动检查：typecheck、lint、135/135 个 Node 测试、生产构建与产物一致性、本机 macOS 原生助手编译均通过；`git diff --check` 通过。此次没有执行 `npm run install:vault`，没有改动 Vault 的 `data.json`，也没有在 Obsidian 中重载或人工验收。旧版接口仍留在 `src/legacy/` 供迁移及既有兼容测试使用；新 V5 正常运行路径不调用旧 reducer。
+
 ## 0.4 收口进度（2026-09-28）
 
 本轮以 `82f591c` 的模块交互为基线，目标仍以 [`refactor-target-v1.md`](refactor-target-v1.md) 第 1–3、17–20、27 节为准。
