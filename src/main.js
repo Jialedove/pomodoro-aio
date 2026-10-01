@@ -44,6 +44,7 @@ const { SequenceController } = require("./controllers/sequence-controller");
 const { SettlementCoordinator } = require("./controllers/settlement-coordinator");
 const { LegacyRuntimeController } = require("./legacy/runtime-controller");
 const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/workspaces-plus");
+const { DeviceBridgeAdapter } = require("./integrations/device-bridge");
 /** @typedef {import("../types/contracts").Attention} Attention */
 /** @typedef {import("../types/contracts").BreakTransition} BreakTransition */
 /** @typedef {import("../types/contracts").ProjectSettlementPlan} ProjectSettlementPlan */
@@ -168,6 +169,8 @@ class PomodoroAIO extends Plugin {
     this.projectRepository = null;
     /** @type {InstanceType<typeof WorkspacesPlusAdapter> | null} */
     this.workspacesPlus = null;
+    /** @type {InstanceType<typeof DeviceBridgeAdapter> | null} */
+    this.deviceBridge = null;
     /** @type {InstanceType<typeof BreakBlackoutController> | InstanceType<typeof NativeBlackoutController> | null} */
     this.breakBlackout = null;
     /** @type {ObsidianElement | null} */
@@ -205,6 +208,7 @@ class PomodoroAIO extends Plugin {
       dayKey:this.logicalTodayKey()
     }).runtime;
     await this.saveState({ critical:true });
+    this._syncDeviceBridge();
     await this.recoverPendingSettlement();
     await this.recoverPendingBreakTransition();
     try {
@@ -291,6 +295,7 @@ class PomodoroAIO extends Plugin {
     this.breakBlackout?.destroy();
     this.stopPersistentAlertSound();
     if (this._tickTimeout) window.clearTimeout(this._tickTimeout);
+    this.deviceBridge?.releaseControl?.();
     await this.flushPendingSaves();
   }
 
@@ -330,6 +335,19 @@ class PomodoroAIO extends Plugin {
       this.broadcast();
       this._resyncTick();
       throw error;
+    }
+    this._syncDeviceBridge();
+  }
+  _getDeviceBridge(){
+    if (this.deviceBridge) return this.deviceBridge;
+    this.deviceBridge = new DeviceBridgeAdapter();
+    return this.deviceBridge;
+  }
+  _syncDeviceBridge(){
+    try {
+      this._getDeviceBridge().syncFromRuntime(this.runtime)?.catch?.(() => {});
+    } catch (error) {
+      console.debug("Pomodoro AIO Device Bridge sync error", error);
     }
   }
   /** @param {RuntimeEvent} event */
