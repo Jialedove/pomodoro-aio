@@ -1,7 +1,7 @@
 {
   "id": "pomodoro-aio",
   "name": "Pomodoro AIO",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "minAppVersion": "1.8.7",
   "description": "模块化循环工作计时器：自由组合工作与休息，支持任务记录、工作区切换、原生黑屏和可选项目统计。",
   "author": "Jialedove",

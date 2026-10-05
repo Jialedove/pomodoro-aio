@@ -28,6 +28,7 @@ declare module "obsidian" {
   export function parseYaml(yaml: string): any;
 
   export function normalizePath(path: string): string;
+  export function requestUrl(options:{url:string;method?:string;headers?:Record<string,string>;body?:string;throw?:boolean}):Promise<{status:number;json:any}>;
 
   export function setIcon(parent: HTMLElement, iconId: string): void;
 

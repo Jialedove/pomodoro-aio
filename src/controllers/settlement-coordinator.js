@@ -45,7 +45,7 @@ class SettlementCoordinator {
     } catch (error) {
       this.plugin.markSettlementFailed(error, { operation:"completeEmptyWork", step:"advance" });
       return false;
-    } finally { this.plugin._completionInFlight = false; }
+    } finally { this.plugin._completionInFlight = false; this.plugin._syncDeviceBridge(); }
   }
 
   /** @param {boolean} [manual] */
@@ -75,7 +75,7 @@ class SettlementCoordinator {
     } catch (error) {
       this.plugin.markSettlementFailed(error, { operation:"settleFocus", step:"prepareOrResume" });
     } finally {
-      this.plugin._completionInFlight = false;
+      this.plugin._completionInFlight = false; this.plugin._syncDeviceBridge();
     }
   }
   /** @param {Runtime} runtime @param {"work"|"rest"} completedType @returns {StageTransition} */
@@ -92,7 +92,7 @@ class SettlementCoordinator {
     const position = getNextModule(modules, index, runtime.completedLoopCount || 0, this.plugin.settings);
     const nextDefinition = position.nextIndex !== null ? modules[position.nextIndex] : null;
     const nextRun = nextDefinition ? createModuleRunSnapshot(nextDefinition, this.plugin.settings.projectAssignments,
-      { enableProjects:this.plugin.settings.enableProjects, startedAtMs:Date.now() }) : null;
+      { enableProjects:this.plugin.settings.enableProjects, settings:this.plugin.settings, startedAtMs:Date.now() }) : null;
     return {
       mode:"modules",
       durationMs:nextRun?.durationMs || 1,
@@ -473,7 +473,7 @@ class SettlementCoordinator {
     } catch (error) {
       this.plugin.markSettlementFailed(error, { operation:"recoverPendingSettlement", step:"resume" });
     } finally {
-      this.plugin._completionInFlight = false;
+      this.plugin._completionInFlight = false; this.plugin._syncDeviceBridge();
     }
   }
   /** @param {BreakTransition} transition */
@@ -525,7 +525,7 @@ class SettlementCoordinator {
     } catch (error) {
       this.plugin.markSettlementFailed(error, { operation:"recoverBreakTransition", step:"advanceFocus" });
     } finally {
-      this.plugin._completionInFlight = false;
+      this.plugin._completionInFlight = false; this.plugin._syncDeviceBridge();
     }
   }
   async settleBreak(manual=false){
@@ -553,7 +553,7 @@ class SettlementCoordinator {
         await this.plugin.advanceBreakTransition(transition);
       } catch (error) {
         this.plugin.markSettlementFailed(error, { operation:"settleRestModule", step:"advance" });
-      } finally { this.plugin._completionInFlight = false; }
+      } finally { this.plugin._completionInFlight = false; this.plugin._syncDeviceBridge(); }
       return;
     }
     return this.plugin._getLegacyController().settleBreak(manual);

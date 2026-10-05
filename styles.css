@@ -114,18 +114,18 @@
 .pmd-root button.pmd-module-remove { font-size: 16px; cursor: pointer; }
 .pmd-root button.pmd-module-grip:hover, .pmd-root button.pmd-module-remove:hover { background: var(--background-modifier-hover); }
 .pmd-root button.pmd-module-remove:hover { color: var(--text-error); }
-.pmd-module-fields { display: grid; grid-template-columns: minmax(0, 1fr) max-content; grid-template-areas: "name duration" "workspace blackout"; gap: 6px 8px; align-items: center; min-width: 0; }
-.pmd-module-row.is-rest .pmd-module-fields { grid-template-areas: "name duration" ". blackout"; }
+.pmd-module-fields { display: grid; grid-template-columns: minmax(0, 1fr) 94px; grid-template-areas: "name duration" "workspace workspace" "options options"; gap: 6px 8px; align-items: center; min-width: 0; }
+.pmd-module-row.is-rest .pmd-module-fields { grid-template-areas: "name duration" "options options"; }
 .pmd-module-name { grid-area: name; display: flex; align-items: center; gap: 6px; min-width: 0; }
 .pmd-module-name > .pmd-input-wrap { flex: 1 1 auto; }
 .pmd-root button.pmd-complete-inline { flex: 0 0 auto; min-width: 36px; min-height: 32px; padding: 2px 4px; border: 0; border-radius: 6px; appearance: none; box-shadow: none; background: transparent; color: var(--text-muted); font-size: 11px; font-weight: 500; }
 .pmd-root button.pmd-complete-inline:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
 .pmd-root button.pmd-complete-inline:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
 .pmd-module-workspace { grid-area: workspace; }
-.pmd-module-duration { grid-area: duration; display: flex; align-items: center; gap: 4px; }
+.pmd-module-duration { grid-area: duration; min-width: 0; display: flex; align-items: center; gap: 4px; }
 .pmd-module-blackout { grid-area: blackout; justify-self: end; }
 .pmd-module-row.is-rest .pmd-module-blackout { justify-self: end; }
-.pmd-module-duration .pmd-cycle-min { width: 64px; min-width: 0; }
+.pmd-root .pmd-module-duration .pmd-cycle-min { width: 64px; min-width: 0; max-width: 100%; }
 .pmd-cycle-unit { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 .pmd-input-wrap { position: relative; min-width: 0; }
 .pmd-input-wrap .pmd-input { padding-right: 30px; }
@@ -177,10 +177,10 @@
   .pmd-head > .pmd-icon-button { flex: 0 0 40px; }
   .pmd-module-row { grid-template-columns: 42px minmax(0, 1fr); gap: 6px; }
   .pmd-root button.pmd-module-grip, .pmd-root button.pmd-module-remove { flex-basis: 19px; width: 19px; }
-  .pmd-module-fields { grid-template-columns: minmax(0, 1fr) max-content; grid-template-areas: "name duration" "workspace workspace" ". blackout"; gap: 6px; }
-  .pmd-module-row.is-rest .pmd-module-fields { grid-template-areas: "name duration" ". blackout"; }
+  .pmd-module-fields { grid-template-columns: minmax(0, 1fr) 60px; grid-template-areas: "name name" "workspace duration" "options options"; gap: 6px; }
+  .pmd-module-row.is-rest .pmd-module-fields { grid-template-areas: "name duration" "options options"; }
   .pmd-module-blackout { justify-self: end; }
-  .pmd-module-duration .pmd-cycle-min { width: 100%; }
+  .pmd-root .pmd-module-duration .pmd-cycle-min { width: 60px; }
   .pmd-cycle-unit { display: none; }
   .pmd-project-work-row { align-items: start; }
 }
@@ -188,3 +188,68 @@
   0%,100% { opacity: 0.25; }
   50% { opacity: 1; }
 }
+
+/* Task lighting stays alongside blackout in normal and editing states. */
+.pmd-module-options { grid-area: options; display: flex; align-items: center; gap: 10px; min-width: 0; }
+.pmd-module-lighting { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.pmd-module-lighting label { color: var(--text-muted); font-size: 11px; flex-shrink: 0; }
+.pmd-root select.pmd-lighting-select { min-width: 0; width: 100%; max-width: 100%; height: 40px; padding: 0 20px 0 7px; font-size: 12px; border-radius: 6px; text-overflow: ellipsis; }
+.pmd-module-options .pmd-module-blackout { grid-area: auto; flex-shrink: 0; min-height: 40px; height: 40px; }
+.pmd-lighting-status { color: var(--text-muted); font-size: 12px; line-height: 1.5; margin: 0 0 8px; overflow-wrap: anywhere; }
+.pmd-lighting-status.is-unavailable { color: var(--text-warning); }
+
+/* Shared settings rhythm; the task editor keeps its compact desktop layout. */
+.pmd-settings-page { max-width: 880px; -webkit-font-smoothing: antialiased; }
+.pmd-settings-page > h2 { margin: 0 0 20px; }
+.pmd-settings-card { padding: 16px; margin-bottom: 16px; border: 1px solid var(--background-modifier-border); border-radius: 12px; background: var(--background-primary); }
+.pmd-settings-card h3 { font-size: 16px; margin: 0 0 8px; }
+.pmd-settings-card h4 { font-size: 14px; margin: 16px 0 10px; }
+.pmd-settings-intro { color: var(--text-muted); font-size: 12px; line-height: 1.6; margin: 0 0 12px; text-wrap: pretty; }
+.pmd-settings-card .setting-item { padding: 12px 0; gap: 16px; }
+.pmd-settings-card .setting-item:last-child { border-bottom: 0; }
+.pmd-settings-page input, .pmd-settings-page select { min-width: 0; max-width: 100%; min-height: 40px; }
+.pmd-settings-page button { min-height: 40px; }
+.pmd-settings-status { color: var(--text-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.pmd-settings-status:not(:empty) { margin: 8px 0 12px; padding: 8px 10px; border-radius: 6px; background: var(--background-secondary); }
+.pmd-lighting-connection { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 8px; align-items: end; margin: 14px 0 4px; }
+.pmd-lighting-connection > label { grid-column: 1 / -1; }
+.pmd-lighting-connection > input { width: 100%; }
+.pmd-field-label { font-size: 12px; color: var(--text-muted); }
+.pmd-lighting-library { margin-top: 12px; padding-top: 4px; border-top: 1px solid var(--background-modifier-border); }
+.pmd-lighting-library-toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.pmd-lighting-library-toolbar select { flex: 1; min-width: 140px; }
+.pmd-light-program-editor { display: grid; gap: 8px; min-width: 0; }
+.pmd-light-program-editor > input { width: 100%; }
+.pmd-light-steps { display: grid; gap: 10px; }
+.pmd-light-step { padding: 12px; background: var(--background-secondary); border-radius: 8px; }
+.pmd-light-step-heading { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 12px; font-weight: 600; }
+.pmd-light-step-heading > span { white-space: nowrap; }
+.pmd-light-step-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.pmd-light-step-tools button { font-size: 11px; padding: 0 8px; }
+.pmd-light-step-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+.pmd-light-field { display: grid; gap: 5px; font-size: 12px; color: var(--text-muted); min-width: 0; }
+.pmd-light-field input, .pmd-light-field select { width: 100%; font-variant-numeric: tabular-nums; }
+.pmd-light-program-actions, .pmd-light-program-structure, .pmd-light-preview { display: flex; gap: 8px; flex-wrap: wrap; }
+.pmd-light-program-actions { position: sticky; bottom: 0; z-index: 1; padding: 10px 0; background: var(--background-primary); border-top: 1px solid var(--background-modifier-border); }
+.pmd-light-preview { padding: 4px 0 8px; }
+.pmd-root select.pmd-lighting-select:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
+@media (max-width: 560px) {
+  .pmd-settings-card { padding: 12px; }
+  .pmd-settings-card .setting-item { align-items: flex-start; flex-wrap: wrap; gap: 8px; }
+  .pmd-settings-card .setting-item-control { width: 100%; justify-content: flex-start; }
+  .pmd-settings-card .setting-item-control input, .pmd-settings-card .setting-item-control select { width: 100%; }
+  .pmd-lighting-connection { grid-template-columns: minmax(0, 1fr); }
+  .pmd-lighting-connection > button { justify-self: start; }
+}
+
+.pmd-settings-page { container: pmd-settings / inline-size; }
+@container pmd-settings (max-width: 480px) {
+  .pmd-settings-card .setting-item { align-items: flex-start; flex-wrap: wrap; gap: 8px; }
+  .pmd-settings-card .setting-item-control { width: 100%; justify-content: flex-start; }
+  .pmd-settings-card .setting-item-control input, .pmd-settings-card .setting-item-control select { width: 100%; }
+  .pmd-lighting-connection { grid-template-columns: minmax(0, 1fr); }
+  .pmd-lighting-connection > button { justify-self: start; }
+}
+
+.pmd-module-options .pmd-blackout-check { flex-basis: 28px; width: 28px; }
+.pmd-module-options .pmd-blackout-check::before, .pmd-module-options .pmd-blackout-check::after { left: 4px; right: 4px; top: 9px; bottom: 9px; }

@@ -125,3 +125,18 @@ test("待确认休息不显示或执行完成事情操作", async () => {
   assert.equal(commands, 0);
   await view.onClose();
 });
+
+test("普通任务页灯光选框常驻，与黑屏同一行并直接保存绑定", async () => {
+  const plugin = createPlugin({ settings:settings([{ id:"work", type:"work", name:"阅读", durationMin:25, blackout:false }]) });
+  const { view } = await openView(plugin);
+  const selector = view.containerEl.querySelector(".pmd-lighting-select");
+  const blackout = view.containerEl.querySelector(".pmd-module-blackout");
+  assert.ok(selector, "无需进入设置模式就能选择灯光");
+  assert.equal(selector.parent.parent, blackout.parent);
+  assert.equal(selector.value, "inherit");
+  let saved;
+  plugin.runUserCommand = action => { saved = action(); };
+  selector.value = "reading"; selector.onchange(); await saved;
+  assert.equal(plugin.settings.modules[0].lightProgramId, "reading");
+  await view.onClose();
+});
