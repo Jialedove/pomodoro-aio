@@ -186,6 +186,7 @@ class PomodoroAIO extends Plugin {
     /** @type {unknown} */
     this._lastPersistenceError = null;
     this._completionInFlight = false;
+    this._runtimeTransitionSaves = 0;
     /** @type {number | null} */
     this._dailyCompletionSyncTimer = null;
     this._dailyCompletionSyncBusy = false;
@@ -295,7 +296,7 @@ class PomodoroAIO extends Plugin {
     this.breakBlackout?.destroy();
     this.stopPersistentAlertSound();
     if (this._tickTimeout) window.clearTimeout(this._tickTimeout);
-    this.deviceBridge?.releaseControl?.();
+    await this.deviceBridge?.dispose?.();
     await this.flushPendingSaves();
   }
 
@@ -327,6 +328,7 @@ class PomodoroAIO extends Plugin {
   }
   /** @param {Runtime} previousRuntime */
   async saveTransition(previousRuntime){
+    this._runtimeTransitionSaves += 1;
     try {
       await this.saveState({ critical:true });
     } catch (error) {
@@ -335,6 +337,8 @@ class PomodoroAIO extends Plugin {
       this.broadcast();
       this._resyncTick();
       throw error;
+    } finally {
+      this._runtimeTransitionSaves -= 1;
     }
     this._syncDeviceBridge();
   }
@@ -344,6 +348,7 @@ class PomodoroAIO extends Plugin {
     return this.deviceBridge;
   }
   _syncDeviceBridge(){
+    if (this._unloading || this._runtimeTransitionSaves > 0) return;
     try {
       this._getDeviceBridge().syncFromRuntime(this.runtime)?.catch?.(() => {});
     } catch (error) {
@@ -811,6 +816,7 @@ class PomodoroAIO extends Plugin {
     // 每次对齐触发时先广播，保证视图秒表顺滑
     this.broadcast();
     if (this._completionInFlight) return;
+    this._syncDeviceBridge();
 
     const r = this.runtime;
     if (r.status !== TIMER_STATUS.RUNNING || !r.startedAtMs || !r.durationMs) return;
@@ -864,7 +870,7 @@ class PomodoroAIO extends Plugin {
         if (this.runtime.pendingSettlement || this.runtime.status === TIMER_STATUS.FAILED) return false;
       }
       await daily.completeTask({ taskName:task, path:this.todayFilePath() });
-      await this.clearCompletedModuleTask(module.id);
+      await this.clearCompletedModuleTask(module.id, task);
       new Notice("事情已完成，日记待办已勾选");
       return true;
     } catch (error) {
@@ -874,10 +880,12 @@ class PomodoroAIO extends Plugin {
     }
   }
 
-  /** @param {string} id */
-  async clearCompletedModuleTask(id){
+  /** @param {string} id @param {string} [completedTask] */
+  async clearCompletedModuleTask(id, completedTask){
     const module = this.settings.modules.find(item => item.id === id && item.type === "work");
     if (!module) return false;
+    // Completing the running snapshot must not erase a different future task.
+    if (completedTask !== undefined && module.name !== completedTask) return false;
     const modules = this.settings.modules.map(item => item.id === id
       ? { ...item, name:"工作", workspaceCommandId:"", blackout:false } : item);
     const assignments = { ...this.settings.projectAssignments };
@@ -1058,7 +1066,7 @@ class PomodoroAIO extends Plugin {
             else await this.completeEmptyWorkModule();
             if (this.runtime.pendingSettlement || String(this.runtime.status) === TIMER_STATUS.FAILED) continue;
           }
-          changed = (await this.clearCompletedModuleTask(module.id)) || changed;
+          changed = (await this.clearCompletedModuleTask(module.id, task)) || changed;
         }
         return changed;
       }

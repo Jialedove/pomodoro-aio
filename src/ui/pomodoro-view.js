@@ -380,9 +380,16 @@ class PomodoroView extends ItemView {
     });
     pauseButton.onclick = () => this.plugin.runUserCommand(() => this.plugin.togglePause());
     completeSegmentButton.onclick = () => this.plugin.runUserCommand(() => this.plugin.completeCurrentModule());
+    /** @param {any} snap */
+    const displayedModule = snap => {
+      const runtime = snap.runtime || this.plugin.runtime;
+      const modules = snap.settings?.modules || this.plugin.settings.modules || [];
+      const queued = runtime.status === TIMER_STATUS.AWAITING ? runtime.attention?.moduleRun : null;
+      return runtime.moduleRun || (queued ? modules.find((/** @type {ModuleDefinition} */ module) => module.id === queued.moduleId) || queued : null);
+    };
     completeTaskButton.onclick = () => {
-      const run = this.plugin.runtime.moduleRun;
-      if (run?.type === "work") this.plugin.runUserCommand(() => this.plugin.completeTask({ moduleId: run.moduleId }));
+      const run = displayedModule(this.plugin.snapshot());
+      if (run?.type === "work") this.plugin.runUserCommand(() => this.plugin.completeTask({ moduleId: run.moduleId || run.id }));
     };
     resetButton.onclick = () => this.plugin.runUserCommand(() => this.plugin.reset());
 
@@ -391,8 +398,7 @@ class PomodoroView extends ItemView {
       const settings = snap.settings || this.plugin.settings;
       const runtime = snap.runtime || this.plugin.runtime;
       const modules = Array.isArray(settings.modules) ? settings.modules : [];
-      const queued = runtime.status === TIMER_STATUS.AWAITING ? runtime.attention?.moduleRun : null;
-      const run = runtime.moduleRun || (queued ? modules.find((/** @type {ModuleDefinition} */ module) => module.id === queued.moduleId) || queued : null);
+      const run = displayedModule(snap);
       const running = [TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED].includes(runtime.status);
       const pending = !!runtime.attention && !runtime.attention.nextStarted;
       const active = !!run && runtime.status !== TIMER_STATUS.IDLE;

@@ -56,3 +56,26 @@ test("runtime-store 的 critical 保存传播错误，普通保存继续队列",
   });
   assert.equal(store.lastError.message, "disk full");
 });
+
+test("runtime-store 设置保存失败必须传播，后续重试仍可写入", async () => {
+  const writes = [];
+  const errors = [];
+  let failOnce = true;
+  const store = new RuntimeStore({
+    readRuntime: async () => null,
+    writeRuntime: async () => {},
+    readSettings: async () => ({}),
+    writeSettings: async snapshot => {
+      if (failOnce) { failOnce = false; throw new Error("settings disk full"); }
+      writes.push(snapshot);
+    },
+    onError: (error, context) => errors.push({ message:error.message, ...context })
+  });
+
+  await assert.rejects(() => store.saveSettings({ modules:[{ name:"新事情" }] }), /settings disk full/);
+  await store.saveSettings({ modules:[{ name:"重试成功" }] });
+  await store.flush();
+
+  assert.deepEqual(writes, [{ modules:[{ name:"重试成功" }] }]);
+  assert.deepEqual(errors, [{ message:"settings disk full", critical:true, operation:"saveSettings" }]);
+});

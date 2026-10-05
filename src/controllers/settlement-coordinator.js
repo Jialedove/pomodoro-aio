@@ -229,6 +229,18 @@ class SettlementCoordinator {
       await this.plugin.saveState({ critical:true });
       return;
     }
+    const hasPredecessor = project.status !== "applied" && (this.plugin.runtime.projectQueue || []).some(
+      (/** @type {AnyRecord} */ item) => item.sessionId !== journal.sessionId
+        && item.path === project.path && item.key === project.key
+    );
+    if (hasPredecessor) {
+      // Earlier credits must be retried first: both plans may have the same
+      // frontmatter baseline while the project was unavailable.
+      this.plugin.upsertProjectRetry({ ...project, sessionId:journal.sessionId });
+      journal.status = "projectApplied";
+      await this.plugin.saveState({ critical:true });
+      return;
+    }
     const result = await this.plugin.applyProjectPlan(project);
     project.status = result.status;
     if (result.error) project.error = result.error;
@@ -323,6 +335,9 @@ class SettlementCoordinator {
   async drainProjectQueue(){
     if (Array.isArray(this.plugin.settings.modules) && !this.plugin.settings.enableProjects) return;
     const queue = this.plugin.runtime.projectQueue || [];
+    // A previous failed checkpoint may have left rebased successors in memory.
+    // Make that baseline durable before a same-process retry writes more credit.
+    if (queue.length) await this.plugin.saveState({ critical:true });
     let changed = false;
     let i = 0;
     const blockedKeys = new Set();
@@ -334,10 +349,30 @@ class SettlementCoordinator {
         continue;
       }
       let result;
-      try {
-        result = await this.plugin.applyProjectPlan(/** @type {ProjectSettlementPlan} */ (item));
-      } catch (error) {
-        result = { status: "pending", error: String(error instanceof Error ? error.message : error) };
+      if (item.deferred && item.beforeValue === undefined && !["applied", "skipped"].includes(item.status)) {
+        let prepared;
+        try {
+          prepared = await this.plugin._getProjectRepository().prepareSettlementPlan({
+            path:item.path, key:item.key, amount:item.amount, enabled:true
+          });
+        } catch (error) {
+          result = { status:"pending", error:String(error instanceof Error ? error.message : error) };
+        }
+        if (prepared?.status === "pending") {
+          Object.assign(item, prepared, { deferred:false });
+          // Resolve a formerly missing project's baseline before its first
+          // write, so an interrupted retry can recognize an applied credit.
+          await this.plugin.saveState({ critical:true });
+        } else if (prepared) {
+          result = { status:prepared.status, error:"项目文件不存在" };
+        }
+      }
+      if (!result) {
+        try {
+          result = await this.plugin.applyProjectPlan(/** @type {ProjectSettlementPlan} */ (item));
+        } catch (error) {
+          result = { status: "pending", error: String(error instanceof Error ? error.message : error) };
+        }
       }
       item.status = result.status;
       if (result.error) item.error = result.error;
@@ -352,14 +387,18 @@ class SettlementCoordinator {
       if (result.status === "applied" || result.status === "skipped") {
         if (result.status === "applied") {
           this.plugin.rebaseProjectSuccessors(queue, i + 1, item);
-          this.plugin.notifyProjectUpdated(/** @type {ProjectSettlementPlan} */ (item));
         }
         queue.splice(i, 1);
+        // Persist removal and rebased successors before writing another credit.
+        // A failed checkpoint must stop the drain at this recoverable boundary.
+        await this.plugin.saveState({ critical:true });
+        changed = false;
+        if (result.status === "applied") this.plugin.notifyProjectUpdated(/** @type {ProjectSettlementPlan} */ (item));
       } else {
         blockedKeys.add(key);
         i += 1;
+        changed = true;
       }
-      changed = true;
     }
     if (changed) await this.plugin.saveState();
   }
