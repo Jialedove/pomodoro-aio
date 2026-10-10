@@ -2,7 +2,9 @@ import AppKit
 import Foundation
 
 // A short-lived presentation process. The Obsidian plugin owns all timer state.
-// Stdin is newline-delimited JSON; closing stdin or missing heartbeats exits.
+// Stdin is newline-delimited JSON. Closing stdin or losing the parent process exits.
+// There is deliberately no heartbeat timeout: Chromium throttles timers in a hidden
+// Obsidian window (down to about once per minute), which would end the overlay early.
 final class BlackoutWindow: NSWindow {
     var onEscape: (() -> Void)?
     override var canBecomeKey: Bool { true }
@@ -32,8 +34,11 @@ final class OverlayController: NSObject, NSApplicationDelegate {
     private var remainingMilliseconds = 0.0
     private var countdownUpdatedAt = Date()
     private var paused = false
-    private var lastHeartbeat = Date()
     private var finished = false
+    private var active = false
+    private var shownReported = false
+    private var terminating = false
+    private let parentPID = getppid()
     private var heartbeatTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -50,7 +55,7 @@ final class OverlayController: NSObject, NSApplicationDelegate {
             while let line = readLine(strippingNewline: true) {
                 DispatchQueue.main.async { self?.handle(line: line) }
             }
-            DispatchQueue.main.async { self?.terminate() }
+            DispatchQueue.main.async { self?.terminate(reason: "stdin-closed") }
         }
         send(["type": "ready"])
     }
@@ -66,13 +71,12 @@ final class OverlayController: NSObject, NSApplicationDelegate {
         guard let data = line.data(using: .utf8),
               let message = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let command = message["type"] as? String else { return }
-        lastHeartbeat = Date()
         if command == "hide" || command == "shutdown" {
-            terminate()
+            terminate(reason: command)
             return
         }
         guard command == "show" || command == "update" else { return }
-        let created = overlays.isEmpty
+        active = true
         if let value = message["label"] as? String { labelText = value }
         if let value = message["title"] as? String { titleText = value }
         if let value = message["leftMs"] as? Double, value.isFinite {
@@ -81,18 +85,17 @@ final class OverlayController: NSObject, NSApplicationDelegate {
         }
         paused = message["paused"] as? Bool ?? false
 
-        guard synchronizeDisplays() else {
-            send(["type": "error", "message": "No display available"])
-            terminate()
-            return
-        }
+        // Displays can vanish briefly (sleep, lid close, reconnect). Keep running and
+        // cover them again from screenConfigurationChanged once they return.
+        guard synchronizeDisplays() else { return }
         updateOverlayText()
         updateCountdown()
         if remainingMilliseconds <= 0 && !finished {
             finished = true
             flashOnce()
         }
-        if created {
+        if !shownReported {
+            shownReported = true
             send(["type": "shown", "screenCount": overlays.count,
                   "screens": overlays.values.map { $0.screen.localizedName }])
         }
@@ -176,7 +179,7 @@ final class OverlayController: NSObject, NSApplicationDelegate {
             return false
         }
 
-        if !hadOverlays { previousApp = NSWorkspace.shared.frontmostApplication }
+        if !hadOverlays && previousApp == nil { previousApp = NSWorkspace.shared.frontmostApplication }
         var displaysChanged = !hadOverlays
         let visibleIDs = Set(screens.map(displayIdentifier))
         for id in overlays.keys.filter({ !visibleIDs.contains($0) }) {
@@ -255,7 +258,8 @@ final class OverlayController: NSObject, NSApplicationDelegate {
     }
 
     @objc private func tick() {
-        if Date().timeIntervalSince(lastHeartbeat) > 8 { terminate(); return }
+        // Reparented to launchd: Obsidian is gone without closing our stdin.
+        if getppid() != parentPID { terminate(reason: "parent-exited"); return }
         updateCountdown()
         if !paused && !finished && remainingMilliseconds > 0 {
             let elapsed = Date().timeIntervalSince(countdownUpdatedAt) * 1000
@@ -264,24 +268,27 @@ final class OverlayController: NSObject, NSApplicationDelegate {
     }
 
     @objc private func screenConfigurationChanged() {
-        guard !overlays.isEmpty else { return }
-        guard synchronizeDisplays() else {
-            send(["type": "error", "message": "No display available"])
-            terminate()
-            return
-        }
+        guard active, synchronizeDisplays() else { return }
         updateOverlayText()
         updateCountdown()
+        if !shownReported {
+            shownReported = true
+            send(["type": "shown", "screenCount": overlays.count,
+                  "screens": overlays.values.map { $0.screen.localizedName }])
+        }
     }
 
     @objc private func exitClicked() { dismiss() }
 
     private func dismiss() {
         send(["type": "dismissed"])
-        terminate()
+        terminate(reason: "dismissed")
     }
 
-    private func terminate() {
+    private func terminate(reason: String) {
+        if terminating { return }
+        terminating = true
+        send(["type": "exit", "reason": reason])
         heartbeatTimer?.invalidate()
         overlays.values.forEach {
             $0.window.orderOut(nil)

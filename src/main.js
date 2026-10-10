@@ -46,6 +46,7 @@ const { LegacyRuntimeController } = require("./legacy/runtime-controller");
 const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/workspaces-plus");
 const { LightingClient } = require("./integrations/lighting-client");
 const { createLightingSnapshot } = require("./core/lighting");
+const { createBackgroundTimers } = require("./services/background-timers");
 /** @typedef {import("../types/contracts").Attention} Attention */
 /** @typedef {import("../types/contracts").BreakTransition} BreakTransition */
 /** @typedef {import("../types/contracts").ProjectSettlementPlan} ProjectSettlementPlan */
@@ -172,7 +173,8 @@ class PomodoroAIO extends Plugin {
     this.workspacesPlus = null;
     /** @type {InstanceType<typeof LightingClient> | null} */
     this.deviceBridge = null;
-    /** @type {number | null} */
+    this.backgroundTimers = createBackgroundTimers();
+    /** @type {unknown} */
     this._lightingHeartbeat = null;
     /** @type {InstanceType<typeof BreakBlackoutController> | InstanceType<typeof NativeBlackoutController> | null} */
     this.breakBlackout = null;
@@ -184,7 +186,7 @@ class PomodoroAIO extends Plugin {
     this._alertInterval = null;
     /** @type {number | null} */
     this._alertEscalationTimeout = null;
-    /** @type {number | null} */
+    /** @type {unknown} */
     this._tickTimeout = null;
     /** @type {unknown} */
     this._lastPersistenceError = null;
@@ -217,9 +219,7 @@ class PomodoroAIO extends Plugin {
     }).runtime;
     await this.saveState({ critical:true });
     this._syncDeviceBridge();
-    if (typeof window !== "undefined" && typeof window.setInterval === "function") {
-      this._lightingHeartbeat = window.setInterval(() => this._syncDeviceBridge(), 2000);
-    }
+    this._lightingHeartbeat = this.backgroundTimers.setInterval(() => this._syncDeviceBridge(), 2000);
     void this.refreshLightingLibrary().catch(() => {});
     await this.recoverPendingSettlement();
     await this.recoverPendingBreakTransition();
@@ -283,7 +283,7 @@ class PomodoroAIO extends Plugin {
       const now = Date.now();
       const base = this.runtime.startedAtMs || now;
       const delay = Math.max(50, 1000 - ((now - base) % 1000));
-      this._tickTimeout = window.setTimeout(() => {
+      this._tickTimeout = this.backgroundTimers.setTimeout(() => {
         if (this._unloading) return;
         this.tick().catch(error => logPluginError("tick", error, {
           sessionId: this.runtime?.sessionId,
@@ -300,7 +300,7 @@ class PomodoroAIO extends Plugin {
   }
   async onunload(){
     this._unloading = true;
-    if (this._lightingHeartbeat !== null) window.clearInterval(this._lightingHeartbeat);
+    if (this._lightingHeartbeat !== null) this.backgroundTimers.clearInterval(this._lightingHeartbeat);
     this._lightingHeartbeat = null;
     if (this._dailyCompletionSyncTimer) window.clearTimeout(this._dailyCompletionSyncTimer);
     this._dailyCompletionSyncTimer = null;
@@ -308,7 +308,7 @@ class PomodoroAIO extends Plugin {
     this._dailyCompletionSyncRef = null;
     this.breakBlackout?.destroy();
     this.stopPersistentAlertSound();
-    if (this._tickTimeout) window.clearTimeout(this._tickTimeout);
+    if (this._tickTimeout) this.backgroundTimers.clearTimeout(this._tickTimeout);
     await this.deviceBridge?.dispose?.();
     await this.flushPendingSaves();
   }
@@ -1008,7 +1008,7 @@ class PomodoroAIO extends Plugin {
   /** @param {unknown} error @param {AnyRecord} [context] */
   markSettlementFailed(error, context={}){ return this._getSettlementCoordinator().markSettlementFailed(error, context); }
   _resyncTick(){
-    if (this._tickTimeout) window.clearTimeout(this._tickTimeout);
+    if (this._tickTimeout) this.backgroundTimers.clearTimeout(this._tickTimeout);
     this._scheduleTick && this._scheduleTick();
   }
 

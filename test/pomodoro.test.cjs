@@ -1305,15 +1305,14 @@ test("插件启动先恢复结算与重试队列并对账离线完成，再启�
       getLeavesOfType() { return []; }
     }
   };
-  const previousWindow = globalThis.window;
-  const nativeSetTimeout = globalThis.setTimeout;
-  const nativeClearTimeout = globalThis.clearTimeout;
-  globalThis.window = {
+  plugin.backgroundTimers = {
     setTimeout(callback) {
       order.push("scheduler");
-      return nativeSetTimeout(callback, 60_000);
+      return setTimeout(callback, 60_000);
     },
-    clearTimeout: nativeClearTimeout
+    clearTimeout,
+    setInterval:(callback) => setInterval(callback, 60_000),
+    clearInterval
   };
   try {
     await plugin.onload();
@@ -1326,8 +1325,6 @@ test("插件启动先恢复结算与重试队列并对账离线完成，再启�
     assert.deepEqual(order.slice(0, 8), ["settings", "state", "save", "recover", "break-recover", "frontmatter", "project", "completion-sync"]);
   } finally {
     await plugin.onunload();
-    if (previousWindow === undefined) delete globalThis.window;
-    else globalThis.window = previousWindow;
   }
 });
 
