@@ -2,7 +2,7 @@
 // 变更点：项目下拉在任务上方；项目下拉后有“打开项目”；右上角新增“打开当日日记”按钮；左侧 Ribbon 加图标。
 
 const {
-  Plugin, Notice, TFile, getFrontMatterInfo, parseYaml, normalizePath
+  Plugin, Notice, TFile, getFrontMatterInfo, parseYaml, normalizePath, requestUrl
 } = require('obsidian');
 const {
   parseHHMMToMinutes,
@@ -44,6 +44,9 @@ const { SequenceController } = require("./controllers/sequence-controller");
 const { SettlementCoordinator } = require("./controllers/settlement-coordinator");
 const { LegacyRuntimeController } = require("./legacy/runtime-controller");
 const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/workspaces-plus");
+const { LightingClient } = require("./integrations/lighting-client");
+const { createLightingSnapshot } = require("./core/lighting");
+const { createBackgroundTimers } = require("./services/background-timers");
 /** @typedef {import("../types/contracts").Attention} Attention */
 /** @typedef {import("../types/contracts").BreakTransition} BreakTransition */
 /** @typedef {import("../types/contracts").ProjectSettlementPlan} ProjectSettlementPlan */
@@ -168,6 +171,11 @@ class PomodoroAIO extends Plugin {
     this.projectRepository = null;
     /** @type {InstanceType<typeof WorkspacesPlusAdapter> | null} */
     this.workspacesPlus = null;
+    /** @type {InstanceType<typeof LightingClient> | null} */
+    this.deviceBridge = null;
+    this.backgroundTimers = createBackgroundTimers();
+    /** @type {unknown} */
+    this._lightingHeartbeat = null;
     /** @type {InstanceType<typeof BreakBlackoutController> | InstanceType<typeof NativeBlackoutController> | null} */
     this.breakBlackout = null;
     /** @type {ObsidianElement | null} */
@@ -178,11 +186,12 @@ class PomodoroAIO extends Plugin {
     this._alertInterval = null;
     /** @type {number | null} */
     this._alertEscalationTimeout = null;
-    /** @type {number | null} */
+    /** @type {unknown} */
     this._tickTimeout = null;
     /** @type {unknown} */
     this._lastPersistenceError = null;
     this._completionInFlight = false;
+    this._runtimeTransitionSaves = 0;
     /** @type {number | null} */
     this._dailyCompletionSyncTimer = null;
     this._dailyCompletionSyncBusy = false;
@@ -195,6 +204,10 @@ class PomodoroAIO extends Plugin {
     this._lastPersistenceError = null;
     await this.loadSettings();
     this.runtime = normalizeRuntime(await this.loadState(), this.settings);
+    if (this.runtime.moduleRun && this.runtime.moduleRun.lighting === undefined) {
+      const definition = this.settings.modules.find(item => item.id === this.runtime.moduleRun?.moduleId) || this.runtime.moduleRun;
+      this.runtime = { ...this.runtime, moduleRun:{ ...this.runtime.moduleRun, lighting:createLightingSnapshot(definition, this.settings) } };
+    }
     this._alertInterval = null;
     this._alertEscalationTimeout = null;
     this._completionInFlight = false;
@@ -205,6 +218,9 @@ class PomodoroAIO extends Plugin {
       dayKey:this.logicalTodayKey()
     }).runtime;
     await this.saveState({ critical:true });
+    this._syncDeviceBridge();
+    this._lightingHeartbeat = this.backgroundTimers.setInterval(() => this._syncDeviceBridge(), 2000);
+    void this.refreshLightingLibrary().catch(() => {});
     await this.recoverPendingSettlement();
     await this.recoverPendingBreakTransition();
     try {
@@ -267,7 +283,7 @@ class PomodoroAIO extends Plugin {
       const now = Date.now();
       const base = this.runtime.startedAtMs || now;
       const delay = Math.max(50, 1000 - ((now - base) % 1000));
-      this._tickTimeout = window.setTimeout(() => {
+      this._tickTimeout = this.backgroundTimers.setTimeout(() => {
         if (this._unloading) return;
         this.tick().catch(error => logPluginError("tick", error, {
           sessionId: this.runtime?.sessionId,
@@ -284,13 +300,16 @@ class PomodoroAIO extends Plugin {
   }
   async onunload(){
     this._unloading = true;
+    if (this._lightingHeartbeat !== null) this.backgroundTimers.clearInterval(this._lightingHeartbeat);
+    this._lightingHeartbeat = null;
     if (this._dailyCompletionSyncTimer) window.clearTimeout(this._dailyCompletionSyncTimer);
     this._dailyCompletionSyncTimer = null;
     if (this._dailyCompletionSyncRef) this.app?.vault?.offref?.(this._dailyCompletionSyncRef);
     this._dailyCompletionSyncRef = null;
     this.breakBlackout?.destroy();
     this.stopPersistentAlertSound();
-    if (this._tickTimeout) window.clearTimeout(this._tickTimeout);
+    if (this._tickTimeout) this.backgroundTimers.clearTimeout(this._tickTimeout);
+    await this.deviceBridge?.dispose?.();
     await this.flushPendingSaves();
   }
 
@@ -322,6 +341,7 @@ class PomodoroAIO extends Plugin {
   }
   /** @param {Runtime} previousRuntime */
   async saveTransition(previousRuntime){
+    this._runtimeTransitionSaves += 1;
     try {
       await this.saveState({ critical:true });
     } catch (error) {
@@ -330,6 +350,31 @@ class PomodoroAIO extends Plugin {
       this.broadcast();
       this._resyncTick();
       throw error;
+    } finally {
+      this._runtimeTransitionSaves -= 1;
+    }
+    this._syncDeviceBridge();
+  }
+  _getDeviceBridge(){
+    if (this.deviceBridge) return this.deviceBridge;
+    this.deviceBridge = new LightingClient({
+      requestFn:typeof requestUrl === "function" ? async (/** @type {string} */ url, /** @type {AnyRecord} */ init) => {
+        const response = await requestUrl({ url, method:init.method, headers:init.headers, body:init.body, throw:false });
+        return { ok:response.status >= 200 && response.status < 300, status:response.status, json:async () => response.json };
+      } : null,
+      onStatus:() => { if (!this._unloading) this.broadcast(); }
+    });
+    this.deviceBridge.configure(this.settings);
+    return this.deviceBridge;
+  }
+  _syncDeviceBridge(){
+    if (this._unloading || this._runtimeTransitionSaves > 0 || this._completionInFlight) return;
+    try {
+      const bridge = this._getDeviceBridge();
+      bridge.configure?.(this.settings);
+      bridge.syncFromRuntime(this.runtime, { elapsedMs:this.getElapsedMs() })?.catch?.(() => {});
+    } catch (error) {
+      console.debug("Pomodoro AIO Device Bridge sync error", error);
     }
   }
   /** @param {RuntimeEvent} event */
@@ -369,7 +414,42 @@ class PomodoroAIO extends Plugin {
     return this.settings;
   }
   async saveSettings(){
-    return this._getRuntimeStore().saveSettings(this.settings);
+    await this._getRuntimeStore().saveSettings(this.settings);
+    if (!this._unloading) this._syncDeviceBridge();
+  }
+  async refreshLightingLibrary(){
+    const bridge = this._getDeviceBridge();
+    bridge.configure(this.settings);
+    const result = await bridge.refreshLibrary();
+    const previousPrograms = this.settings.lightingPrograms;
+    this.settings.lightingPrograms = result.programs;
+    try { await this.saveSettings(); }
+    catch (error) { this.settings.lightingPrograms = previousPrograms; throw error; }
+    this.broadcast();
+    return result;
+  }
+  /** @param {unknown} input */
+  async saveLightProgram(input){
+    const bridge = this._getDeviceBridge(); bridge.configure(this.settings);
+    const saved = await bridge.saveProgram(input);
+    try { await this.refreshLightingLibrary(); }
+    catch { throw new Error("方案已在服务端保存，本地同步失败；请刷新方案库后继续编辑"); }
+    return saved;
+  }
+  /** @param {AnyRecord} program */
+  async deleteLightProgram(program){
+    const referenced = this.settings.modules.some(module => module.lightProgramId === program.id)
+      || this.settings.lightingDefaultWorkId === program.id || this.settings.lightingDefaultRestId === program.id;
+    if (referenced) throw new Error("此方案仍被任务或默认灯光使用，请先更换绑定");
+    const bridge = this._getDeviceBridge(); bridge.configure(this.settings);
+    await bridge.deleteProgram(program);
+    await this.refreshLightingLibrary();
+  }
+  /** @param {unknown} program */
+  async previewLightProgram(program){
+    if (this.runtime.status !== TIMER_STATUS.IDLE || this.runtime.attention) throw new Error("请先结束当前任务，再预览灯光");
+    const bridge = this._getDeviceBridge(); bridge.configure(this.settings);
+    return bridge.preview(program);
   }
 
   /* ====== 环境守护 ====== */
@@ -540,6 +620,7 @@ class PomodoroAIO extends Plugin {
       : next.nextIndex !== null ? this.settings.modules?.[next.nextIndex] || null : null;
     return {
       settings: this.settings,
+      lightingStatus:this.deviceBridge?.status,
       runtime: Object.assign({}, this.runtime, { leftMs, leftSec: Math.ceil(leftMs / 1000), nextModule })
     };
   }
@@ -793,6 +874,7 @@ class PomodoroAIO extends Plugin {
     // 每次对齐触发时先广播，保证视图秒表顺滑
     this.broadcast();
     if (this._completionInFlight) return;
+    this._syncDeviceBridge();
 
     const r = this.runtime;
     if (r.status !== TIMER_STATUS.RUNNING || !r.startedAtMs || !r.durationMs) return;
@@ -846,7 +928,7 @@ class PomodoroAIO extends Plugin {
         if (this.runtime.pendingSettlement || this.runtime.status === TIMER_STATUS.FAILED) return false;
       }
       await daily.completeTask({ taskName:task, path:this.todayFilePath() });
-      await this.clearCompletedModuleTask(module.id);
+      await this.clearCompletedModuleTask(module.id, task);
       new Notice("事情已完成，日记待办已勾选");
       return true;
     } catch (error) {
@@ -856,18 +938,20 @@ class PomodoroAIO extends Plugin {
     }
   }
 
-  /** @param {string} id */
-  async clearCompletedModuleTask(id){
+  /** @param {string} id @param {string} [completedTask] */
+  async clearCompletedModuleTask(id, completedTask){
     const module = this.settings.modules.find(item => item.id === id && item.type === "work");
     if (!module) return false;
+    // Completing the running snapshot must not erase a different future task.
+    if (completedTask !== undefined && module.name !== completedTask) return false;
     const modules = this.settings.modules.map(item => item.id === id
-      ? { ...item, name:"工作", workspaceCommandId:"", blackout:false } : item);
+      ? { ...item, name:"工作", workspaceCommandId:"", blackout:false, lightProgramId:"" } : item);
     const assignments = { ...this.settings.projectAssignments };
     delete assignments[id];
     await this.persistModuleSettings({ modules, projectAssignments:assignments });
     if (this.runtime.attention?.moduleRun?.moduleId === id && Number.isInteger(this.runtime.attention.moduleIndex)) {
       const index = this.runtime.attention.moduleIndex;
-      const replacement = createModuleRunSnapshot(this.settings.modules[Number(index)], {}, { enableProjects:false });
+      const replacement = createModuleRunSnapshot(this.settings.modules[Number(index)], {}, { enableProjects:false, settings:this.settings });
       await this.beginStrongAlert({
         type:TIMER_STAGE.FOCUS, autoStarted:false, durationMs:replacement.durationMs,
         moduleIndex:Number(index), moduleRun:replacement
@@ -924,7 +1008,7 @@ class PomodoroAIO extends Plugin {
   /** @param {unknown} error @param {AnyRecord} [context] */
   markSettlementFailed(error, context={}){ return this._getSettlementCoordinator().markSettlementFailed(error, context); }
   _resyncTick(){
-    if (this._tickTimeout) window.clearTimeout(this._tickTimeout);
+    if (this._tickTimeout) this.backgroundTimers.clearTimeout(this._tickTimeout);
     this._scheduleTick && this._scheduleTick();
   }
 
@@ -1040,7 +1124,7 @@ class PomodoroAIO extends Plugin {
             else await this.completeEmptyWorkModule();
             if (this.runtime.pendingSettlement || String(this.runtime.status) === TIMER_STATUS.FAILED) continue;
           }
-          changed = (await this.clearCompletedModuleTask(module.id)) || changed;
+          changed = (await this.clearCompletedModuleTask(module.id, task)) || changed;
         }
         return changed;
       }

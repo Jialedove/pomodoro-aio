@@ -1,6 +1,18 @@
 export type TimerStatus = "idle" | "running" | "paused" | "awaiting" | "settling" | "settlement-failed";
 export type TimerStage = "focus" | "break";
 export type ModuleType = "work" | "rest";
+export interface LightTarget { power:boolean; brightnessPct?:number; colorTempKelvin?:number; effect?:string; }
+export interface LightStep {
+  id:string;
+  trigger:{kind:"elapsed"|"progress"|"remaining";value:number};
+  action:"state"|"pulse"|"blink"|"warning"|"finished";
+  target?:LightTarget;
+  transitionMs:number;
+  repeatCount:number;
+  cueDurationMs:number;
+}
+export interface LightProgram { id:string; name:string; revision:number; steps:LightStep[]; }
+export interface LightingSnapshot { deviceId:string; baseUrl?:string; program:LightProgram; }
 export interface ModuleDefinition {
   id: string;
   type: ModuleType;
@@ -8,6 +20,7 @@ export interface ModuleDefinition {
   durationMin: number;
   blackout: boolean;
   workspaceCommandId?: string;
+  lightProgramId?: string;
 }
 export interface ModuleRun {
   runId: string;
@@ -21,6 +34,7 @@ export interface ModuleRun {
   projectPath: string | null;
   startedAtMs: number;
   recoveryOnly?: boolean;
+  lighting?: LightingSnapshot | null;
 }
 
 export interface Settings {

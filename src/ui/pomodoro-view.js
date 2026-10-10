@@ -4,7 +4,8 @@ const { formatTomatoNumber } = require("../core/validation");
 const { workspaceLayoutLabel } = require("../integrations/workspaces-plus");
 const { normalizeModuleDefinition } = require("../core/modules");
 const { createModuleDraft } = require("../core/module-draft");
-/** @typedef {{id:string, type:"work"|"rest", name:string, durationMin:number, blackout:boolean, workspaceCommandId?:string}} ModuleDefinition */
+const { DEFAULT_LIGHT_PROGRAMS } = require("../core/lighting");
+/** @typedef {import("../../types/contracts").ModuleDefinition} ModuleDefinition */
 
 /** @param {number} sec */
 function mmss(sec) {
@@ -80,6 +81,7 @@ class PomodoroView extends ItemView {
     projectButton.onclick = () => this.plugin.activateProjectsView(this.leaf);
 
     const statusLine = root.createDiv({ cls: "pmd-status-line", attr: { "aria-live": "polite" } });
+    const lightingLine = root.createDiv({ cls:"pmd-lighting-status pmd-hidden", attr:{ role:"status" } });
 
     const actions = root.createDiv({ cls: "pmd-actions" });
     const startButton = actions.createEl("button", { cls: "pmd-btn pmd-icon-button pmd-start-button", attr: { type: "button" } });
@@ -171,7 +173,7 @@ class PomodoroView extends ItemView {
       const editing = !!this._moduleDraft;
       /** @type {Record<string, any>[]} */
       const modules = this._moduleDraft ? this._moduleDraft.modules : (Array.isArray(snap.settings.modules) ? snap.settings.modules : []);
-      const signature = JSON.stringify(modules);
+      const signature = JSON.stringify([modules, snap.settings.lightingPrograms]);
       projectButton.classList.toggle("pmd-hidden", snap.settings.enableProjects !== true);
       root.classList.toggle("is-configuring", editing);
       refreshButton.classList.toggle("pmd-hidden", editing);
@@ -316,9 +318,24 @@ class PomodoroView extends ItemView {
           const clearWorkspace = workspaceWrap.createEl("button", { cls:"pmd-clear", text:"×", attr:{ type:"button", title:"清空工作区" } });
           clearWorkspace.onclick = () => { workspace.value = ""; if (draft) module.invalidWorkspace = false; applyField({ workspaceCommandId:"" }); workspace.focus(); };
         }
-        const blackout = fields.createEl("button", { cls:"pmd-blackout-option pmd-module-blackout", attr:{ type:"button", "aria-label":`第 ${index + 1} 段执行时黑屏`, "aria-pressed":String(module.blackout === true) } });
+        const options = fields.createDiv({ cls:"pmd-module-options" });
+        const light = options.createDiv({ cls:"pmd-module-lighting" });
+        const lightingLabel = light.createEl("label", { text:"灯光", attr:{ for:`${listId}-lighting` } });
+        lightingLabel.setAttribute("title", "选择本任务的灯光方案；当前段保留开始时的配置");
+        const lightSelect = light.createEl("select", { cls:"pmd-lighting-select", attr:{ id:`${listId}-lighting`, "aria-label":`第 ${index + 1} 段灯光方案` } });
+        lightSelect.createEl("option", { text:"继承默认", attr:{ value:"inherit" } });
+        lightSelect.createEl("option", { text:"不联动", attr:{ value:"none" } });
+        const programs = this.plugin.settings.lightingPrograms || DEFAULT_LIGHT_PROGRAMS;
+        programs.forEach((/** @type {import("../../types/contracts").LightProgram} */ program) => lightSelect.createEl("option", { text:program.name, attr:{ value:program.id } }));
+        if (module.lightProgramId && module.lightProgramId !== "none" && !programs.some((/** @type {import("../../types/contracts").LightProgram} */ program) => program.id === module.lightProgramId)) {
+          lightSelect.createEl("option", { text:"方案已移除，请重新选择", attr:{ value:module.lightProgramId } });
+        }
+        lightSelect.value = module.lightProgramId || "inherit";
+        lightSelect.onchange = () => applyField({ lightProgramId:lightSelect.value === "inherit" ? "" : lightSelect.value });
+        const blackout = options.createEl("button", { cls:"pmd-blackout-option pmd-module-blackout", attr:{ type:"button", "aria-label":`第 ${index + 1} 段执行时黑屏`, "aria-pressed":String(module.blackout === true) } });
         blackout.createSpan({ cls:"pmd-blackout-check", attr:{ "aria-hidden":"true" } });
-        blackout.createSpan({ text:"执行时黑屏" });
+        blackout.createSpan({ text:"黑屏" });
+        blackout.setAttribute("title", "执行时黑屏");
         blackout.onclick = () => {
           const next = blackout.getAttribute("aria-pressed") !== "true";
           blackout.setAttribute("aria-pressed", String(next));
@@ -380,9 +397,16 @@ class PomodoroView extends ItemView {
     });
     pauseButton.onclick = () => this.plugin.runUserCommand(() => this.plugin.togglePause());
     completeSegmentButton.onclick = () => this.plugin.runUserCommand(() => this.plugin.completeCurrentModule());
+    /** @param {any} snap */
+    const displayedModule = snap => {
+      const runtime = snap.runtime || this.plugin.runtime;
+      const modules = snap.settings?.modules || this.plugin.settings.modules || [];
+      const queued = runtime.status === TIMER_STATUS.AWAITING ? runtime.attention?.moduleRun : null;
+      return runtime.moduleRun || (queued ? modules.find((/** @type {ModuleDefinition} */ module) => module.id === queued.moduleId) || queued : null);
+    };
     completeTaskButton.onclick = () => {
-      const run = this.plugin.runtime.moduleRun;
-      if (run?.type === "work") this.plugin.runUserCommand(() => this.plugin.completeTask({ moduleId: run.moduleId }));
+      const run = displayedModule(this.plugin.snapshot());
+      if (run?.type === "work") this.plugin.runUserCommand(() => this.plugin.completeTask({ moduleId: run.moduleId || run.id }));
     };
     resetButton.onclick = () => this.plugin.runUserCommand(() => this.plugin.reset());
 
@@ -391,8 +415,7 @@ class PomodoroView extends ItemView {
       const settings = snap.settings || this.plugin.settings;
       const runtime = snap.runtime || this.plugin.runtime;
       const modules = Array.isArray(settings.modules) ? settings.modules : [];
-      const queued = runtime.status === TIMER_STATUS.AWAITING ? runtime.attention?.moduleRun : null;
-      const run = runtime.moduleRun || (queued ? modules.find((/** @type {ModuleDefinition} */ module) => module.id === queued.moduleId) || queued : null);
+      const run = displayedModule(snap);
       const running = [TIMER_STATUS.RUNNING, TIMER_STATUS.PAUSED, TIMER_STATUS.SETTLING, TIMER_STATUS.FAILED].includes(runtime.status);
       const pending = !!runtime.attention && !runtime.attention.nextStarted;
       const active = !!run && runtime.status !== TIMER_STATUS.IDLE;
@@ -403,6 +426,13 @@ class PomodoroView extends ItemView {
       phase.setText(run ? `${run.type === "work" ? "工作" : "休息"}${pending ? " · 待开始" : ""}` : "待机");
       statusLine.classList.toggle("pmd-hidden", runtime.status === TIMER_STATUS.RUNNING || runtime.status === TIMER_STATUS.IDLE);
       statusLine.setText(runtime.status === TIMER_STATUS.PAUSED ? "已暂停" : runtime.status === TIMER_STATUS.AWAITING ? "等待确认" : runtime.status === TIMER_STATUS.SETTLING ? "正在结算" : runtime.status === TIMER_STATUS.FAILED ? "需要恢复结算" : "");
+      const lighting = /** @type {Record<string, any>} */ (snap).lightingStatus;
+      lightingLine.classList.toggle("pmd-hidden", !lighting || lighting.status === "idle");
+      lightingLine.classList.toggle("is-unavailable", lighting?.status === "error" || lighting?.status === "expired");
+      lightingLine.setText(!lighting ? "" : lighting.status === "disabled" ? "灯光联动已关闭" : lighting.status === "manual" ? "灯光：手动接管"
+        : lighting.status === "error" ? "灯光：暂不可用，计时照常运行" : lighting.status === "expired" ? "灯光：等待重新连接"
+          : `灯光：${lighting.programName}${lighting.status === "paused" ? " · 已暂停" : lighting.step ? ` · 第 ${lighting.step} 步` : ""}`);
+      lightingLine.setAttribute("title", lighting?.error || "");
       const dailyGoal = Number(settings.dailyGoal) > 0 ? Number(settings.dailyGoal) : 8;
       const todaySum = this._todaySumCache || 0;
       ringText.textContent = `${formatTomatoNumber(todaySum)}/${dailyGoal}`;

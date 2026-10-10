@@ -1,8 +1,9 @@
 const MODULE_TYPES = Object.freeze({ WORK: "work", REST: "rest" });
+const { createLightingSnapshot } = require("./lighting");
 const LOOP_MODES = Object.freeze({ INFINITE: "infinite", ONCE: "once", COUNT: "count" });
 const DEFAULT_REST_PRESETS = Object.freeze(["NSDR 非睡眠深度休息", "在窗边看远方", "散步", "闭眼休息", "喝水", "拉伸"]);
 /** @typedef {Record<string, any>} AnyRecord */
-/** @typedef {{id:string,type:"work"|"rest",name:string,durationMin:number,blackout:boolean,workspaceCommandId?:string}} ModuleDefinition */
+/** @typedef {import("../../types/contracts").ModuleDefinition} ModuleDefinition */
 /** @typedef {{loopMode:"infinite"|"once"|"count",loopCount:number,autoAdvance:boolean,enableProjects:boolean}} Orchestration */
 
 /** @param {unknown} value @param {string} fallback */
@@ -53,6 +54,8 @@ function normalizeModuleDefinition(input, options = {}) {
   };
   const workspaceCommandId = cleanText(source.workspaceCommandId);
   if (workspaceCommandId) normalized.workspaceCommandId = workspaceCommandId;
+  const lightProgramId = cleanText(source.lightProgramId);
+  if (lightProgramId && lightProgramId !== "inherit") normalized.lightProgramId = lightProgramId;
   return normalized;
 }
 
@@ -93,13 +96,14 @@ function getNextModule(modules, currentIndex, completedLoopCount = 0, orchestrat
   };
 }
 
-/** @param {Record<string, any>} module @param {Record<string,string>} [projectAssignments] @param {{enableProjects?:boolean,runId?:string,startedAtMs?:number,idFactory?:(type:string)=>string}} [options] */
+/** @param {Record<string, any>} module @param {Record<string,string>} [projectAssignments] @param {{enableProjects?:boolean,runId?:string,startedAtMs?:number,idFactory?:(type:string)=>string,settings?:Record<string, any>}} [options] */
 function createModuleRunSnapshot(module, projectAssignments = {}, options = {}) {
   const definition = normalizeModuleDefinition(module);
   const enableProjects = options.enableProjects === true;
   const projectPath = enableProjects && definition.type === MODULE_TYPES.WORK
     ? cleanText(projectAssignments?.[definition.id]) || null
     : null;
+  /** @type {import("../../types/contracts").ModuleRun} */
   const snapshot = {
     runId: cleanText(options.runId) || (options.idFactory || makeUniqueId)("run"),
     moduleId: definition.id,
@@ -112,6 +116,7 @@ function createModuleRunSnapshot(module, projectAssignments = {}, options = {}) 
     projectPath,
     startedAtMs: Number.isFinite(Number(options.startedAtMs)) ? Number(options.startedAtMs) : Date.now()
   };
+  if (options.settings) snapshot.lighting = createLightingSnapshot(definition, options.settings);
   return Object.freeze(snapshot);
 }
 
