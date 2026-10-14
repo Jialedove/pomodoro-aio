@@ -5,7 +5,7 @@ const production = process.argv.includes("--production");
 const options = {
   entryPoints: ["src/main.js"],
   bundle: true,
-  external: ["obsidian", "node:child_process", "node:path"],
+  external: ["obsidian", "node:child_process", "node:path", "node:timers"],
   format: "cjs",
   platform: "browser",
   target: "es2020",

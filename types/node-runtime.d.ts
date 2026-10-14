@@ -6,4 +6,12 @@ declare module "node:path" {
 
 declare module "node:child_process" {
   export function spawn(command: string, args: string[], options: Record<string, any>): any;
+  export function execFile(command: string, args: string[], options: Record<string, any>, callback: (error: Error | null, stdout: string, stderr: string) => void): any;
+}
+
+declare module "node:timers" {
+  export function setTimeout(callback: () => void, delay: number): unknown;
+  export function clearTimeout(handle: unknown): void;
+  export function setInterval(callback: () => void, delay: number): unknown;
+  export function clearInterval(handle: unknown): void;
 }

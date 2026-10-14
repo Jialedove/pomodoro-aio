@@ -3,6 +3,7 @@ const { normalizeMarkdownPath } = require("./validation");
 const { TIMER_SCHEMA_VERSION, TIMER_STATUS, TIMER_STAGE, plannedTomatoAmount } = require("./timer");
 const { validateSettlementJournal } = require("./settlement");
 const { cloneValue } = require("../services/runtime-store");
+const { normalizeLightingSnapshot } = require("./lighting");
 /** @typedef {import("../../types/contracts").Runtime} Runtime */
 /** @typedef {import("../../types/contracts").Settings} Settings */
 /** @typedef {import("../../types/contracts").ModuleRun} ModuleRun */
@@ -43,7 +44,8 @@ function normalizeModuleRun(value) {
     durationMs:Math.round(run.durationMs), blackout:run.blackout === true,
     workspaceCommandId:String(run.workspaceCommandId || ""),
     projectPath:normalizedProjectPath || null, startedAtMs:Number(run.startedAtMs) || 0,
-    ...(run.recoveryOnly === true ? { recoveryOnly:true } : {})
+    ...(run.recoveryOnly === true ? { recoveryOnly:true } : {}),
+    ...(Object.prototype.hasOwnProperty.call(run, "lighting") ? { lighting:normalizeLightingSnapshot(run.lighting) } : {})
   };
 }
 

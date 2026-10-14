@@ -128,3 +128,57 @@ test("结束闪烁窗口期后正常结算；过期子进程消息不能结束�
   assert.equal(controller.sync(runtime({ sessionId:"focus-2" }), { taskBlackoutEnabled:true }, 89), true);
   controller.destroy();
 });
+
+test("原生程序意外退出后在同一阶段自动重启，并按经过时间补发剩余时长", () => {
+  let now = 1000;
+  const document = fakeDocument();
+  const children = [];
+  const notices = [];
+  const controller = new NativeBlackoutController({
+    document, binaryPath:"/tmp/blackout", now:() => now, onUnavailable:reason => notices.push(reason),
+    spawnProcess:() => { const child = fakeChild(); children.push(child); return child; }
+  });
+  controller.sync(runtime(), { taskBlackoutEnabled:true }, 90);
+  now += 60_000;
+  children[0].emit("exit", 0, null);
+  assert.equal(children.length, 2);
+  assert.equal(children[1].messages[0].leftMs, 30_000);
+  assert.equal(notices.length, 0);
+  assert.equal(document.body.children.length, 0);
+  controller.destroy();
+});
+
+test("原生程序反复退出时才退回窗口内遮罩，并带上退出原因", () => {
+  const document = fakeDocument();
+  const children = [];
+  const notices = [];
+  const controller = new NativeBlackoutController({
+    document, binaryPath:"/tmp/blackout", onUnavailable:reason => notices.push(reason),
+    spawnProcess:() => { const child = fakeChild(); children.push(child); return child; }
+  });
+  controller.sync(runtime(), { taskBlackoutEnabled:true }, 90);
+  for (let index = 0; index < 4; index += 1) {
+    children[index].stdout.emit("data", Buffer.from('{"type":"exit","reason":"stdin-closed"}\n'));
+    children[index].emit("exit", 0, null);
+  }
+  assert.equal(children.length, 4);
+  assert.deepEqual(notices, ["原生黑屏意外退出（stdin-closed）"]);
+  assert.equal(document.body.children.length, 1);
+  controller.sync({ status:"idle", stage:null }, { taskBlackoutEnabled:true }, 0);
+  assert.equal(controller.sync(runtime({ sessionId:"focus-2" }), { taskBlackoutEnabled:true }, 90), true);
+  assert.equal(children.length, 5);
+  controller.destroy();
+});
+
+test("正常隐藏或用户退出时子进程退出不触发重启", () => {
+  const children = [];
+  const controller = new NativeBlackoutController({
+    document:fakeDocument(), binaryPath:"/tmp/blackout",
+    spawnProcess:() => { const child = fakeChild(); children.push(child); return child; }
+  });
+  controller.sync(runtime(), { taskBlackoutEnabled:true }, 90);
+  children[0].stdout.emit("data", Buffer.from('{"type":"dismissed"}\n{"type":"exit","reason":"dismissed"}\n'));
+  children[0].emit("exit", 0, null);
+  assert.equal(children.length, 1);
+  controller.destroy();
+});

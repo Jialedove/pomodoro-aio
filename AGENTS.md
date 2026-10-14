@@ -46,6 +46,10 @@ npm run install:vault
 
 绝对不要覆盖、删除或重建目标目录中的 `data.json`；其中包含用户设置。安装完成后，需要在 Obsidian 中重载 Pomodoro AIO。若卸载曾失败并残留视图注册，应完全退出并重启 Obsidian一次。
 
+## 守护进程
+
+`npm run guard:install` 会写入 `~/Library/LaunchAgents/com.pomodoro-aio.guard.plist` 并常驻运行，属于系统级改动。只有用户明确要求时才能安装、卸载或重启；其他验证用 `bin/pomodoro-guard --status` 或 `--dry-run`。
+
 ## 修改与验证
 
 - 模块行为变化：检查工作/休息任意排序、循环次数、等待确认与自动衔接，番茄仅由工作产生。

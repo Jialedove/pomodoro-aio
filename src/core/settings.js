@@ -2,6 +2,8 @@ const { normalizeMarkdownPath, isValidHHMM, positiveNumber } = require("./valida
 const { normalizeCaptureHeading } = require("./quick-capture");
 const { normalizeModuleDefinition, normalizeRestPresets, normalizeOrchestration } = require("./modules");
 const { TIMER_SCHEMA_VERSION } = require("./timer");
+const { DEFAULT_LIGHT_PROGRAMS, normalizeLightingSettings } = require("./lighting");
+const { ACCOUNTING_DEFAULTS, normalizeAccountingSettings } = require("./time-accounting");
 /** @typedef {import("../../types/contracts").Settings} Settings */
 
 /** @type {Settings} */
@@ -19,7 +21,10 @@ const DEFAULT_SETTINGS = {
   focusEndSound:"focus-end", breakEndSound:"break-end",
   focusAlertSound:"focus-alert", breakAlertSound:"break-alert",
   strongAlertDelaySec:30, strongAlertIntervalSec:60,
-  persistentAlertSound:true, ribbonClickAutoNext:true, respectModalInputFocus:true
+  persistentAlertSound:true, ribbonClickAutoNext:true, respectModalInputFocus:true,
+  lightingEnabled:true, lightingBaseUrl:"http://127.0.0.1:18473", lightingDeviceId:"",
+  lightingDefaultWorkId:"work", lightingDefaultRestId:"rest", lightingPrograms:DEFAULT_LIGHT_PROGRAMS,
+  ...ACCOUNTING_DEFAULTS
 };
 
 /** @param {unknown} raw @param {Settings} fallback @param {(path:string)=>string} normalizePath @returns {Settings} */
@@ -65,6 +70,8 @@ function normalizeCurrentSettings(raw, fallback = DEFAULT_SETTINGS, normalizePat
   result.strongAlertIntervalSec = Math.max(1, Math.round(positiveNumber(source.strongAlertIntervalSec, base.strongAlertIntervalSec)));
   result.soundWaveform = ["sine", "square", "triangle"].includes(source.soundWaveform) ? source.soundWaveform : base.soundWaveform;
   result.schemaVersion = TIMER_SCHEMA_VERSION;
+  Object.assign(result, normalizeLightingSettings(source, base));
+  Object.assign(result, normalizeAccountingSettings(source, base));
   return result;
 }
 

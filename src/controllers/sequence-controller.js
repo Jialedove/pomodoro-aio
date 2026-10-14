@@ -40,7 +40,7 @@ class SequenceController {
       new Notice("正在执行当前模块，请先完成本段或重置后选择"); return false;
     }
     const run = awaiting ? createModuleRunSnapshot(definition, this.plugin.settings.projectAssignments,
-      { enableProjects:this.plugin.settings.enableProjects, startedAtMs:Date.now() }) : null;
+      { enableProjects:this.plugin.settings.enableProjects, settings:this.plugin.settings, startedAtMs:Date.now() }) : null;
     const attention = run ? {
       type:run.type === "work" ? TIMER_STAGE.FOCUS : TIMER_STAGE.BREAK,
       nextStarted:false,
@@ -74,7 +74,7 @@ class SequenceController {
     const definition = this.plugin.settings.modules[resolvedIndex];
     const run = normalizeModuleRun(pendingRun?.recoveryOnly ? pendingRun : definition ? createModuleRunSnapshot(
       definition, this.plugin.settings.projectAssignments,
-      { enableProjects:this.plugin.settings.enableProjects, runId:pendingRun?.runId, startedAtMs:Date.now() }
+      { enableProjects:this.plugin.settings.enableProjects, settings:this.plugin.settings, runId:pendingRun?.runId, startedAtMs:Date.now() }
     ) : pendingRun);
     if (!run) { new Notice("模块配置无效，请检查名称与时长"); return false; }
     const previousRuntime = this.plugin.runtime;

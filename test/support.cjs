@@ -296,6 +296,8 @@ function createPlugin(options = {}) {
   const vault = options.vault || new FakeVault();
   const commands = options.commands || new CommandSimulator();
   const plugin = new PomodoroAIO();
+  // Runtime regression tests must never control real local devices.
+  plugin.deviceBridge = { syncFromRuntime:async () => {}, dispose:async () => {} };
   plugin.settings = { ...BASE_SETTINGS, ...(options.settings || {}) };
   if (!Array.isArray(plugin.settings.modules)) {
     plugin.completeTask = function(completeOptions) { return this._getLegacyController().completeTask(completeOptions); };

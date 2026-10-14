@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { FakeClock, FakeVault, createPlugin, clone, FailureStore, PomodoroAIO } = require("./support.cjs");
 const { createModuleDraft } = require("../src/core/module-draft.js");
+const { RuntimeStore } = require("../src/services/runtime-store.js");
 
 function moduleSettings(overrides = {}) {
   return {
@@ -60,6 +61,40 @@ test("模块编辑草稿只有保存才写入，保存失败可重试，旧草�
   invalid.modules[0].invalidWorkspace = true;
   await assert.rejects(plugin.saveModuleDraft(invalid), /工作区须从候选中选择/);
   assert.equal(writes, 2);
+});
+
+test("模块草稿经真实设置存储写入失败时回滚，保留原草稿重试", async () => {
+  const settings = moduleSettings({
+    restPresets:["散步"], projectAssignments:{ "work-reading":"Projects/Reading.md" }
+  });
+  const plugin = createPlugin({ settings });
+  const writes = [];
+  let failOnce = true;
+  plugin.runtimeStore = new RuntimeStore({
+    readRuntime: async () => null,
+    writeRuntime: async () => {},
+    readSettings: async () => settings,
+    writeSettings: async snapshot => {
+      if (failOnce) { failOnce = false; throw new Error("settings storage unavailable"); }
+      writes.push(snapshot);
+    }
+  });
+  plugin.saveSettings = PomodoroAIO.prototype.saveSettings.bind(plugin);
+  const draft = createModuleDraft(plugin.settings);
+  draft.modules[0].name = "写摘要";
+  draft.modules.splice(1, 1);
+  draft.restPresetsText = "闭眼休息";
+
+  await assert.rejects(() => plugin.saveModuleDraft(draft), /settings storage unavailable/);
+  assert.equal(plugin.settings.modules[0].name, "阅读");
+  assert.equal(plugin.settings.modules.length, 2);
+  assert.deepEqual(plugin.settings.restPresets, ["散步"]);
+  assert.deepEqual(plugin.settings.projectAssignments, settings.projectAssignments);
+  assert.equal(writes.length, 0);
+  assert.equal(await plugin.saveModuleDraft(draft), true);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].modules[0].name, "写摘要");
+  assert.deepEqual(writes[0].restPresets, ["闭眼休息"]);
 });
 
 test("模块序列将工作、休息和完整循环分别计数，休息不写番茄", async () => {
@@ -335,6 +370,140 @@ test("模块项目写入失败保留重试，已成功的日记结算不回滚",
   assert.equal(plugin.runtime.projectQueue.length, 1);
   assert.match(vault.getAbstractFileByPath("Daily/today.md").content, /阅读 1🍅/);
   assert.equal(project.frontmatter["番茄数"], 0);
+});
+
+test("同一项目有未完成重试时后续工作按顺序入队，恢复后不丢番茄", async () => {
+  const clock = new FakeClock(7_500);
+  const vault = new FakeVault({ "Daily/today.md":"- [ ] 阅读 0🍅\n", "Projects/X.md":"" });
+  const project = vault.getAbstractFileByPath("Projects/X.md");
+  project.frontmatter = { "番茄数":0 };
+  const settings = moduleSettings({
+    modules:[{ id:"work-reading", type:"work", name:"阅读", durationMin:25, blackout:false }],
+    projectAssignments:{ "work-reading":"Projects/X.md" }, enableProjects:true
+  });
+  const stateStore = new FailureStore();
+  const plugin = createPlugin({ vault, settings, stateStore, runtime:{ projectQueue:[] } });
+  const original = plugin.app.fileManager.processFrontMatter;
+  let failOnce = true;
+  plugin.app.fileManager.processFrontMatter = async (file, callback) => {
+    if (file.path === project.path && failOnce) { failOnce = false; throw new Error("project unavailable once"); }
+    return original(file, callback);
+  };
+
+  await clock.run(() => plugin.startSequence());
+  clock.advance(25 * 60_000);
+  await silenceExpectedError(() => clock.run(() => plugin.tick()));
+  assert.equal(plugin.runtime.projectQueue.length, 1);
+  await clock.run(() => plugin.startSequence());
+  clock.advance(25 * 60_000);
+  await clock.run(() => plugin.tick());
+  const queuedCount = plugin.runtime.projectQueue.length;
+  const totalBeforeRetry = project.frontmatter["番茄数"];
+  assert.match(vault.getAbstractFileByPath("Daily/today.md").content, /阅读 2🍅/);
+
+  await plugin.flushPendingSaves();
+  const resumed = createPlugin({ vault, settings, stateStore,
+    runtime:PomodoroAIO.normalizeRuntime(await stateStore.load(), PomodoroAIO.normalizeSettings(settings), clock.now()) });
+  await resumed.drainProjectQueue();
+  assert.equal(resumed.runtime.projectQueue.length, 0);
+  assert.equal(project.frontmatter["番茄数"], 2);
+  assert.equal(queuedCount, 2);
+  assert.equal(totalBeforeRetry, 0);
+  await resumed.drainProjectQueue();
+  assert.equal(project.frontmatter["番茄数"], 2);
+});
+
+test("项目连续重试在每个写入后的保存边界失败都能重载恢复，不丢记或重复", async () => {
+  for (const failAfter of [1, 2]) {
+    const vault = new FakeVault({ "Projects/X.md":"" });
+    const project = vault.getAbstractFileByPath("Projects/X.md");
+    project.frontmatter = { "番茄数":0 };
+    const settings = moduleSettings({ enableProjects:true });
+    const stateStore = new FailureStore();
+    const plugin = createPlugin({ vault, settings, stateStore, runtime:{ schemaVersion:5, mode:"modules",
+      projectQueue:[
+        { sessionId:"A", path:project.path, key:"番茄数", amount:1, beforeValue:0, afterValue:1, status:"pending" },
+        { sessionId:"B", path:project.path, key:"番茄数", amount:1, beforeValue:0, afterValue:1, status:"pending" }
+      ] } });
+    await plugin.saveState({ critical:true });
+    const original = plugin.app.fileManager.processFrontMatter;
+    plugin.app.fileManager.processFrontMatter = async (file, callback) => {
+      await original(file, callback);
+      if (file.frontmatter["番茄数"] === failAfter) stateStore.failNext("save");
+    };
+    const failure = await silenceExpectedError(() => plugin.drainProjectQueue().then(() => null, error => error));
+    assert.equal(project.frontmatter["番茄数"], failAfter);
+    assert.match(failure?.message || "", /injected save failure/);
+    await plugin.flushPendingSaves();
+
+    const persisted = await stateStore.load();
+    assert.deepEqual(persisted.projectQueue.map(item => [item.sessionId, item.beforeValue, item.afterValue]),
+      failAfter === 1 ? [["A", 0, 1], ["B", 0, 1]] : [["B", 1, 2]]);
+    const resumed = createPlugin({ vault, settings, stateStore,
+      runtime:PomodoroAIO.normalizeRuntime(persisted, PomodoroAIO.normalizeSettings(settings)) });
+    await resumed.drainProjectQueue();
+    assert.equal(resumed.runtime.projectQueue.length, 0);
+    assert.equal(project.frontmatter["番茄数"], 2);
+    await resumed.drainProjectQueue();
+    assert.equal(project.frontmatter["番茄数"], 2);
+    assert.deepEqual((await stateStore.load()).projectQueue, []);
+  }
+});
+
+test("项目重试保存失败后同进程再重试，第二次保存失败也保留可恢复基线", async () => {
+  const vault = new FakeVault({ "Projects/X.md":"" });
+  const project = vault.getAbstractFileByPath("Projects/X.md");
+  project.frontmatter = { "番茄数":0 };
+  const settings = moduleSettings({ enableProjects:true });
+  const stateStore = new FailureStore();
+  const plugin = createPlugin({ vault, settings, stateStore, runtime:{ schemaVersion:5, mode:"modules",
+    projectQueue:[
+      { sessionId:"A", path:project.path, key:"番茄数", amount:1, beforeValue:0, afterValue:1, status:"pending" },
+      { sessionId:"B", path:project.path, key:"番茄数", amount:1, beforeValue:0, afterValue:1, status:"pending" }
+    ] } });
+  await plugin.saveState({ critical:true });
+  const original = plugin.app.fileManager.processFrontMatter;
+  plugin.app.fileManager.processFrontMatter = async (file, callback) => {
+    await original(file, callback);
+    stateStore.failNext("save");
+  };
+  await silenceExpectedError(() => assert.rejects(() => plugin.drainProjectQueue(), /injected save failure/));
+  assert.equal(project.frontmatter["番茄数"], 1);
+  await silenceExpectedError(() => assert.rejects(() => plugin.drainProjectQueue(), /injected save failure/));
+  assert.equal(project.frontmatter["番茄数"], 2);
+  const persisted = await stateStore.load();
+  assert.deepEqual(persisted.projectQueue.map(item => [item.sessionId, item.beforeValue, item.afterValue]), [["B", 1, 2]]);
+  const resumed = createPlugin({ vault, settings, stateStore,
+    runtime:PomodoroAIO.normalizeRuntime(persisted, PomodoroAIO.normalizeSettings(settings)) });
+  await resumed.drainProjectQueue();
+  assert.equal(resumed.runtime.projectQueue.length, 0);
+  assert.equal(project.frontmatter["番茄数"], 2);
+});
+
+test("缺失项目恢复后先固定重试基线，写入后的保存失败不会重复计入", async () => {
+  const vault = new FakeVault({ "Projects/X.md":"" });
+  const project = vault.getAbstractFileByPath("Projects/X.md");
+  project.frontmatter = { "番茄数":0 };
+  const settings = moduleSettings({ enableProjects:true });
+  const stateStore = new FailureStore();
+  const plugin = createPlugin({ vault, settings, stateStore, runtime:{ schemaVersion:5, mode:"modules",
+    projectQueue:[{ sessionId:"A", path:project.path, key:"番茄数", amount:1, status:"missing", deferred:true }] } });
+  await plugin.saveState({ critical:true });
+  const original = plugin.app.fileManager.processFrontMatter;
+  plugin.app.fileManager.processFrontMatter = async (file, callback) => {
+    await original(file, callback);
+    stateStore.failNext("save");
+  };
+  const failure = await silenceExpectedError(() => plugin.drainProjectQueue().then(() => null, error => error));
+  await plugin.flushPendingSaves();
+  const resumed = createPlugin({ vault, settings, stateStore,
+    runtime:PomodoroAIO.normalizeRuntime(await stateStore.load(), PomodoroAIO.normalizeSettings(settings)) });
+  await resumed.drainProjectQueue();
+  assert.equal(project.frontmatter["番茄数"], 1);
+  assert.match(failure?.message || "", /injected save failure/);
+  assert.equal(resumed.runtime.projectQueue.length, 0);
+  await resumed.drainProjectQueue();
+  assert.equal(project.frontmatter["番茄数"], 1);
 });
 
 test("自动衔接按指定完整循环次数停止，休息序列始终不写日记", async () => {

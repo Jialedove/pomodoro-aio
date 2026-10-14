@@ -2,7 +2,7 @@
 // 变更点：项目下拉在任务上方；项目下拉后有“打开项目”；右上角新增“打开当日日记”按钮；左侧 Ribbon 加图标。
 
 const {
-  Plugin, Notice, TFile, getFrontMatterInfo, parseYaml, normalizePath
+  Plugin, Notice, TFile, getFrontMatterInfo, parseYaml, normalizePath, requestUrl
 } = require('obsidian');
 const {
   parseHHMMToMinutes,
@@ -41,9 +41,16 @@ const { BreakBlackoutController } = require("./ui/break-blackout");
 const { NativeBlackoutController } = require("./ui/native-blackout");
 const { PomodoroSettingTab } = require("./ui/settings-tab");
 const { SequenceController } = require("./controllers/sequence-controller");
+const { TimeAccountingController } = require("./controllers/time-accounting-controller");
+const { SystemActivityMonitor } = require("./integrations/system-activity");
+const { AccountingScreen } = require("./ui/accounting-screen");
+const { classifyRuntime, duePendingPatch, KIND_LABEL } = require("./core/time-accounting");
 const { SettlementCoordinator } = require("./controllers/settlement-coordinator");
 const { LegacyRuntimeController } = require("./legacy/runtime-controller");
 const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/workspaces-plus");
+const { LightingClient } = require("./integrations/lighting-client");
+const { createLightingSnapshot } = require("./core/lighting");
+const { createBackgroundTimers } = require("./services/background-timers");
 /** @typedef {import("../types/contracts").Attention} Attention */
 /** @typedef {import("../types/contracts").BreakTransition} BreakTransition */
 /** @typedef {import("../types/contracts").ProjectSettlementPlan} ProjectSettlementPlan */
@@ -168,6 +175,11 @@ class PomodoroAIO extends Plugin {
     this.projectRepository = null;
     /** @type {InstanceType<typeof WorkspacesPlusAdapter> | null} */
     this.workspacesPlus = null;
+    /** @type {InstanceType<typeof LightingClient> | null} */
+    this.deviceBridge = null;
+    this.backgroundTimers = createBackgroundTimers();
+    /** @type {unknown} */
+    this._lightingHeartbeat = null;
     /** @type {InstanceType<typeof BreakBlackoutController> | InstanceType<typeof NativeBlackoutController> | null} */
     this.breakBlackout = null;
     /** @type {ObsidianElement | null} */
@@ -178,11 +190,12 @@ class PomodoroAIO extends Plugin {
     this._alertInterval = null;
     /** @type {number | null} */
     this._alertEscalationTimeout = null;
-    /** @type {number | null} */
+    /** @type {unknown} */
     this._tickTimeout = null;
     /** @type {unknown} */
     this._lastPersistenceError = null;
     this._completionInFlight = false;
+    this._runtimeTransitionSaves = 0;
     /** @type {number | null} */
     this._dailyCompletionSyncTimer = null;
     this._dailyCompletionSyncBusy = false;
@@ -190,11 +203,21 @@ class PomodoroAIO extends Plugin {
     this._dailyCompletionSyncRef = null;
     this._unloading = false;
     this._scheduleTick = () => {};
+    /** @type {InstanceType<typeof TimeAccountingController> | null} */
+    this.accounting = null;
+    /** @type {InstanceType<typeof AccountingScreen> | null} */
+    this._accountingScreen = null;
+    /** @type {{kind:"leisure"|"errand", reason:string} | null} */
+    this._lastEndedDeclaration = null;
   }
   async onload() {
     this._lastPersistenceError = null;
     await this.loadSettings();
     this.runtime = normalizeRuntime(await this.loadState(), this.settings);
+    if (this.runtime.moduleRun && this.runtime.moduleRun.lighting === undefined) {
+      const definition = this.settings.modules.find(item => item.id === this.runtime.moduleRun?.moduleId) || this.runtime.moduleRun;
+      this.runtime = { ...this.runtime, moduleRun:{ ...this.runtime.moduleRun, lighting:createLightingSnapshot(definition, this.settings) } };
+    }
     this._alertInterval = null;
     this._alertEscalationTimeout = null;
     this._completionInFlight = false;
@@ -205,6 +228,9 @@ class PomodoroAIO extends Plugin {
       dayKey:this.logicalTodayKey()
     }).runtime;
     await this.saveState({ critical:true });
+    this._syncDeviceBridge();
+    this._lightingHeartbeat = this.backgroundTimers.setInterval(() => this._syncDeviceBridge(), 2000);
+    void this.refreshLightingLibrary().catch(() => {});
     await this.recoverPendingSettlement();
     await this.recoverPendingBreakTransition();
     try {
@@ -247,6 +273,11 @@ class PomodoroAIO extends Plugin {
     this.addCommand({ id: 'complete-task', name: '完成当前任务并勾选日记待办', callback: (evt)=> this.runUserCommand(()=> this.completeTask(), evt) });
     this.addCommand({ id: 'open-today', name: '打开当日日记', callback: (evt)=> this.runUserCommand(()=> this.openToday(), evt) });
     this.addCommand({ id: 'quick-capture', name: '快速记录', callback: (evt)=> this.runUserCommand(()=> this.openQuickCaptureModal(), evt) });
+    this.addCommand({ id: 'account-now', name: '时间归属：选择现在在做的事', callback: (evt)=> this.runUserCommand(()=> this.openAccountingPromptNow(), evt) });
+    this.addCommand({ id: 'declare-untracked', name: '时间归属：开始小计时', callback: (evt)=> this.runUserCommand(()=> this.openAccountingPromptNow("declare"), evt) });
+    this.addCommand({ id: 'end-declaration', name: '时间归属：结束小计时', callback: (evt)=> this.runUserCommand(()=> this.endDeclaration(), evt) });
+    this.addCommand({ id: 'extend-declaration', name: '时间归属：小计时延长 5 分钟', callback: (evt)=> this.runUserCommand(()=> this.accounting?.extend(5), evt) });
+    this.addCommand({ id: 'snooze-accounting', name: '时间归属：稍后再提醒', callback: (evt)=> this.runUserCommand(()=> this.accounting?.snooze(), evt) });
     this._registerDailyTaskCompletionSync();
 
     // 设置页
@@ -267,7 +298,7 @@ class PomodoroAIO extends Plugin {
       const now = Date.now();
       const base = this.runtime.startedAtMs || now;
       const delay = Math.max(50, 1000 - ((now - base) % 1000));
-      this._tickTimeout = window.setTimeout(() => {
+      this._tickTimeout = this.backgroundTimers.setTimeout(() => {
         if (this._unloading) return;
         this.tick().catch(error => logPluginError("tick", error, {
           sessionId: this.runtime?.sessionId,
@@ -278,19 +309,31 @@ class PomodoroAIO extends Plugin {
       }, delay);
     };
     this._scheduleTick();
+    this.accounting = new TimeAccountingController(this, {
+      monitor:new SystemActivityMonitor({ document:typeof document === "undefined" ? null : document }),
+      timers:this.backgroundTimers, playBeep, sysNotify, logPluginError
+    });
+    this.accounting.start();
     this.applyStrongAlertStateFromRuntime();
     this.updateRibbonVisuals();
     this.syncBreakBlackout();
   }
   async onunload(){
     this._unloading = true;
+    if (this._lightingHeartbeat !== null) this.backgroundTimers.clearInterval(this._lightingHeartbeat);
+    this._lightingHeartbeat = null;
     if (this._dailyCompletionSyncTimer) window.clearTimeout(this._dailyCompletionSyncTimer);
     this._dailyCompletionSyncTimer = null;
     if (this._dailyCompletionSyncRef) this.app?.vault?.offref?.(this._dailyCompletionSyncRef);
     this._dailyCompletionSyncRef = null;
     this.breakBlackout?.destroy();
+    this.accounting?.dispose();
+    this.accounting = null;
+    this._accountingScreen?.destroy();
+    this._accountingScreen = null;
     this.stopPersistentAlertSound();
-    if (this._tickTimeout) window.clearTimeout(this._tickTimeout);
+    if (this._tickTimeout) this.backgroundTimers.clearTimeout(this._tickTimeout);
+    await this.deviceBridge?.dispose?.();
     await this.flushPendingSaves();
   }
 
@@ -322,6 +365,7 @@ class PomodoroAIO extends Plugin {
   }
   /** @param {Runtime} previousRuntime */
   async saveTransition(previousRuntime){
+    this._runtimeTransitionSaves += 1;
     try {
       await this.saveState({ critical:true });
     } catch (error) {
@@ -330,6 +374,31 @@ class PomodoroAIO extends Plugin {
       this.broadcast();
       this._resyncTick();
       throw error;
+    } finally {
+      this._runtimeTransitionSaves -= 1;
+    }
+    this._syncDeviceBridge();
+  }
+  _getDeviceBridge(){
+    if (this.deviceBridge) return this.deviceBridge;
+    this.deviceBridge = new LightingClient({
+      requestFn:typeof requestUrl === "function" ? async (/** @type {string} */ url, /** @type {AnyRecord} */ init) => {
+        const response = await requestUrl({ url, method:init.method, headers:init.headers, body:init.body, throw:false });
+        return { ok:response.status >= 200 && response.status < 300, status:response.status, json:async () => response.json };
+      } : null,
+      onStatus:() => { if (!this._unloading) this.broadcast(); }
+    });
+    this.deviceBridge.configure(this.settings);
+    return this.deviceBridge;
+  }
+  _syncDeviceBridge(){
+    if (this._unloading || this._runtimeTransitionSaves > 0 || this._completionInFlight) return;
+    try {
+      const bridge = this._getDeviceBridge();
+      bridge.configure?.(this.settings);
+      bridge.syncFromRuntime(this.runtime, { elapsedMs:this.getElapsedMs() })?.catch?.(() => {});
+    } catch (error) {
+      console.debug("Pomodoro AIO Device Bridge sync error", error);
     }
   }
   /** @param {RuntimeEvent} event */
@@ -369,7 +438,42 @@ class PomodoroAIO extends Plugin {
     return this.settings;
   }
   async saveSettings(){
-    return this._getRuntimeStore().saveSettings(this.settings);
+    await this._getRuntimeStore().saveSettings(this.settings);
+    if (!this._unloading) this._syncDeviceBridge();
+  }
+  async refreshLightingLibrary(){
+    const bridge = this._getDeviceBridge();
+    bridge.configure(this.settings);
+    const result = await bridge.refreshLibrary();
+    const previousPrograms = this.settings.lightingPrograms;
+    this.settings.lightingPrograms = result.programs;
+    try { await this.saveSettings(); }
+    catch (error) { this.settings.lightingPrograms = previousPrograms; throw error; }
+    this.broadcast();
+    return result;
+  }
+  /** @param {unknown} input */
+  async saveLightProgram(input){
+    const bridge = this._getDeviceBridge(); bridge.configure(this.settings);
+    const saved = await bridge.saveProgram(input);
+    try { await this.refreshLightingLibrary(); }
+    catch { throw new Error("方案已在服务端保存，本地同步失败；请刷新方案库后继续编辑"); }
+    return saved;
+  }
+  /** @param {AnyRecord} program */
+  async deleteLightProgram(program){
+    const referenced = this.settings.modules.some(module => module.lightProgramId === program.id)
+      || this.settings.lightingDefaultWorkId === program.id || this.settings.lightingDefaultRestId === program.id;
+    if (referenced) throw new Error("此方案仍被任务或默认灯光使用，请先更换绑定");
+    const bridge = this._getDeviceBridge(); bridge.configure(this.settings);
+    await bridge.deleteProgram(program);
+    await this.refreshLightingLibrary();
+  }
+  /** @param {unknown} program */
+  async previewLightProgram(program){
+    if (this.runtime.status !== TIMER_STATUS.IDLE || this.runtime.attention) throw new Error("请先结束当前任务，再预览灯光");
+    const bridge = this._getDeviceBridge(); bridge.configure(this.settings);
+    return bridge.preview(program);
   }
 
   /* ====== 环境守护 ====== */
@@ -501,14 +605,18 @@ class PomodoroAIO extends Plugin {
     this.syncBreakBlackout(snap);
     this.app.workspace.trigger('pomodoro:aio-state', snap);
   }
+  /** macOS 原生助手路径；其他平台或取不到插件目录时为 null。 @param {string} [name] */
+  nativeHelperPath(name="pomodoro-blackout"){
+    const basePath = this.app?.vault?.adapter?.getBasePath?.();
+    const pluginDir = this.manifest?.dir;
+    if (process.platform !== "darwin" || !basePath || !pluginDir) return null;
+    return require("node:path").resolve(basePath, pluginDir, "bin", name);
+  }
   _getBreakBlackoutController(){
     if (this.breakBlackout) return this.breakBlackout;
     if (typeof document === "undefined" || !document.body) return null;
-    const basePath = this.app?.vault?.adapter?.getBasePath?.();
-    const pluginDir = this.manifest?.dir;
-    if (process.platform === "darwin" && basePath && pluginDir) {
-      const path = require("node:path");
-      const binaryPath = path.resolve(basePath, pluginDir, "bin", "pomodoro-blackout");
+    const binaryPath = this.nativeHelperPath();
+    if (binaryPath) {
       this.breakBlackout = new NativeBlackoutController({
         document,
         binaryPath,
@@ -540,6 +648,8 @@ class PomodoroAIO extends Plugin {
       : next.nextIndex !== null ? this.settings.modules?.[next.nextIndex] || null : null;
     return {
       settings: this.settings,
+      lightingStatus:this.deviceBridge?.status,
+      accounting:this.accounting?.view() || null,
       runtime: Object.assign({}, this.runtime, { leftMs, leftSec: Math.ceil(leftMs / 1000), nextModule })
     };
   }
@@ -549,13 +659,19 @@ class PomodoroAIO extends Plugin {
     const r = runtime || Object.assign({}, this.runtime, { leftSec: this.getLeftSec() });
     this.updateRibbonBadge(r);
     this.updateRibbonAlertUI(!!r.attention);
+    const accounting = this.accounting?.view();
+    const unaccounted = !!accounting?.enabled && accounting.stretchMin !== null;
+    this.ribbon.classList?.toggle("pomodoro-ribbon-unaccounted", unaccounted);
+    this.ribbon.setAttribute?.("aria-label", unaccounted ? `打开番茄视图（${accounting?.stretchMin} 分钟未归属）` : "打开番茄视图");
   }
   /** @param {(Runtime & {leftSec?:number}) | null | undefined} [runtime] */
   updateRibbonBadge(runtime){
     if (!this.ribbonBadge || !this.ribbon) return;
     const status = runtime?.status || this.runtime.status;
-    const sec = runtime?.leftSec ?? this.getLeftSec();
-    const show = status !== TIMER_STATUS.IDLE && sec > 0;
+    const declaration = status === TIMER_STATUS.IDLE ? this.accounting?.view().declaration : null;
+    // 空闲时显示小计时的剩余分钟。
+    const sec = declaration ? Math.ceil(Math.max(0, declaration.endsAtMs - Date.now()) / 1000) : runtime?.leftSec ?? this.getLeftSec();
+    const show = (status !== TIMER_STATUS.IDLE || !!declaration) && sec > 0;
     if (show) {
       const minutes = Math.max(0, Math.ceil(sec / 60));
       this.ribbonBadge.setText(String(minutes));
@@ -772,6 +888,196 @@ class PomodoroAIO extends Plugin {
   }
   /** @param {number | AnyRecord} [indexOrOptions] @param {AnyRecord} [options] */
   startSequence(indexOrOptions, options={}) { return this._getSequenceController().startSequence(indexOrOptions, options); }
+  /** 列出已连接的显示器（macOS），供设置选择黑屏选择界面的位置。 @returns {Promise<Array<{id:string,name:string,main:boolean,width:number,height:number}>>} */
+  listDisplays(){
+    const binary = this.nativeHelperPath("pomodoro-accounting");
+    if (!binary) return Promise.resolve([]);
+    return new Promise(resolve => {
+      require("node:child_process").execFile(binary, ["--list-displays"], { timeout:3000 }, (error, stdout) => {
+        if (error) { logPluginError("list-displays", error, { step:"execute" }); resolve([]); return; }
+        try {
+          const list = JSON.parse(String(stdout).trim());
+          resolve(Array.isArray(list) ? list.filter(item => item && typeof item.id === "string" && item.id) : []);
+        } catch (parseError) {
+          logPluginError("list-displays", parseError, { step:"parse" });
+          resolve([]);
+        }
+      });
+    });
+  }
+  _getAccountingScreen(){
+    if (this._accountingScreen) return this._accountingScreen;
+    this._accountingScreen = new AccountingScreen({
+      document:typeof document === "undefined" ? null : document,
+      binaryPath:this.nativeHelperPath("pomodoro-accounting"),
+      onChoice:choice => this.handleAccountingChoice(choice),
+      onClosed:reason => {
+        this.accounting?.setPromptOpen(false);
+        if (reason === "emergency") this.accounting?.emergencyExit();
+        else if (reason !== "chosen") this.accounting?.promptClosed();
+      },
+      onUnavailable:reason => console.warn("Pomodoro AIO 原生选择屏不可用，改用 Obsidian 窗口内选择屏", reason),
+      activateObsidian:() => this.accounting?.monitor.activateObsidian() ?? Promise.resolve()
+    });
+    return this._accountingScreen;
+  }
+  /**
+   * @param {"idle"|"paused"|"awaiting"} reason
+   * @param {{initialTab?:"work"|"rest"|"declare", manual?:boolean, ended?:{kind:"leisure"|"errand", reason:string, plannedMs:number}|null}} [options]
+   */
+  accountingScreenData(reason, { initialTab="work", manual=false, ended=null }={}){
+    const view = this.accounting?.view();
+    /** @param {"work"|"rest"} type */
+    const pick = type => this.settings.modules.filter(module => module.type === type).map(module => ({
+      id:module.id, name:module.name, durationMin:module.durationMin,
+      workspaceCommandId:module.workspaceCommandId || "", lightProgramId:module.lightProgramId || "", blackout:module.blackout === true
+    }));
+    const workModules = pick("work");
+    const restModules = pick("rest");
+    const selected = this.settings.modules.find(module => module.id === this.runtime.selectedModuleId);
+    const currentName = (reason === "awaiting" ? this.runtime.attention?.moduleRun?.name : this.runtime.moduleRun?.name) || "当前模块";
+    let workspaceCommands = [];
+    try {
+      workspaceCommands = this.getWorkspaceLayoutCommands().map((/** @type {any} */ command) => ({ id:command.id, title:workspaceLayoutLabel(command) || command.name || command.id }));
+    } catch (error) { logPluginError("accounting-workspaces", error, { step:"list" }); }
+    this._lastEndedDeclaration = ended ? { kind:ended.kind, reason:ended.reason } : null;
+    return {
+      reason, initialTab,
+      label:ended ? `「${ended.reason}」的 ${Math.round(ended.plannedMs / 60_000)} 分钟${KIND_LABEL[ended.kind]}已结束 · 今日未归属 ${view?.unaccountedMin ?? 0} 分钟`
+        : this.accountingScreenLabel(reason, currentName),
+      title:reason === "paused" ? "计时已暂停" : reason === "awaiting" ? "下一段还没开始" : "现在要做什么？",
+      // 提醒模式和用户主动打开时可以直接关闭；强制模式只能长按 Esc 紧急退出。
+      closable:manual || !view?.strict,
+      display:this.settings.accountingDisplay || "main",
+      workModules, restModules,
+      defaultWorkId:(selected?.type === "work" ? selected.id : workModules[0]?.id) || null,
+      defaultRestId:(selected?.type === "rest" ? selected.id : restModules[0]?.id) || null,
+      candidates:[], restPresets:[...(this.settings.restPresets || [])], workspaceCommands,
+      lightPrograms:(this.settings.lightingPrograms || []).map((/** @type {any} */ program) => ({ id:program.id, title:program.name })),
+      againText:ended ? `再来 5 分钟：${KIND_LABEL[ended.kind]} · ${ended.reason}` : "",
+      leisureLeftMin:Math.max(0, (view?.leisureBudgetMin ?? 0) - (view?.leisureUsedMin ?? 0)),
+      strictBudget:!!view?.strict,
+      snoozesLeft:view?.snoozesLeft ?? 0,
+      snoozeMin:this.settings.accountingSnoozeMin,
+      currentName
+    };
+  }
+  /** @param {"idle"|"paused"|"awaiting"} reason @param {string} currentName */
+  accountingScreenLabel(reason, currentName){
+    const view = this.accounting?.view();
+    const stretch = view?.stretchMin ? `已经有 ${view.stretchMin} 分钟没有归属` : "这段时间还没有归属";
+    const prefix = reason === "paused" ? `「${currentName}」已暂停 · ` : reason === "awaiting" ? `「${currentName}」等待开始 · ` : "";
+    return `${prefix}${stretch} · 今日累计 ${view?.unaccountedMin ?? 0} 分钟`;
+  }
+  /**
+   * @param {"idle"|"paused"|"awaiting"} reason @param {"work"|"rest"|"declare"} [initialTab]
+   * @param {{manual?:boolean, ended?:{kind:"leisure"|"errand", reason:string, plannedMs:number}|null}} [options]
+   */
+  openAccountingPrompt(reason, initialTab, { manual=false, ended=null }={}){
+    const screen = this._getAccountingScreen();
+    if (screen.visible) return screen;
+    this.accounting?.setPromptOpen(true);
+    screen.show(this.accountingScreenData(reason, { initialTab, manual, ended }));
+    if (reason === "idle") {
+      this.refreshTodaySnapshot()
+        .then(snapshot => { if (screen.visible) screen.update({ candidates:snapshot.unchecked }); })
+        .catch(error => logPluginError("accounting-candidates", error, { target:this.todayFilePath(), step:"read" }));
+    }
+    return screen;
+  }
+  refreshAccountingPrompt(){
+    const screen = this._accountingScreen;
+    const reason = classifyRuntime(this.runtime).reason;
+    if (!screen?.visible || !screen.data || !reason) return;
+    screen.update({ label:this.accountingScreenLabel(screen.data.reason, screen.data.currentName) });
+  }
+  closeAccountingPrompt(){
+    if (!this._accountingScreen?.visible) return;
+    this._accountingScreen.hide();
+    this.accounting?.setPromptOpen(false);
+  }
+  /** @param {{action:string, [key:string]:any}} choice @returns {Promise<{ok:boolean, error?:string}>} */
+  async handleAccountingChoice(choice){
+    /** @param {unknown} result */
+    const done = result => ({ ok:result !== false });
+    switch (choice.action) {
+    case "work": return done(await this.startWorkFromPrompt(String(choice.moduleId || ""), String(choice.name || ""), choice));
+    case "rest": return done(await this.startRestFromPrompt(String(choice.moduleId || ""), String(choice.name || ""), choice));
+    case "again": {
+      const last = this._lastEndedDeclaration;
+      if (!last) return { ok:false, error:"没有可以继续的小计时" };
+      return this.accounting?.declare({ kind:last.kind, reason:last.reason, minutes:5 }) ?? { ok:false };
+    }
+    case "declare": return this.accounting?.declare({ kind:choice.kind, reason:choice.reason, minutes:choice.minutes }) ?? { ok:false };
+    case "resume": return done(await this.togglePause());
+    case "complete": return done(await this.completeCurrentModule());
+    case "next": return done(await this.startPendingStage());
+    case "snooze": return this.accounting?.snooze() ?? { ok:false };
+    default: return { ok:false, error:"未知操作" };
+    }
+  }
+  /** @param {"work"|"rest"|"declare"} [initialTab] */
+  openAccountingPromptNow(initialTab){
+    if (this.accounting?.view().declaration) { new Notice("正在小计时；可先结束小计时"); return null; }
+    const { reason } = classifyRuntime(this.runtime);
+    if (!reason) { new Notice("当前正在计时或结算"); return null; }
+    if (initialTab === "declare" && reason !== "idle") { new Notice("只有在序列空闲时才能开始小计时"); return null; }
+    return this.openAccountingPrompt(reason, initialTab, { manual:true });
+  }
+  /** 强制模式下被推迟的放宽设置，跨天后生效。 */
+  async applyDueAccountingSettings(){
+    const patch = duePendingPatch(this.settings, this.logicalTodayKey());
+    if (!patch) return false;
+    Object.assign(this.settings, normalizeSettings({ ...this.settings, ...patch, accountingPending:null }, this.settings));
+    await this.saveSettings();
+    new Notice("已应用昨天提交的时间归属设置");
+    this.broadcast();
+    return true;
+  }
+  endDeclaration(){
+    if (!this.accounting?.endDeclaration()) { new Notice("当前没有进行中的小计时"); return false; }
+    new Notice("已结束小计时");
+    return true;
+  }
+  /**
+   * 把黑屏上的选择写回模块设置（与侧栏编辑一致），只写有变化的字段。
+   * @param {number} index @param {string} name @param {Record<string, any>} [patch]
+   */
+  async applyPromptModulePatch(index, name, patch={}){
+    const module = this.settings.modules[index];
+    /** @type {Record<string, any>} */
+    const next = {};
+    const taskName = String(name || "").trim();
+    if (taskName && taskName !== module.name) next.name = taskName;
+    const minutes = Number(patch.durationMin);
+    if (Number.isFinite(minutes) && minutes >= 1 && minutes !== module.durationMin) next.durationMin = minutes;
+    if (module.type === "work" && typeof patch.workspaceCommandId === "string") {
+      const id = patch.workspaceCommandId;
+      const known = !id || id === module.workspaceCommandId || this.getWorkspaceLayoutCommands().some((/** @type {any} */ command) => command.id === id);
+      if (known && id !== (module.workspaceCommandId || "")) next.workspaceCommandId = id;
+    }
+    if (typeof patch.lightProgramId === "string" && patch.lightProgramId !== (module.lightProgramId || "")) next.lightProgramId = patch.lightProgramId;
+    if (typeof patch.blackout === "boolean" && patch.blackout !== module.blackout) next.blackout = patch.blackout;
+    if (Object.keys(next).length) await this.updateModule(module.id, next);
+  }
+  /** @param {string} moduleId @param {string} name @param {Record<string, any>} [patch] */
+  async startWorkFromPrompt(moduleId, name, patch={}){
+    const index = this.settings.modules.findIndex(module => module.id === moduleId && module.type === "work");
+    if (index < 0) { new Notice("工作模块已不存在，请重新选择"); return false; }
+    if (classifyRuntime(this.runtime).reason !== "idle") { new Notice("当前已有计时，请先完成或重置当前模块"); return false; }
+    await this.applyPromptModulePatch(index, name, patch);
+    this.accounting?.endDeclaration();
+    return this.startSequence(index);
+  }
+  /** @param {string} moduleId @param {string} [name] @param {Record<string, any>} [patch] */
+  async startRestFromPrompt(moduleId, name="", patch={}){
+    const index = this.settings.modules.findIndex(module => module.id === moduleId && module.type === "rest");
+    if (index < 0) { new Notice("休息模块已不存在，请重新选择"); return false; }
+    if (classifyRuntime(this.runtime).reason !== "idle") { new Notice("当前已有计时，请先完成或重置当前模块"); return false; }
+    await this.applyPromptModulePatch(index, name, patch);
+    this.accounting?.endDeclaration();
+    return this.startSequence(index);
+  }
   /** @param {number} index */
   selectModule(index) { return this._getSequenceController().selectModule(index); }
   /** @param {number} index @param {AnyRecord} [options] */
@@ -790,9 +1096,11 @@ class PomodoroAIO extends Plugin {
   /* ====== 到点/补记 ====== */
   async tick(){
     this.ensureDayFreshness();
+    this.accounting?.checkExpiry();
     // 每次对齐触发时先广播，保证视图秒表顺滑
     this.broadcast();
     if (this._completionInFlight) return;
+    this._syncDeviceBridge();
 
     const r = this.runtime;
     if (r.status !== TIMER_STATUS.RUNNING || !r.startedAtMs || !r.durationMs) return;
@@ -846,7 +1154,7 @@ class PomodoroAIO extends Plugin {
         if (this.runtime.pendingSettlement || this.runtime.status === TIMER_STATUS.FAILED) return false;
       }
       await daily.completeTask({ taskName:task, path:this.todayFilePath() });
-      await this.clearCompletedModuleTask(module.id);
+      await this.clearCompletedModuleTask(module.id, task);
       new Notice("事情已完成，日记待办已勾选");
       return true;
     } catch (error) {
@@ -856,18 +1164,20 @@ class PomodoroAIO extends Plugin {
     }
   }
 
-  /** @param {string} id */
-  async clearCompletedModuleTask(id){
+  /** @param {string} id @param {string} [completedTask] */
+  async clearCompletedModuleTask(id, completedTask){
     const module = this.settings.modules.find(item => item.id === id && item.type === "work");
     if (!module) return false;
+    // Completing the running snapshot must not erase a different future task.
+    if (completedTask !== undefined && module.name !== completedTask) return false;
     const modules = this.settings.modules.map(item => item.id === id
-      ? { ...item, name:"工作", workspaceCommandId:"", blackout:false } : item);
+      ? { ...item, name:"工作", workspaceCommandId:"", blackout:false, lightProgramId:"" } : item);
     const assignments = { ...this.settings.projectAssignments };
     delete assignments[id];
     await this.persistModuleSettings({ modules, projectAssignments:assignments });
     if (this.runtime.attention?.moduleRun?.moduleId === id && Number.isInteger(this.runtime.attention.moduleIndex)) {
       const index = this.runtime.attention.moduleIndex;
-      const replacement = createModuleRunSnapshot(this.settings.modules[Number(index)], {}, { enableProjects:false });
+      const replacement = createModuleRunSnapshot(this.settings.modules[Number(index)], {}, { enableProjects:false, settings:this.settings });
       await this.beginStrongAlert({
         type:TIMER_STAGE.FOCUS, autoStarted:false, durationMs:replacement.durationMs,
         moduleIndex:Number(index), moduleRun:replacement
@@ -924,7 +1234,7 @@ class PomodoroAIO extends Plugin {
   /** @param {unknown} error @param {AnyRecord} [context] */
   markSettlementFailed(error, context={}){ return this._getSettlementCoordinator().markSettlementFailed(error, context); }
   _resyncTick(){
-    if (this._tickTimeout) window.clearTimeout(this._tickTimeout);
+    if (this._tickTimeout) this.backgroundTimers.clearTimeout(this._tickTimeout);
     this._scheduleTick && this._scheduleTick();
   }
 
@@ -1040,7 +1350,7 @@ class PomodoroAIO extends Plugin {
             else await this.completeEmptyWorkModule();
             if (this.runtime.pendingSettlement || String(this.runtime.status) === TIMER_STATUS.FAILED) continue;
           }
-          changed = (await this.clearCompletedModuleTask(module.id)) || changed;
+          changed = (await this.clearCompletedModuleTask(module.id, task)) || changed;
         }
         return changed;
       }

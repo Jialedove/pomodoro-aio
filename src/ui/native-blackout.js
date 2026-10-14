@@ -8,6 +8,10 @@ function defaultSpawn(binaryPath) {
   return spawn(binaryPath, [], { shell:false, stdio:["pipe", "pipe", "pipe"] });
 }
 
+// The helper can still exit for reasons outside the plugin (killed, crashed).
+// Restart it a few times per blackout segment before using the window overlay.
+const MAX_NATIVE_RESTARTS = 3;
+
 class NativeBlackoutController {
   /** @param {{document:Document, binaryPath:string, spawnProcess?:(path:string)=>any, onUnavailable?:(reason:string)=>void, now?:()=>number}} options */
   constructor({ document, binaryPath, spawnProcess=defaultSpawn, onUnavailable=()=>{}, now=()=>Date.now() }) {
@@ -26,6 +30,8 @@ class NativeBlackoutController {
     this.runtime = null;
     this.settings = null;
     this.leftSec = 0;
+    this.syncedAtMs = 0;
+    this.restartCount = 0;
     this.destroyed = false;
   }
 
@@ -76,7 +82,9 @@ class NativeBlackoutController {
       this.childOutput = this.childOutput.slice(split + 1);
       let message;
       try { message = JSON.parse(line); } catch { continue; }
-      if (message.type === "dismissed" && this.currentKey === key) {
+      if (message.type === "exit") {
+        child.exitReason = String(message.reason || "");
+      } else if (message.type === "dismissed" && this.currentKey === key) {
         this.dismissedKey = key;
         this._stop();
       } else if (message.type === "error") {
@@ -106,10 +114,38 @@ class NativeBlackoutController {
     child.on("error", (/** @type {unknown} */ error) => {
       if (this.child === child) this._fail(key, String(error));
     });
-    child.on("exit", (/** @type {unknown} */ code, /** @type {unknown} */ signal) => {
-      if (this.child === child) this._fail(key, `原生黑屏意外退出（${code ?? signal ?? "unknown"}）`);
-    });
+    child.on("exit", (/** @type {unknown} */ code, /** @type {unknown} */ signal) => this._handleExit(key, child, code, signal));
     return true;
+  }
+
+  /** @param {string} key @param {any} child @param {unknown} code @param {unknown} signal */
+  _handleExit(key, child, code, signal) {
+    if (this.child !== child) return;
+    const reason = `原生黑屏意外退出（${child.exitReason || (code ?? signal ?? "unknown")}）`;
+    console.warn("Pomodoro AIO 原生黑屏退出", { key, reason, restartCount:this.restartCount });
+    if (this.destroyed || this.currentKey !== key || this.restartCount >= MAX_NATIVE_RESTARTS) {
+      this._fail(key, reason);
+      return;
+    }
+    this.restartCount += 1;
+    this.child = null;
+    this.childOutput = "";
+    if (!this._start(key)) return;
+    // A restart can happen long after the last sync.
+    const elapsedMs = this.runtime?.status === "running" ? Math.max(0, this.now() - this.syncedAtMs) : 0;
+    if (!this._show(elapsedMs)) this._fail(key, reason);
+  }
+
+  /** @param {number} [elapsedMs] */
+  _show(elapsedMs=0) {
+    const runtime = this.runtime;
+    const prompt = blackoutPrompt(/** @type {Record<string, any>} */ (runtime), this.settings);
+    const syncedLeftMs = runtime && Number.isFinite(runtime.leftMs) ? runtime.leftMs : this.leftSec * 1000;
+    return this._send({
+      type:"show", label:prompt.label, title:prompt.title,
+      leftMs:Math.max(0, Math.ceil(syncedLeftMs - elapsedMs)),
+      paused:runtime?.status === "paused"
+    });
   }
 
   /** @param {Record<string, any> | null | undefined} runtime @param {Record<string, any> | null | undefined} settings @param {number} leftSec */
@@ -117,6 +153,7 @@ class NativeBlackoutController {
     this.runtime = runtime || null;
     this.settings = settings || null;
     this.leftSec = leftSec;
+    this.syncedAtMs = this.now();
     const key = blackoutKey(runtime);
     if (key !== this.currentKey) {
       this._stop();
@@ -125,6 +162,7 @@ class NativeBlackoutController {
       this.failedKey = "";
       this.finishedKey = "";
       this.finishUntilMs = 0;
+      this.restartCount = 0;
       if (this.dismissedKey !== key) this.dismissedKey = "";
     }
     if (!shouldShowBlackout(runtime, settings) || this.dismissedKey === key) {
@@ -134,13 +172,7 @@ class NativeBlackoutController {
     }
     if (this.failedKey === key) return this.fallback.sync(runtime, settings, leftSec);
     if (!this.child && !this._start(key)) return this.fallback.sync(runtime, settings, leftSec);
-    const prompt = blackoutPrompt(/** @type {Record<string, any>} */ (runtime), settings);
-    const leftMs = runtime && Number.isFinite(runtime.leftMs) ? runtime.leftMs : leftSec * 1000;
-    if (!this._send({
-      type:"show", label:prompt.label, title:prompt.title,
-      leftMs:Math.max(0, Math.ceil(leftMs)),
-      paused:runtime?.status === "paused"
-    })) {
+    if (!this._show()) {
       this._fail(key, "无法向原生黑屏发送计时状态");
       return this.fallback.sync(runtime, settings, leftSec);
     }

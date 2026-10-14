@@ -60,7 +60,7 @@ class RuntimeStore {
   /** @param {unknown} settings */
   saveSettings(settings) {
     const snapshot = cloneValue(settings);
-    return this.enqueue(() => this.writeSettings(snapshot), false, { operation: "saveSettings" });
+    return this.enqueue(() => this.writeSettings(snapshot), true, { operation: "saveSettings" });
   }
 
   async flush() {

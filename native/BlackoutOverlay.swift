@@ -2,7 +2,9 @@ import AppKit
 import Foundation
 
 // A short-lived presentation process. The Obsidian plugin owns all timer state.
-// Stdin is newline-delimited JSON; closing stdin or missing heartbeats exits.
+// Stdin is newline-delimited JSON. Closing stdin or losing the parent process exits.
+// There is deliberately no heartbeat timeout: Chromium throttles timers in a hidden
+// Obsidian window (down to about once per minute), which would end the overlay early.
 final class BlackoutWindow: NSWindow {
     var onEscape: (() -> Void)?
     override var canBecomeKey: Bool { true }
@@ -23,6 +25,7 @@ final class OverlayController: NSObject, NSApplicationDelegate {
         let label: NSTextField
         let title: NSTextField
         let countdown: NSTextField
+        let button: NSButton
     }
 
     private var overlays: [String: DisplayOverlay] = [:]
@@ -32,8 +35,15 @@ final class OverlayController: NSObject, NSApplicationDelegate {
     private var remainingMilliseconds = 0.0
     private var countdownUpdatedAt = Date()
     private var paused = false
-    private var lastHeartbeat = Date()
+    // Prompt mode (time accounting): no countdown, a configurable button, and the
+    // plugin brings Obsidian forward afterwards instead of restoring the previous app.
+    private var promptMode = false
+    private var buttonText = "立即退出（计时继续）"
     private var finished = false
+    private var active = false
+    private var shownReported = false
+    private var terminating = false
+    private let parentPID = getppid()
     private var heartbeatTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -50,7 +60,7 @@ final class OverlayController: NSObject, NSApplicationDelegate {
             while let line = readLine(strippingNewline: true) {
                 DispatchQueue.main.async { self?.handle(line: line) }
             }
-            DispatchQueue.main.async { self?.terminate() }
+            DispatchQueue.main.async { self?.terminate(reason: "stdin-closed") }
         }
         send(["type": "ready"])
     }
@@ -66,33 +76,33 @@ final class OverlayController: NSObject, NSApplicationDelegate {
         guard let data = line.data(using: .utf8),
               let message = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let command = message["type"] as? String else { return }
-        lastHeartbeat = Date()
         if command == "hide" || command == "shutdown" {
-            terminate()
+            terminate(reason: command)
             return
         }
         guard command == "show" || command == "update" else { return }
-        let created = overlays.isEmpty
+        active = true
         if let value = message["label"] as? String { labelText = value }
         if let value = message["title"] as? String { titleText = value }
+        promptMode = (message["mode"] as? String) == "prompt"
+        buttonText = (message["buttonTitle"] as? String) ?? (promptMode ? "去选择" : "立即退出（计时继续）")
         if let value = message["leftMs"] as? Double, value.isFinite {
             remainingMilliseconds = max(0, value)
             countdownUpdatedAt = Date()
         }
         paused = message["paused"] as? Bool ?? false
 
-        guard synchronizeDisplays() else {
-            send(["type": "error", "message": "No display available"])
-            terminate()
-            return
-        }
+        // Displays can vanish briefly (sleep, lid close, reconnect). Keep running and
+        // cover them again from screenConfigurationChanged once they return.
+        guard synchronizeDisplays() else { return }
         updateOverlayText()
         updateCountdown()
-        if remainingMilliseconds <= 0 && !finished {
+        if !promptMode && remainingMilliseconds <= 0 && !finished {
             finished = true
             flashOnce()
         }
-        if created {
+        if !shownReported {
+            shownReported = true
             send(["type": "shown", "screenCount": overlays.count,
                   "screens": overlays.values.map { $0.screen.localizedName }])
         }
@@ -132,19 +142,16 @@ final class OverlayController: NSObject, NSApplicationDelegate {
         countdown.font = NSFont.monospacedDigitSystemFont(ofSize: 52, weight: .medium)
         [label, title, countdown].forEach { stack.addArrangedSubview($0) }
 
-        let exitButton = NSButton(title: "立即退出（计时继续）", target: self, action: #selector(exitClicked))
+        let exitButton = NSButton(title: buttonText, target: self, action: #selector(exitClicked))
         exitButton.isBordered = false
-        exitButton.attributedTitle = NSAttributedString(string: "立即退出（计时继续）", attributes: [
-            .font: NSFont.systemFont(ofSize: 15, weight: .medium),
-            .foregroundColor: NSColor.white
-        ])
+        exitButton.attributedTitle = buttonTitle(buttonText)
         exitButton.setButtonType(.momentaryPushIn)
         exitButton.wantsLayer = true
         exitButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.09).cgColor
         exitButton.layer?.borderColor = NSColor.white.withAlphaComponent(0.52).cgColor
         exitButton.layer?.borderWidth = 1
         exitButton.layer?.cornerRadius = 12
-        exitButton.setAccessibilityLabel("立即退出黑屏，计时继续")
+        exitButton.setAccessibilityLabel(promptMode ? buttonText : "立即退出黑屏，计时继续")
         exitButton.translatesAutoresizingMaskIntoConstraints = false
         stack.addArrangedSubview(exitButton)
         stack.setCustomSpacing(30, after: countdown)
@@ -159,8 +166,9 @@ final class OverlayController: NSObject, NSApplicationDelegate {
         ])
         label.stringValue = labelText
         title.stringValue = titleText
+        countdown.isHidden = promptMode
         return DisplayOverlay(screen: screen, window: overlay, label: label,
-                              title: title, countdown: countdown)
+                              title: title, countdown: countdown, button: exitButton)
     }
 
     @discardableResult
@@ -176,7 +184,7 @@ final class OverlayController: NSObject, NSApplicationDelegate {
             return false
         }
 
-        if !hadOverlays { previousApp = NSWorkspace.shared.frontmostApplication }
+        if !hadOverlays && previousApp == nil { previousApp = NSWorkspace.shared.frontmostApplication }
         var displaysChanged = !hadOverlays
         let visibleIDs = Set(screens.map(displayIdentifier))
         for id in overlays.keys.filter({ !visibleIDs.contains($0) }) {
@@ -214,10 +222,20 @@ final class OverlayController: NSObject, NSApplicationDelegate {
         return !overlays.isEmpty
     }
 
+    private func buttonTitle(_ text: String) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: 15, weight: .medium),
+            .foregroundColor: NSColor.white
+        ])
+    }
+
     private func updateOverlayText() {
         for display in overlays.values {
             display.label.stringValue = labelText
             display.title.stringValue = titleText
+            display.countdown.isHidden = promptMode
+            display.button.attributedTitle = buttonTitle(buttonText)
+            display.button.setAccessibilityLabel(promptMode ? buttonText : "立即退出黑屏，计时继续")
         }
     }
 
@@ -255,40 +273,44 @@ final class OverlayController: NSObject, NSApplicationDelegate {
     }
 
     @objc private func tick() {
-        if Date().timeIntervalSince(lastHeartbeat) > 8 { terminate(); return }
+        // Reparented to launchd: Obsidian is gone without closing our stdin.
+        if getppid() != parentPID { terminate(reason: "parent-exited"); return }
         updateCountdown()
-        if !paused && !finished && remainingMilliseconds > 0 {
+        if !promptMode && !paused && !finished && remainingMilliseconds > 0 {
             let elapsed = Date().timeIntervalSince(countdownUpdatedAt) * 1000
             if elapsed >= remainingMilliseconds { finished = true; flashOnce() }
         }
     }
 
     @objc private func screenConfigurationChanged() {
-        guard !overlays.isEmpty else { return }
-        guard synchronizeDisplays() else {
-            send(["type": "error", "message": "No display available"])
-            terminate()
-            return
-        }
+        guard active, synchronizeDisplays() else { return }
         updateOverlayText()
         updateCountdown()
+        if !shownReported {
+            shownReported = true
+            send(["type": "shown", "screenCount": overlays.count,
+                  "screens": overlays.values.map { $0.screen.localizedName }])
+        }
     }
 
     @objc private func exitClicked() { dismiss() }
 
     private func dismiss() {
         send(["type": "dismissed"])
-        terminate()
+        terminate(reason: "dismissed")
     }
 
-    private func terminate() {
+    private func terminate(reason: String) {
+        if terminating { return }
+        terminating = true
+        send(["type": "exit", "reason": reason])
         heartbeatTimer?.invalidate()
         overlays.values.forEach {
             $0.window.orderOut(nil)
             $0.window.close()
         }
         overlays.removeAll()
-        previousApp?.activate(options: [])
+        if !promptMode { previousApp?.activate(options: []) }
         NSApp.terminate(nil)
     }
 }
