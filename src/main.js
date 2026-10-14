@@ -44,7 +44,8 @@ const { SequenceController } = require("./controllers/sequence-controller");
 const { TimeAccountingController } = require("./controllers/time-accounting-controller");
 const { SystemActivityMonitor } = require("./integrations/system-activity");
 const { AccountingModal } = require("./ui/accounting-modal");
-const { classifyRuntime } = require("./core/time-accounting");
+const { AccountingOverlay } = require("./ui/accounting-overlay");
+const { classifyRuntime, duePendingPatch } = require("./core/time-accounting");
 const { SettlementCoordinator } = require("./controllers/settlement-coordinator");
 const { LegacyRuntimeController } = require("./legacy/runtime-controller");
 const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/workspaces-plus");
@@ -308,7 +309,12 @@ class PomodoroAIO extends Plugin {
     this._scheduleTick();
     this.accounting = new TimeAccountingController(this, {
       monitor:new SystemActivityMonitor({ document:typeof document === "undefined" ? null : document }),
-      timers:this.backgroundTimers, playBeep, sysNotify, logPluginError
+      timers:this.backgroundTimers, playBeep, sysNotify, logPluginError,
+      createOverlay:onChoose => new AccountingOverlay({
+        document:typeof document === "undefined" ? null : document,
+        binaryPath:this.nativeHelperPath(), onChoose,
+        onUnavailable:reason => new Notice(`原生遮罩不可用，已改用 Obsidian 窗口遮罩：${reason}`)
+      })
     });
     this.accounting.start();
     this.applyStrongAlertStateFromRuntime();
@@ -601,14 +607,18 @@ class PomodoroAIO extends Plugin {
     this.syncBreakBlackout(snap);
     this.app.workspace.trigger('pomodoro:aio-state', snap);
   }
+  /** macOS 原生助手路径；其他平台或取不到插件目录时为 null。 */
+  nativeHelperPath(){
+    const basePath = this.app?.vault?.adapter?.getBasePath?.();
+    const pluginDir = this.manifest?.dir;
+    if (process.platform !== "darwin" || !basePath || !pluginDir) return null;
+    return require("node:path").resolve(basePath, pluginDir, "bin", "pomodoro-blackout");
+  }
   _getBreakBlackoutController(){
     if (this.breakBlackout) return this.breakBlackout;
     if (typeof document === "undefined" || !document.body) return null;
-    const basePath = this.app?.vault?.adapter?.getBasePath?.();
-    const pluginDir = this.manifest?.dir;
-    if (process.platform === "darwin" && basePath && pluginDir) {
-      const path = require("node:path");
-      const binaryPath = path.resolve(basePath, pluginDir, "bin", "pomodoro-blackout");
+    const binaryPath = this.nativeHelperPath();
+    if (binaryPath) {
       this.breakBlackout = new NativeBlackoutController({
         document,
         binaryPath,
@@ -892,6 +902,7 @@ class PomodoroAIO extends Plugin {
       workModules, restModules:pick("rest"),
       defaultWorkId:selected?.type === "work" ? selected.id : workModules[0]?.id || null,
       leisureLeftMin:Math.max(0, (view?.leisureBudgetMin ?? 0) - (view?.leisureUsedMin ?? 0)),
+      strict:!!view?.strict,
       snoozesLeft:view?.snoozesLeft ?? 0,
       snoozeMin:this.settings.accountingSnoozeMin,
       loadCandidates:async () => (await this.refreshTodaySnapshot()).unchecked,
@@ -917,6 +928,16 @@ class PomodoroAIO extends Plugin {
     if (!reason) { new Notice("当前正在计时或结算"); return null; }
     if (initialTab === "declare" && reason !== "idle") { new Notice("只有在序列空闲时才能声明不计时"); return null; }
     return this.openAccountingPrompt(reason, initialTab);
+  }
+  /** 强制模式下被推迟的放宽设置，跨天后生效。 */
+  async applyDueAccountingSettings(){
+    const patch = duePendingPatch(this.settings, this.logicalTodayKey());
+    if (!patch) return false;
+    Object.assign(this.settings, normalizeSettings({ ...this.settings, ...patch, accountingPending:null }, this.settings));
+    await this.saveSettings();
+    new Notice("已应用昨天提交的时间归属设置");
+    this.broadcast();
+    return true;
   }
   endDeclaration(){
     if (!this.accounting?.endDeclaration()) { new Notice("当前没有进行中的不计时声明"); return false; }

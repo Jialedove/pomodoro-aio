@@ -25,6 +25,7 @@ final class OverlayController: NSObject, NSApplicationDelegate {
         let label: NSTextField
         let title: NSTextField
         let countdown: NSTextField
+        let button: NSButton
     }
 
     private var overlays: [String: DisplayOverlay] = [:]
@@ -34,6 +35,10 @@ final class OverlayController: NSObject, NSApplicationDelegate {
     private var remainingMilliseconds = 0.0
     private var countdownUpdatedAt = Date()
     private var paused = false
+    // Prompt mode (time accounting): no countdown, a configurable button, and the
+    // plugin brings Obsidian forward afterwards instead of restoring the previous app.
+    private var promptMode = false
+    private var buttonText = "立即退出（计时继续）"
     private var finished = false
     private var active = false
     private var shownReported = false
@@ -79,6 +84,8 @@ final class OverlayController: NSObject, NSApplicationDelegate {
         active = true
         if let value = message["label"] as? String { labelText = value }
         if let value = message["title"] as? String { titleText = value }
+        promptMode = (message["mode"] as? String) == "prompt"
+        buttonText = (message["buttonTitle"] as? String) ?? (promptMode ? "去选择" : "立即退出（计时继续）")
         if let value = message["leftMs"] as? Double, value.isFinite {
             remainingMilliseconds = max(0, value)
             countdownUpdatedAt = Date()
@@ -90,7 +97,7 @@ final class OverlayController: NSObject, NSApplicationDelegate {
         guard synchronizeDisplays() else { return }
         updateOverlayText()
         updateCountdown()
-        if remainingMilliseconds <= 0 && !finished {
+        if !promptMode && remainingMilliseconds <= 0 && !finished {
             finished = true
             flashOnce()
         }
@@ -135,19 +142,16 @@ final class OverlayController: NSObject, NSApplicationDelegate {
         countdown.font = NSFont.monospacedDigitSystemFont(ofSize: 52, weight: .medium)
         [label, title, countdown].forEach { stack.addArrangedSubview($0) }
 
-        let exitButton = NSButton(title: "立即退出（计时继续）", target: self, action: #selector(exitClicked))
+        let exitButton = NSButton(title: buttonText, target: self, action: #selector(exitClicked))
         exitButton.isBordered = false
-        exitButton.attributedTitle = NSAttributedString(string: "立即退出（计时继续）", attributes: [
-            .font: NSFont.systemFont(ofSize: 15, weight: .medium),
-            .foregroundColor: NSColor.white
-        ])
+        exitButton.attributedTitle = buttonTitle(buttonText)
         exitButton.setButtonType(.momentaryPushIn)
         exitButton.wantsLayer = true
         exitButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.09).cgColor
         exitButton.layer?.borderColor = NSColor.white.withAlphaComponent(0.52).cgColor
         exitButton.layer?.borderWidth = 1
         exitButton.layer?.cornerRadius = 12
-        exitButton.setAccessibilityLabel("立即退出黑屏，计时继续")
+        exitButton.setAccessibilityLabel(promptMode ? buttonText : "立即退出黑屏，计时继续")
         exitButton.translatesAutoresizingMaskIntoConstraints = false
         stack.addArrangedSubview(exitButton)
         stack.setCustomSpacing(30, after: countdown)
@@ -162,8 +166,9 @@ final class OverlayController: NSObject, NSApplicationDelegate {
         ])
         label.stringValue = labelText
         title.stringValue = titleText
+        countdown.isHidden = promptMode
         return DisplayOverlay(screen: screen, window: overlay, label: label,
-                              title: title, countdown: countdown)
+                              title: title, countdown: countdown, button: exitButton)
     }
 
     @discardableResult
@@ -217,10 +222,20 @@ final class OverlayController: NSObject, NSApplicationDelegate {
         return !overlays.isEmpty
     }
 
+    private func buttonTitle(_ text: String) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: 15, weight: .medium),
+            .foregroundColor: NSColor.white
+        ])
+    }
+
     private func updateOverlayText() {
         for display in overlays.values {
             display.label.stringValue = labelText
             display.title.stringValue = titleText
+            display.countdown.isHidden = promptMode
+            display.button.attributedTitle = buttonTitle(buttonText)
+            display.button.setAccessibilityLabel(promptMode ? buttonText : "立即退出黑屏，计时继续")
         }
     }
 
@@ -261,7 +276,7 @@ final class OverlayController: NSObject, NSApplicationDelegate {
         // Reparented to launchd: Obsidian is gone without closing our stdin.
         if getppid() != parentPID { terminate(reason: "parent-exited"); return }
         updateCountdown()
-        if !paused && !finished && remainingMilliseconds > 0 {
+        if !promptMode && !paused && !finished && remainingMilliseconds > 0 {
             let elapsed = Date().timeIntervalSince(countdownUpdatedAt) * 1000
             if elapsed >= remainingMilliseconds { finished = true; flashOnce() }
         }
@@ -295,7 +310,7 @@ final class OverlayController: NSObject, NSApplicationDelegate {
             $0.window.close()
         }
         overlays.removeAll()
-        previousApp?.activate(options: [])
+        if !promptMode { previousApp?.activate(options: []) }
         NSApp.terminate(nil)
     }
 }

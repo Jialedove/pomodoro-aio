@@ -5,6 +5,8 @@ const { createPlugin, FakeVault } = require("./support.cjs");
 const {
   ACCOUNTING_DEFAULTS,
   normalizeAccountingSettings,
+  splitAccountingPatch,
+  duePendingPatch,
   createAccountingStore,
   normalizeAccountingStore,
   classifyRuntime,
@@ -20,6 +22,8 @@ const {
 const { normalizeCurrentSettings } = require("../src/core/settings.js");
 const { SystemActivityMonitor } = require("../src/integrations/system-activity.js");
 const { TimeAccountingController } = require("../src/controllers/time-accounting-controller.js");
+const { AccountingOverlay } = require("../src/ui/accounting-overlay.js");
+const { EventEmitter } = require("node:events");
 
 const MIN = 60_000;
 const T0 = new Date(2026, 9, 14, 9, 0, 0).getTime();
@@ -161,12 +165,12 @@ test("稍后提醒每天限次并写日记；静音期间仍计入未归属", ()
 });
 
 /** 用阶梯走一遍，返回 [分钟, 动作]（只保留非 none）。 */
-function ladderRun(steps, { stretchStart = at(0), reason = "idle", snoozeUntilMs = 0, promptOpen = false } = {}) {
+function ladderRun(steps, { stretchStart = at(0), reason = "idle", snoozeUntilMs = 0, promptOpen = false, overlayVisible = false, overlayDismissedAtMs = null, ladderSettings = settings } = {}) {
   let state = createLadderState();
   const actions = [];
   for (const [minute, idleSec = 10] of steps) {
     const result = evaluateLadder(state, { nowMs:at(minute), stretch:{ startedAtMs:stretchStart, lastPresentAtMs:at(minute), countedMs:0 },
-      reason, idleSec, snoozeUntilMs, promptOpen, settings });
+      reason, idleSec, snoozeUntilMs, promptOpen, overlayVisible, overlayDismissedAtMs, settings:ladderSettings });
     state = result.state;
     if (result.action !== "none") actions.push([minute, result.action]);
   }
@@ -176,7 +180,7 @@ function ladderRun(steps, { stretchStart = at(0), reason = "idle", snoozeUntilMs
 test("提醒阶梯：1 分钟通知、5 分钟弹窗、每 5 分钟重复", () => {
   assert.deepEqual(ladderRun([[0.5], [1], [2], [5], [7], [10]]), [[1, "notify"], [5, "prompt"], [10, "prompt"]]);
   assert.deepEqual(ladderRun([[1], [5]], { reason:"awaiting" }), [[5, "prompt"]]);
-  assert.deepEqual(ladderRun([[1], [5]], { promptOpen:true }), [[1, "notify"]]);
+  assert.deepEqual(ladderRun([[1], [5]], { promptOpen:true }), []);
 });
 
 test("弹窗前等用户停手，最多等 30 秒", () => {
@@ -354,4 +358,149 @@ test("从选择弹窗开始工作或休息：写入事情名称、结束声明�
   plugin.runtime.status = "running";
   assert.equal(await plugin.startRestFromPrompt("rest-1"), false);
   assert.deepEqual(started, [0, 1]);
+});
+
+const strict = { ...ACCOUNTING_DEFAULTS, accountingMode:"strict" };
+
+test("强制模式：10 分钟盖上全屏遮罩；遮罩或弹窗打开时不再升级；关掉 60 秒后重新盖上", () => {
+  assert.deepEqual(ladderRun([[1], [5], [10]], { ladderSettings:strict }), [[1, "notify"], [5, "prompt"], [10, "overlay"]]);
+  assert.deepEqual(ladderRun([[1], [5], [10]]), [[1, "notify"], [5, "prompt"], [10, "prompt"]]);
+  assert.deepEqual(ladderRun([[10], [11]], { ladderSettings:strict, overlayVisible:true }), []);
+  assert.deepEqual(ladderRun([[11], [11.5], [12]], { ladderSettings:strict, overlayDismissedAtMs:at(11) }), [[11, "prompt"], [12, "overlay"]]);
+  assert.deepEqual(ladderRun([[10, 0.5], [10.6, 3]], { ladderSettings:strict }), [[10, "wait"], [10.6, "overlay"]]);
+});
+
+test("强制模式：消遣不能超出额度，按剩余截断，用完后拒绝", () => {
+  let store = { ...createAccountingStore(), dayKey:DAY, dailyPath:PATH, leisureMs:22 * MIN };
+  const capped = declareUntracked(store, { kind:"leisure", reason:"刷 X", minutes:30, nowMs:at(0) }, strict);
+  assert.equal(capped.ok, true);
+  assert.equal(capped.cappedMin, 8);
+  assert.equal(capped.store.declaration.plannedMs, 8 * MIN);
+  store = endDeclaration(capped.store, at(30), strict).store;
+  assert.equal(store.leisureMs, 30 * MIN);
+  const refused = declareUntracked(store, { kind:"leisure", reason:"再刷", minutes:5, nowMs:at(31) }, strict);
+  assert.deepEqual(refused, { ok:false, error:"今日消遣额度已用完（强制模式）" });
+  assert.equal(declareUntracked(store, { kind:"errand", reason:"开会", minutes:30, nowMs:at(31) }, strict).ok, true);
+  assert.equal(declareUntracked(store, { kind:"leisure", reason:"再刷", minutes:5, nowMs:at(31) }, settings).ok, true);
+});
+
+test("强制模式：放宽设置推迟到次日，收紧立即生效并撤掉同项的推迟", () => {
+  const current = { ...strict };
+  const loosen = splitAccountingPatch(current, { accountingLeisureBudgetMin:60, accountingPromptAfterMin:3 }, DAY);
+  assert.deepEqual(loosen.deferredKeys, ["accountingLeisureBudgetMin"]);
+  assert.equal(loosen.immediate.accountingPromptAfterMin, 3);
+  assert.equal("accountingLeisureBudgetMin" in loosen.immediate, false);
+  assert.deepEqual(loosen.pending, { requestedDayKey:DAY, patch:{ accountingLeisureBudgetMin:60 } });
+  const withPending = { ...current, accountingPending:loosen.pending };
+  const off = splitAccountingPatch(withPending, { accountingMode:"remind", accountingEnabled:false }, DAY);
+  assert.deepEqual(off.pending.patch, { accountingLeisureBudgetMin:60, accountingEnabled:false, accountingMode:"remind" });
+  const tighten = splitAccountingPatch({ ...withPending }, { accountingLeisureBudgetMin:20 }, DAY);
+  assert.equal(tighten.immediate.accountingLeisureBudgetMin, 20);
+  assert.equal(tighten.pending, null);
+  const remind = splitAccountingPatch({ ...ACCOUNTING_DEFAULTS }, { accountingLeisureBudgetMin:90, accountingMode:"strict" }, DAY);
+  assert.deepEqual(remind.deferredKeys, []);
+  assert.equal(remind.immediate.accountingMode, "strict");
+  assert.equal(duePendingPatch({ ...withPending }, DAY), null);
+  assert.deepEqual(duePendingPatch({ ...withPending }, "2026-10-15"), { accountingLeisureBudgetMin:60 });
+});
+
+test("插件跨天后应用待生效的放宽设置", async () => {
+  const plugin = accountingPlugin();
+  Object.assign(plugin.settings, { accountingMode:"strict", accountingPending:{ requestedDayKey:"2026-10-13", patch:{ accountingMode:"remind", accountingLeisureBudgetMin:60 } } });
+  assert.equal(await plugin.applyDueAccountingSettings(), true);
+  assert.equal(plugin.settings.accountingMode, "remind");
+  assert.equal(plugin.settings.accountingLeisureBudgetMin, 60);
+  assert.equal(plugin.settings.accountingPending, null);
+  assert.equal(await plugin.applyDueAccountingSettings(), false);
+});
+
+function fakeChild() {
+  const child = new EventEmitter();
+  child.written = [];
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.stdin = Object.assign(new EventEmitter(), { writable:true, write:line => { child.written.push(JSON.parse(line)); return true; }, end() {} });
+  child.exitCode = null;
+  child.kill = () => {};
+  return child;
+}
+
+test("原生遮罩：以提示模式显示，点“去选择”后关闭并回调", () => {
+  const child = fakeChild();
+  let chosen = 0;
+  const overlay = new AccountingOverlay({ document:null, binaryPath:"/bin/helper", spawnProcess:() => child, onChoose:() => { chosen += 1; } });
+  overlay.show({ label:"已经有 10 分钟没有归属", title:"现在要做什么？" });
+  assert.equal(overlay.visible, true);
+  assert.deepEqual(child.written[0], { type:"show", mode:"prompt", buttonTitle:"去选择", label:"已经有 10 分钟没有归属", title:"现在要做什么？" });
+  overlay.show({ label:"11", title:"现在要做什么？" });
+  assert.equal(child.written[1].type, "update");
+  child.stdout.emit("data", '{"type":"dismissed"}\n');
+  assert.equal(chosen, 1);
+  assert.equal(overlay.visible, false);
+  child.emit("exit", 0);
+  assert.equal(chosen, 1);
+});
+
+function fakeDomDocument() {
+  const make = () => {
+    const el = { children:[], className:"", textContent:"", attributes:{}, onclick:null,
+      setAttribute(k, v) { this.attributes[k] = v; },
+      appendChild(child) { child.parent = this; this.children.push(child); return child; },
+      append(...items) { items.forEach(item => this.appendChild(item)); },
+      remove() { if (this.parent) this.parent.children = this.parent.children.filter(c => c !== this); },
+      querySelectorAll(selector) {
+        const names = selector.split(",").map(item => item.trim().slice(1));
+        const out = [];
+        const walk = node => node.children.forEach(child => { if (names.some(name => child.className.split(" ").includes(name))) out.push(child); walk(child); });
+        walk(this);
+        return out;
+      } };
+    return el;
+  };
+  const body = make();
+  return { body, createElement:make };
+}
+
+test("原生助手不可用时退回 Obsidian 窗口遮罩", () => {
+  const document = fakeDomDocument();
+  const reasons = [];
+  let chosen = 0;
+  const overlay = new AccountingOverlay({ document, binaryPath:"/bin/helper",
+    spawnProcess:() => { throw new Error("ENOENT"); }, onChoose:() => { chosen += 1; }, onUnavailable:reason => reasons.push(reason) });
+  overlay.show({ label:"已经有 10 分钟没有归属", title:"现在要做什么？" });
+  assert.equal(reasons.length, 1);
+  assert.equal(document.body.children.length, 1);
+  const button = document.body.children[0].children[0].children.find(child => child.textContent === "去选择");
+  button.onclick({ stopPropagation() {} });
+  assert.equal(chosen, 1);
+  assert.equal(document.body.children.length, 0);
+});
+
+test("控制器（强制模式）：盖上遮罩，选择后打开弹窗，开始工作后撤下", async () => {
+  const plugin = accountingPlugin();
+  Object.assign(plugin.settings, strict);
+  const prompts = [];
+  plugin.openAccountingPrompt = reason => prompts.push(reason);
+  const clock = { value:at(0) };
+  const shown = [];
+  let visible = false;
+  const { controller, events } = controllerFor(plugin, clock);
+  controller.overlay = { get visible() { return visible; }, show:message => { visible = true; shown.push(message); }, hide:() => { visible = false; }, destroy() {} };
+  // 用真实回调路径模拟遮罩按钮。
+  const choose = () => { visible = false; return controller._overlayChosen(); };
+  controller._loaded = controller.load();
+  await pollUntil(controller, clock, 10);
+  assert.equal(prompts.length, 1);
+  controller.setPromptOpen(false);
+  await pollUntil(controller, clock, 10.1);
+  assert.equal(visible, true);
+  assert.match(shown[0].label, /10 分钟/);
+  await choose();
+  assert.deepEqual(prompts, ["idle", "idle"]);
+  assert.ok(events.includes("activate"));
+  plugin.runtime.status = "running";
+  plugin.runtime.moduleRun = { type:"work" };
+  visible = true;
+  await pollUntil(controller, clock, 10.3);
+  assert.equal(visible, false);
 });

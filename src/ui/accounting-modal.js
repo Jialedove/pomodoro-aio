@@ -10,6 +10,7 @@ const { Modal } = require("obsidian");
  * @property {Array<{id:string,name:string}>} restModules
  * @property {string | null} defaultWorkId
  * @property {number} leisureLeftMin
+ * @property {boolean} [strict] 强制模式：消遣不能超出额度
  * @property {number} snoozesLeft
  * @property {number} snoozeMin
  * @property {() => Promise<string[]>} loadCandidates
@@ -207,9 +208,12 @@ class AccountingModal extends Modal {
       reason.setAttribute("placeholder", kind === "leisure" ? "理由，例如：刷 X、看视频" : "理由，例如：开会、处理快递");
       const left = this.options.leisureLeftMin;
       const planned = Number(minutes.value) || 0;
+      const strict = this.options.strict === true;
       hint.setText(kind === "errand" ? "事务不占消遣额度，同样记入日记。"
-        : planned > left ? `今日消遣剩余 ${left} 分钟，本次会超出 ${Math.round(planned - left)} 分钟并记入日记。`
-          : `今日消遣剩余 ${left} 分钟。`);
+        : strict && left < 1 ? "今日消遣额度已用完（强制模式）。"
+          : planned > left ? (strict ? `今日消遣剩余 ${left} 分钟，强制模式下会截为 ${left} 分钟。`
+            : `今日消遣剩余 ${left} 分钟，本次会超出 ${Math.round(planned - left)} 分钟并记入日记。`)
+            : `今日消遣剩余 ${left} 分钟。`);
       hint.classList.toggle("is-warning", kind === "leisure" && planned > left);
     };
     leisure.onclick = () => { kind = "leisure"; refresh(); };

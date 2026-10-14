@@ -19,6 +19,8 @@
 .pmd-accounting-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .pmd-accounting-status { min-height: 1.4em; margin: 4px 0; color: var(--text-error); font-size: var(--font-ui-small); }
 .pmd-accounting-footer { display: flex; justify-content: flex-start; margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--background-modifier-border); }
+.pmd-accounting-pending { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding: 8px 10px; border-radius: var(--radius-s); color: var(--text-warning); background: var(--background-secondary); font-size: var(--font-ui-small); }
+.pmd-accounting-pending span { flex: 1; }
 .pmd-accounting-line { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 .pmd-accounting-line.is-unaccounted { color: var(--text-warning); }
 .pmd-accounting-line .pmd-accounting-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }

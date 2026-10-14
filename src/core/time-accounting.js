@@ -35,15 +35,24 @@ const KIND_LABEL = Object.freeze({ leisure:"消遣", errand:"事务" });
 
 const ACCOUNTING_DEFAULTS = Object.freeze({
   accountingEnabled:true,
+  accountingMode:/** @type {"remind"|"strict"} */ ("remind"),
   accountingAwaySec:120,
   accountingNotifyAfterMin:1,
   accountingPromptAfterMin:5,
   accountingPromptRepeatMin:5,
+  accountingOverlayAfterMin:10,
   accountingSnoozeMin:10,
   accountingSnoozeLimit:3,
   accountingLeisureBudgetMin:30,
-  accountingHeading:"时间归属"
+  accountingHeading:"时间归属",
+  /** @type {{requestedDayKey:string, patch:Record<string, any>} | null} */
+  accountingPending:null
 });
+
+// 强制模式下这些设置变大即为放宽，次日生效。
+const LOOSEN_WHEN_LARGER = Object.freeze(["accountingAwaySec", "accountingNotifyAfterMin", "accountingPromptAfterMin",
+  "accountingPromptRepeatMin", "accountingOverlayAfterMin", "accountingSnoozeMin", "accountingSnoozeLimit", "accountingLeisureBudgetMin"]);
+const DEFERRABLE_KEYS = Object.freeze(["accountingEnabled", "accountingMode", ...LOOSEN_WHEN_LARGER]);
 
 /** @param {Record<string, any>} source @param {Record<string, any>} [base] */
 function normalizeAccountingSettings(source, base = ACCOUNTING_DEFAULTS) {
@@ -57,17 +66,79 @@ function normalizeAccountingSettings(source, base = ACCOUNTING_DEFAULTS) {
     return Number.isFinite(value) && value >= 0 ? Math.floor(value) : Math.floor(Number(fallback[key]) || 0);
   };
   const heading = String(source?.accountingHeading ?? fallback.accountingHeading).replace(/^#{1,6}\s*/, "").trim();
+  const mode = ["remind", "strict"].includes(source?.accountingMode) ? source.accountingMode
+    : ["remind", "strict"].includes(fallback.accountingMode) ? fallback.accountingMode : "remind";
   return {
     accountingEnabled:typeof source?.accountingEnabled === "boolean" ? source.accountingEnabled : fallback.accountingEnabled === true,
+    accountingMode:/** @type {"remind"|"strict"} */ (mode),
     accountingAwaySec:Math.round(num("accountingAwaySec", 10)),
     accountingNotifyAfterMin:num("accountingNotifyAfterMin", 0.1),
     accountingPromptAfterMin:num("accountingPromptAfterMin", 0.5),
     accountingPromptRepeatMin:num("accountingPromptRepeatMin", 0.5),
+    accountingOverlayAfterMin:num("accountingOverlayAfterMin", 0.5),
     accountingSnoozeMin:num("accountingSnoozeMin", 1),
     accountingSnoozeLimit:count("accountingSnoozeLimit"),
     accountingLeisureBudgetMin:count("accountingLeisureBudgetMin"),
-    accountingHeading:heading || ACCOUNTING_DEFAULTS.accountingHeading
+    accountingHeading:heading || ACCOUNTING_DEFAULTS.accountingHeading,
+    accountingPending:normalizePending(source?.accountingPending === undefined ? fallback.accountingPending : source.accountingPending)
   };
+}
+
+/** @param {unknown} value @returns {{requestedDayKey:string, patch:Record<string, any>} | null} */
+function normalizePending(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = /** @type {Record<string, any>} */ (value);
+  const requestedDayKey = String(source.requestedDayKey || "");
+  const patch = Object.fromEntries(Object.entries(source.patch && typeof source.patch === "object" ? source.patch : {})
+    .filter(([key]) => DEFERRABLE_KEYS.includes(key)));
+  return requestedDayKey && Object.keys(patch).length ? { requestedDayKey, patch } : null;
+}
+
+/** @param {Record<string, any>} settings */
+function isStrict(settings) {
+  const config = normalizeAccountingSettings(settings);
+  return config.accountingEnabled && config.accountingMode === "strict";
+}
+
+/**
+ * 强制模式下把设置改动拆成“立即生效（收紧或无关）”和“次日生效（放宽）”。
+ * @param {Record<string, any>} current 当前生效的设置
+ * @param {Record<string, any>} patch 已规范化的新值
+ * @param {string} dayKey 今天的逻辑日期
+ * @returns {{immediate:Record<string, any>, pending:{requestedDayKey:string, patch:Record<string, any>} | null, deferredKeys:string[]}}
+ */
+function splitAccountingPatch(current, patch, dayKey) {
+  const immediate = { ...patch };
+  const previous = normalizePending(current.accountingPending);
+  /** @type {Record<string, any>} */
+  const pendingPatch = previous ? { ...previous.patch } : {};
+  /** @type {string[]} */
+  const deferredKeys = [];
+  const strict = isStrict(current);
+  for (const key of DEFERRABLE_KEYS) {
+    if (!(key in patch)) continue;
+    const before = current[key];
+    const after = patch[key];
+    const loosens = key === "accountingEnabled" ? before === true && after === false
+      : key === "accountingMode" ? before === "strict" && after !== "strict"
+        : Number(after) > Number(before);
+    if (strict && loosens) {
+      pendingPatch[key] = after;
+      deferredKeys.push(key);
+      delete immediate[key];
+    } else {
+      delete pendingPatch[key];
+    }
+  }
+  const keys = Object.keys(pendingPatch);
+  const pending = keys.length ? { requestedDayKey:deferredKeys.length || !previous ? dayKey : previous.requestedDayKey, patch:pendingPatch } : null;
+  return { immediate:{ ...immediate, accountingPending:pending }, pending, deferredKeys };
+}
+
+/** 跨天后应用待生效的放宽设置。 @param {Record<string, any>} settings @param {string} dayKey */
+function duePendingPatch(settings, dayKey) {
+  const pending = normalizePending(settings.accountingPending);
+  return pending && pending.requestedDayKey !== dayKey ? pending.patch : null;
 }
 
 /** @returns {AccountingStore} */
@@ -272,7 +343,7 @@ function snoozeAccounting(previous, nowMs, settings) {
  * @param {AccountingStore} previous
  * @param {{kind:unknown, reason:unknown, minutes:unknown, nowMs:number, id?:string}} input
  * @param {Record<string, any>} settings
- * @returns {{ok:true, store:AccountingStore, overBudgetMin:number} | {ok:false, error:string}}
+ * @returns {{ok:true, store:AccountingStore, overBudgetMin:number, cappedMin:number} | {ok:false, error:string}}
  */
 function declareUntracked(previous, { kind, reason, minutes, nowMs, id }, settings) {
   if (kind !== "leisure" && kind !== "errand") return { ok:false, error:"请选择消遣或事务" };
@@ -283,14 +354,22 @@ function declareUntracked(previous, { kind, reason, minutes, nowMs, id }, settin
   if (plannedMin > MAX_DECLARATION_MIN) return { ok:false, error:`单次声明最长 ${MAX_DECLARATION_MIN} 分钟` };
   if (previous.declaration) return { ok:false, error:"已有进行中的声明" };
   const config = normalizeAccountingSettings(settings);
-  const plannedMs = Math.round(plannedMin * 60_000);
+  let plannedMs = Math.round(plannedMin * 60_000);
   const remainingMs = Math.max(0, config.accountingLeisureBudgetMin * 60_000 - previous.leisureMs);
+  let cappedMin = 0;
+  if (kind === "leisure" && isStrict(settings)) {
+    if (remainingMs < 60_000) return { ok:false, error:"今日消遣额度已用完（强制模式）" };
+    if (plannedMs > remainingMs) {
+      plannedMs = Math.floor(remainingMs / 60_000) * 60_000;
+      cappedMin = minutesOf(plannedMs);
+    }
+  }
   const overBudgetMin = kind === "leisure" ? minutesOf(Math.max(0, plannedMs - remainingMs)) : 0;
   const store = { ...previous, outbox:[...previous.outbox], snoozeUntilMs:0 };
   if (store.stretch) closeStretch(store, nowMs);
   store.declaration = { id:id || `declaration-${nowMs}`, kind, reason:text, startedAtMs:nowMs, plannedMs,
     dayKey:store.dayKey, dailyPath:store.dailyPath };
-  return { ok:true, store, overBudgetMin };
+  return { ok:true, store, overBudgetMin, cappedMin };
 }
 
 /** @param {AccountingStore} previous @param {number} nowMs @param {Record<string, any>} settings */
@@ -308,27 +387,39 @@ function createLadderState() {
   return { stretchStartedAtMs:null, notified:false, lastPromptAtMs:null, promptWaitSinceMs:null };
 }
 
+const OVERLAY_GRACE_MS = 60_000;
+
 const TYPING_PAUSE_SEC = 2;
 const MAX_PROMPT_WAIT_MS = 30_000;
 
 /**
- * 提醒阶梯：L1 通知、L2 弹窗。弹窗前等用户停手，避免打字时抢焦点。
+ * 提醒阶梯：L1 通知、L2 弹窗、L3 全屏遮罩（仅强制模式）。弹窗和遮罩前等用户停手，避免打字时抢焦点。
+ * 遮罩显示中或选择弹窗打开时不再升级；遮罩被关掉、60 秒内仍没做选择时重新盖上。
  * @param {LadderState} previous
- * @param {{nowMs:number, stretch:Stretch|null, reason:UnaccountedReason|null, idleSec:number|null, snoozeUntilMs:number, promptOpen:boolean, settings:Record<string, any>}} input
- * @returns {{action:"none"|"notify"|"prompt"|"wait", state:LadderState}}
+ * @param {{nowMs:number, stretch:Stretch|null, reason:UnaccountedReason|null, idleSec:number|null, snoozeUntilMs:number, promptOpen:boolean, overlayVisible?:boolean, overlayDismissedAtMs?:number|null, settings:Record<string, any>}} input
+ * @returns {{action:"none"|"notify"|"prompt"|"overlay"|"wait", state:LadderState}}
  */
-function evaluateLadder(previous, { nowMs, stretch, reason, idleSec, snoozeUntilMs, promptOpen, settings }) {
+function evaluateLadder(previous, { nowMs, stretch, reason, idleSec, snoozeUntilMs, promptOpen, overlayVisible = false, overlayDismissedAtMs = null, settings }) {
   if (!stretch || !reason) return { action:"none", state:createLadderState() };
   const config = normalizeAccountingSettings(settings);
   const state = previous.stretchStartedAtMs === stretch.startedAtMs ? { ...previous } : { ...createLadderState(), stretchStartedAtMs:stretch.startedAtMs };
   if (nowMs < snoozeUntilMs) return { action:"none", state:{ ...state, promptWaitSinceMs:null } };
   const elapsedMs = nowMs - stretch.startedAtMs;
-  if (elapsedMs >= config.accountingPromptAfterMin * 60_000 && !promptOpen
-    && (state.lastPromptAtMs === null || nowMs - state.lastPromptAtMs >= config.accountingPromptRepeatMin * 60_000)) {
+  /** @param {"prompt"|"overlay"} action @param {LadderState} next */
+  const whenIdle = (action, next) => {
     const typing = idleSec !== null && idleSec < TYPING_PAUSE_SEC;
     const waitSince = state.promptWaitSinceMs ?? nowMs;
-    if (typing && nowMs - waitSince < MAX_PROMPT_WAIT_MS) return { action:"wait", state:{ ...state, promptWaitSinceMs:waitSince } };
-    return { action:"prompt", state:{ ...state, notified:true, lastPromptAtMs:nowMs, promptWaitSinceMs:null } };
+    if (typing && nowMs - waitSince < MAX_PROMPT_WAIT_MS) return { action:/** @type {"wait"} */ ("wait"), state:{ ...state, promptWaitSinceMs:waitSince } };
+    return { action, state:{ ...next, notified:true, promptWaitSinceMs:null } };
+  };
+  if (overlayVisible || promptOpen) return { action:"none", state:{ ...state, promptWaitSinceMs:null } };
+  if (isStrict(settings) && elapsedMs >= config.accountingOverlayAfterMin * 60_000
+    && (overlayDismissedAtMs === null || nowMs - overlayDismissedAtMs >= OVERLAY_GRACE_MS)) {
+    return whenIdle("overlay", state);
+  }
+  if (elapsedMs >= config.accountingPromptAfterMin * 60_000
+    && (state.lastPromptAtMs === null || nowMs - state.lastPromptAtMs >= config.accountingPromptRepeatMin * 60_000)) {
+    return whenIdle("prompt", { ...state, lastPromptAtMs:nowMs });
   }
   if (!state.notified && reason !== "awaiting" && elapsedMs >= config.accountingNotifyAfterMin * 60_000) {
     return { action:"notify", state:{ ...state, notified:true } };
@@ -344,9 +435,13 @@ function parseHidIdleSeconds(output) {
 
 module.exports = {
   ACCOUNTING_DEFAULTS,
+  DEFERRABLE_KEYS,
   SUMMARY_KEYS,
   KIND_LABEL,
   normalizeAccountingSettings,
+  isStrict,
+  splitAccountingPatch,
+  duePendingPatch,
   createAccountingStore,
   normalizeAccountingStore,
   classifyRuntime,
