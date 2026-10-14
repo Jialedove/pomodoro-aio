@@ -218,3 +218,8 @@
 - `scripts/guard.mjs` 负责 install/uninstall/status。install 把程序复制到 `~/Library/Application Support/pomodoro-aio/`，写入 `~/Library/LaunchAgents/com.pomodoro-aio.guard.plist`（RunAtLoad + KeepAlive），再用 `launchctl bootstrap gui/<uid>` 启动；日志在 `~/Library/Logs/pomodoro-aio-guard.log`。不随 `install:vault` 安装。
 - 自动检查：`npm run check` 通过，211/211 测试，新增 1 项 plist 测试，含 `plutil -lint`。手动验证：`--status` 读出空闲时间和 Obsidian 运行状态；`--dry-run` 下，目标程序未运行时过了宽限期记录 `would-launch`，Obsidian 运行时不动作。未安装 LaunchAgent。
 - 局限：守护进程只保证 Obsidian 在运行，无法发现插件被禁用。
+
+### 安装记录（2026-10-14）
+
+- `npm run install:vault` 已执行（211/211 测试通过）。`main.js`、`manifest.json`、`styles.css`、`bin/pomodoro-blackout` 与构建产物逐字节一致；`data.json` 安装前后 SHA-256 相同。用户自行重载插件，本轮未操作 Obsidian UI。
+- `npm run guard:install` 已执行，`com.pomodoro-aio.guard` 状态为 running，`--status` 读出 Obsidian 在运行、用户在场。
