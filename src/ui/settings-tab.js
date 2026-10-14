@@ -155,17 +155,21 @@ class PomodoroSettingTab extends PluginSettingTab {
       }));
     new Setting(alerts).setName("每日工作段目标").addText(text => text.setValue(String(this.plugin.settings.dailyGoal || 8)).onChange(value => set({ dailyGoal: positiveNumber(value, 8) })));
 
-    const nudge = section("活动提醒", "检测到你在用电脑、但番茄钟没在计时（未开始或已暂停）时提醒你。macOS 检测所有 App 的键盘鼠标输入，其他平台只检测 Obsidian 窗口内的输入。");
-    new Setting(nudge).setName("启用活动提醒")
-      .addToggle(toggle => toggle.setValue(this.plugin.settings.activityNudgeEnabled === true).onChange(value => set({ activityNudgeEnabled: value })));
-    /** @param {string} name @param {string} desc @param {"activityGentleAfterMin"|"activityStrongAfterMin"|"activityStrongRepeatMin"|"activitySnoozeMin"|"activityAwaySec"} key */
-    const nudgeNumber = (name, desc, key) => new Setting(nudge).setName(name).setDesc(desc)
+    const accounting = section("时间归属", "人在电脑前的每一分钟都应属于工作、休息或声明不计时。没有归属时逐级提醒；声明和未归属时段写入当日日记。macOS 检测所有 App 的键鼠输入，其他平台只检测 Obsidian 窗口内的输入。");
+    new Setting(accounting).setName("启用时间归属")
+      .addToggle(toggle => toggle.setValue(this.plugin.settings.accountingEnabled === true).onChange(value => set({ accountingEnabled: value })));
+    /** @param {string} name @param {string} desc @param {"accountingNotifyAfterMin"|"accountingPromptAfterMin"|"accountingPromptRepeatMin"|"accountingSnoozeMin"|"accountingSnoozeLimit"|"accountingLeisureBudgetMin"|"accountingAwaySec"} key */
+    const accountingNumber = (name, desc, key) => new Setting(accounting).setName(name).setDesc(desc)
       .addText(text => text.setValue(String(this.plugin.settings[key])).onChange(value => set({ [key]: Number(value) })));
-    nudgeNumber("轻提醒（分钟）", "连续使用这么久仍未计时，发系统通知并响一声。", "activityGentleAfterMin");
-    nudgeNumber("强提醒（分钟）", "连续使用这么久仍未计时，把 Obsidian 切到前台并弹出设置窗口。", "activityStrongAfterMin");
-    nudgeNumber("强提醒重复间隔（分钟）", "关掉弹窗但仍未开始计时时，隔多久再次强提醒。", "activityStrongRepeatMin");
-    nudgeNumber("稍后提醒（分钟）", "弹窗里“稍后再提醒”暂停提醒的时长。", "activitySnoozeMin");
-    nudgeNumber("离开判定（秒）", "这么久没有键盘鼠标输入就视为离开，重新计算连续使用时间。", "activityAwaySec");
+    accountingNumber("每日消遣额度（分钟）", "声明“消遣”时占用；超出会在日记中标记。", "accountingLeisureBudgetMin");
+    accountingNumber("通知（分钟）", "未归属这么久后发系统通知。", "accountingNotifyAfterMin");
+    accountingNumber("弹窗（分钟）", "未归属这么久后，等你停手再把 Obsidian 切到前台并弹出选择窗口。", "accountingPromptAfterMin");
+    accountingNumber("弹窗重复间隔（分钟）", "关掉弹窗后仍未归属时，隔多久再次弹出。", "accountingPromptRepeatMin");
+    accountingNumber("稍后提醒时长（分钟）", "选择“稍后再提醒”后静音多久；静音期间仍计入未归属。", "accountingSnoozeMin");
+    accountingNumber("每日稍后提醒次数", "用完后弹窗里不再提供“稍后再提醒”。", "accountingSnoozeLimit");
+    accountingNumber("离开判定（秒）", "这么久没有键盘鼠标输入就视为离开，不计入未归属。", "accountingAwaySec");
+    new Setting(accounting).setName("日记标题").setDesc("声明、未归属时段和稍后提醒记录写在当日日记的这个标题下。")
+      .addText(text => text.setValue(this.plugin.settings.accountingHeading || "时间归属").onChange(value => set({ accountingHeading: value || "时间归属" })));
   }
 
   _restartStrongAlert() {

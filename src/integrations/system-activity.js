@@ -1,6 +1,6 @@
 // 读取“距离上次键盘/鼠标输入的秒数”。macOS 读取 IOHIDSystem 的 HIDIdleTime，覆盖所有 App，
 // 不需要辅助功能或输入监控权限；其他平台或读取失败时退回 Obsidian 窗口内的输入事件。
-const { parseHidIdleSeconds } = require("../core/activity-nudge");
+const { parseHidIdleSeconds } = require("../core/time-accounting");
 
 const IOREG_ARGS = ["-c", "IOHIDSystem", "-r", "-d", "1", "-k", "HIDIdleTime"];
 const MAX_SYSTEM_FAILURES = 3;

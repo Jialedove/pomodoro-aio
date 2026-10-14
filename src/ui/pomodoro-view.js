@@ -82,6 +82,11 @@ class PomodoroView extends ItemView {
 
     const statusLine = root.createDiv({ cls: "pmd-status-line", attr: { "aria-live": "polite" } });
     const lightingLine = root.createDiv({ cls:"pmd-lighting-status pmd-hidden", attr:{ role:"status" } });
+    const accountingLine = root.createDiv({ cls:"pmd-accounting-line pmd-hidden", attr:{ role:"status" } });
+    const accountingText = accountingLine.createSpan({ cls:"pmd-accounting-text" });
+    const accountingButton = accountingLine.createEl("button", { cls:"pmd-btn", attr:{ type:"button" } });
+    accountingButton.onclick = () => this.plugin.runUserCommand(() => this.plugin.accounting?.view().declaration
+      ? this.plugin.endDeclaration() : this.plugin.openAccountingPromptNow());
 
     const actions = root.createDiv({ cls: "pmd-actions" });
     const startButton = actions.createEl("button", { cls: "pmd-btn pmd-icon-button pmd-start-button", attr: { type: "button" } });
@@ -433,6 +438,20 @@ class PomodoroView extends ItemView {
         : lighting.status === "error" ? "灯光：暂不可用，计时照常运行" : lighting.status === "expired" ? "灯光：等待重新连接"
           : `灯光：${lighting.programName}${lighting.status === "paused" ? " · 已暂停" : lighting.step ? ` · 第 ${lighting.step} 步` : ""}`);
       lightingLine.setAttribute("title", lighting?.error || "");
+      const accounting = /** @type {Record<string, any> | null} */ (/** @type {Record<string, any>} */ (snap).accounting);
+      accountingLine.classList.toggle("pmd-hidden", !accounting?.enabled);
+      if (accounting?.enabled) {
+        const leisure = `消遣 ${accounting.leisureUsedMin}/${accounting.leisureBudgetMin} 分钟`;
+        const declaration = accounting.declaration;
+        const unaccounted = !declaration && accounting.stretchMin !== null;
+        accountingLine.classList.toggle("is-unaccounted", unaccounted);
+        accountingText.setText(declaration
+          ? `不计时 · ${declaration.label}：${declaration.reason} · 剩 ${Math.max(0, Math.ceil((declaration.endsAtMs - Date.now()) / 60_000))} 分钟`
+          : unaccounted ? `未归属 ${accounting.stretchMin} 分钟 · 今日 ${accounting.unaccountedMin} 分钟 · ${leisure}`
+            : `今日未归属 ${accounting.unaccountedMin} 分钟 · ${leisure}`);
+        accountingButton.setText(declaration ? "结束" : "选择");
+        accountingButton.classList.toggle("pmd-hidden", !declaration && !(accounting.reason && runtime.status !== TIMER_STATUS.RUNNING));
+      }
       const dailyGoal = Number(settings.dailyGoal) > 0 ? Number(settings.dailyGoal) : 8;
       const todaySum = this._todaySumCache || 0;
       ringText.textContent = `${formatTomatoNumber(todaySum)}/${dailyGoal}`;

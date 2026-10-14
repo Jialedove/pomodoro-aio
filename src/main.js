@@ -41,10 +41,10 @@ const { BreakBlackoutController } = require("./ui/break-blackout");
 const { NativeBlackoutController } = require("./ui/native-blackout");
 const { PomodoroSettingTab } = require("./ui/settings-tab");
 const { SequenceController } = require("./controllers/sequence-controller");
-const { ActivityNudgeController } = require("./controllers/activity-nudge-controller");
+const { TimeAccountingController } = require("./controllers/time-accounting-controller");
 const { SystemActivityMonitor } = require("./integrations/system-activity");
-const { ActivityNudgeModal } = require("./ui/activity-nudge-modal");
-const { untrackedReason } = require("./core/activity-nudge");
+const { AccountingModal } = require("./ui/accounting-modal");
+const { classifyRuntime } = require("./core/time-accounting");
 const { SettlementCoordinator } = require("./controllers/settlement-coordinator");
 const { LegacyRuntimeController } = require("./legacy/runtime-controller");
 const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/workspaces-plus");
@@ -203,10 +203,10 @@ class PomodoroAIO extends Plugin {
     this._dailyCompletionSyncRef = null;
     this._unloading = false;
     this._scheduleTick = () => {};
-    /** @type {InstanceType<typeof ActivityNudgeController> | null} */
-    this.activityNudge = null;
-    /** @type {InstanceType<typeof ActivityNudgeModal> | null} */
-    this._nudgeModal = null;
+    /** @type {InstanceType<typeof TimeAccountingController> | null} */
+    this.accounting = null;
+    /** @type {InstanceType<typeof AccountingModal> | null} */
+    this._accountingModal = null;
   }
   async onload() {
     this._lastPersistenceError = null;
@@ -271,8 +271,10 @@ class PomodoroAIO extends Plugin {
     this.addCommand({ id: 'complete-task', name: '完成当前任务并勾选日记待办', callback: (evt)=> this.runUserCommand(()=> this.completeTask(), evt) });
     this.addCommand({ id: 'open-today', name: '打开当日日记', callback: (evt)=> this.runUserCommand(()=> this.openToday(), evt) });
     this.addCommand({ id: 'quick-capture', name: '快速记录', callback: (evt)=> this.runUserCommand(()=> this.openQuickCaptureModal(), evt) });
-    this.addCommand({ id: 'set-current-work', name: '设置现在在做的事并开始', callback: (evt)=> this.runUserCommand(()=> this.openActivityNudgeNow(), evt) });
-    this.addCommand({ id: 'snooze-activity-nudge', name: '活动提醒：稍后再提醒', callback: (evt)=> this.runUserCommand(()=> this.activityNudge?.snooze(), evt) });
+    this.addCommand({ id: 'account-now', name: '时间归属：选择现在在做的事', callback: (evt)=> this.runUserCommand(()=> this.openAccountingPromptNow(), evt) });
+    this.addCommand({ id: 'declare-untracked', name: '时间归属：声明不计时', callback: (evt)=> this.runUserCommand(()=> this.openAccountingPromptNow("declare"), evt) });
+    this.addCommand({ id: 'end-declaration', name: '时间归属：结束不计时', callback: (evt)=> this.runUserCommand(()=> this.endDeclaration(), evt) });
+    this.addCommand({ id: 'snooze-accounting', name: '时间归属：稍后再提醒', callback: (evt)=> this.runUserCommand(()=> this.accounting?.snooze(), evt) });
     this._registerDailyTaskCompletionSync();
 
     // 设置页
@@ -304,11 +306,11 @@ class PomodoroAIO extends Plugin {
       }, delay);
     };
     this._scheduleTick();
-    this.activityNudge = new ActivityNudgeController(this, {
+    this.accounting = new TimeAccountingController(this, {
       monitor:new SystemActivityMonitor({ document:typeof document === "undefined" ? null : document }),
       timers:this.backgroundTimers, playBeep, sysNotify, logPluginError
     });
-    this.activityNudge.start();
+    this.accounting.start();
     this.applyStrongAlertStateFromRuntime();
     this.updateRibbonVisuals();
     this.syncBreakBlackout();
@@ -322,9 +324,9 @@ class PomodoroAIO extends Plugin {
     if (this._dailyCompletionSyncRef) this.app?.vault?.offref?.(this._dailyCompletionSyncRef);
     this._dailyCompletionSyncRef = null;
     this.breakBlackout?.destroy();
-    this.activityNudge?.dispose();
-    this.activityNudge = null;
-    this._nudgeModal?.close();
+    this.accounting?.dispose();
+    this.accounting = null;
+    this._accountingModal?.close();
     this.stopPersistentAlertSound();
     if (this._tickTimeout) this.backgroundTimers.clearTimeout(this._tickTimeout);
     await this.deviceBridge?.dispose?.();
@@ -639,6 +641,7 @@ class PomodoroAIO extends Plugin {
     return {
       settings: this.settings,
       lightingStatus:this.deviceBridge?.status,
+      accounting:this.accounting?.view() || null,
       runtime: Object.assign({}, this.runtime, { leftMs, leftSec: Math.ceil(leftMs / 1000), nextModule })
     };
   }
@@ -648,6 +651,10 @@ class PomodoroAIO extends Plugin {
     const r = runtime || Object.assign({}, this.runtime, { leftSec: this.getLeftSec() });
     this.updateRibbonBadge(r);
     this.updateRibbonAlertUI(!!r.attention);
+    const accounting = this.accounting?.view();
+    const unaccounted = !!accounting?.enabled && accounting.stretchMin !== null;
+    this.ribbon.classList?.toggle("pomodoro-ribbon-unaccounted", unaccounted);
+    this.ribbon.setAttribute?.("aria-label", unaccounted ? `打开番茄视图（${accounting?.stretchMin} 分钟未归属）` : "打开番茄视图");
   }
   /** @param {(Runtime & {leftSec?:number}) | null | undefined} [runtime] */
   updateRibbonBadge(runtime){
@@ -871,37 +878,67 @@ class PomodoroAIO extends Plugin {
   }
   /** @param {number | AnyRecord} [indexOrOptions] @param {AnyRecord} [options] */
   startSequence(indexOrOptions, options={}) { return this._getSequenceController().startSequence(indexOrOptions, options); }
-  /** @param {"idle"|"paused"} reason @param {number} [activeMin] */
-  openActivityNudgeModal(reason, activeMin=0){
-    if (this._nudgeModal) return this._nudgeModal;
-    const workModules = this.settings.modules.filter(module => module.type === "work").map(({ id, name }) => ({ id, name }));
+  /** @param {"idle"|"paused"|"awaiting"} reason @param {"work"|"rest"|"declare"} [initialTab] */
+  openAccountingPrompt(reason, initialTab){
+    if (this._accountingModal) return this._accountingModal;
+    const view = this.accounting?.view();
+    const pick = (/** @type {"work"|"rest"} */ type) => this.settings.modules.filter(module => module.type === type).map(({ id, name }) => ({ id, name }));
+    const workModules = pick("work");
     const selected = this.settings.modules.find(module => module.id === this.runtime.selectedModuleId);
-    this._nudgeModal = new ActivityNudgeModal(this.app, {
-      reason, activeMin, snoozeMin:this.settings.activitySnoozeMin,
-      pausedName:this.runtime.moduleRun?.name || "当前模块",
-      workModules,
-      defaultModuleId:selected?.type === "work" ? selected.id : workModules[0]?.id || null,
+    this.accounting?.setPromptOpen(true);
+    this._accountingModal = new AccountingModal(this.app, {
+      reason, initialTab, stretchMin:view?.stretchMin ?? null,
+      currentName:(reason === "awaiting" ? this.runtime.attention?.moduleRun?.name : this.runtime.moduleRun?.name) || "当前模块",
+      workModules, restModules:pick("rest"),
+      defaultWorkId:selected?.type === "work" ? selected.id : workModules[0]?.id || null,
+      leisureLeftMin:Math.max(0, (view?.leisureBudgetMin ?? 0) - (view?.leisureUsedMin ?? 0)),
+      snoozesLeft:view?.snoozesLeft ?? 0,
+      snoozeMin:this.settings.accountingSnoozeMin,
       loadCandidates:async () => (await this.refreshTodaySnapshot()).unchecked,
-      onStart:(moduleId, name) => this.startWorkFromNudge(moduleId, name),
+      onStartWork:(moduleId, name) => this.startWorkFromPrompt(moduleId, name),
+      onStartRest:moduleId => this.startRestFromPrompt(moduleId),
+      onDeclare:input => this.accounting?.declare(input) ?? false,
       onResume:() => this.togglePause(),
-      onSnooze:() => this.activityNudge?.snooze(),
-      onClosed:() => { this._nudgeModal = null; }
+      onCompleteSegment:() => this.completeCurrentModule(),
+      onStartNext:() => this.startPendingStage(),
+      onSnooze:() => this.accounting?.snooze() ?? false,
+      onClosed:() => {
+        this._accountingModal = null;
+        this.accounting?.setPromptOpen(false);
+      }
     });
-    this._nudgeModal.open();
-    return this._nudgeModal;
+    this._accountingModal.open();
+    return this._accountingModal;
   }
-  openActivityNudgeNow(){
-    const reason = untrackedReason(this.runtime);
-    if (!reason) { new Notice("番茄钟正在计时或等待确认"); return null; }
-    return this.openActivityNudgeModal(reason);
+  /** @param {"work"|"rest"|"declare"} [initialTab] */
+  openAccountingPromptNow(initialTab){
+    if (this.accounting?.view().declaration) { new Notice("正在不计时；可先结束声明"); return null; }
+    const { reason } = classifyRuntime(this.runtime);
+    if (!reason) { new Notice("当前正在计时或结算"); return null; }
+    if (initialTab === "declare" && reason !== "idle") { new Notice("只有在序列空闲时才能声明不计时"); return null; }
+    return this.openAccountingPrompt(reason, initialTab);
+  }
+  endDeclaration(){
+    if (!this.accounting?.endDeclaration()) { new Notice("当前没有进行中的不计时声明"); return false; }
+    new Notice("已结束不计时");
+    return true;
   }
   /** @param {string} moduleId @param {string} name */
-  async startWorkFromNudge(moduleId, name){
+  async startWorkFromPrompt(moduleId, name){
     const index = this.settings.modules.findIndex(module => module.id === moduleId && module.type === "work");
     if (index < 0) { new Notice("工作模块已不存在，请重新选择"); return false; }
-    if (untrackedReason(this.runtime) !== "idle") { new Notice("当前已有计时，请先完成或重置当前模块"); return false; }
+    if (classifyRuntime(this.runtime).reason !== "idle") { new Notice("当前已有计时，请先完成或重置当前模块"); return false; }
     const taskName = String(name || "").trim();
     if (taskName && taskName !== this.settings.modules[index].name) await this.updateModule(moduleId, { name:taskName });
+    this.accounting?.endDeclaration();
+    return this.startSequence(index);
+  }
+  /** @param {string} moduleId */
+  async startRestFromPrompt(moduleId){
+    const index = this.settings.modules.findIndex(module => module.id === moduleId && module.type === "rest");
+    if (index < 0) { new Notice("休息模块已不存在，请重新选择"); return false; }
+    if (classifyRuntime(this.runtime).reason !== "idle") { new Notice("当前已有计时，请先完成或重置当前模块"); return false; }
+    this.accounting?.endDeclaration();
     return this.startSequence(index);
   }
   /** @param {number} index */

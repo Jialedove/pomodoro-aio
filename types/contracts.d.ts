@@ -73,12 +73,15 @@ export interface Settings {
   autoAdvance: boolean;
   enableProjects: boolean;
   respectModalInputFocus: boolean;
-  activityNudgeEnabled: boolean;
-  activityAwaySec: number;
-  activityGentleAfterMin: number;
-  activityStrongAfterMin: number;
-  activityStrongRepeatMin: number;
-  activitySnoozeMin: number;
+  accountingEnabled: boolean;
+  accountingAwaySec: number;
+  accountingNotifyAfterMin: number;
+  accountingPromptAfterMin: number;
+  accountingPromptRepeatMin: number;
+  accountingSnoozeMin: number;
+  accountingSnoozeLimit: number;
+  accountingLeisureBudgetMin: number;
+  accountingHeading: string;
   schemaVersion?: number;
 }
 export interface Attention {

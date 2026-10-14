@@ -4,11 +4,24 @@
 .pmd-input { flex: 1 1 auto; display: block; width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--background-modifier-border); border-radius: 8px; }
 .pmd-capture-modal-input { width: 100%; resize: vertical; }
 .pmd-capture-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
-.pmd-nudge-lead { color: var(--text-muted); }
-.pmd-nudge-fields { display: flex; flex-direction: column; gap: 8px; }
-.pmd-nudge-fields .pmd-input { width: 100%; }
-.pmd-nudge-status { min-height: 1.4em; margin-top: 6px; color: var(--text-error); font-size: var(--font-ui-small); }
-.pmd-nudge-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.pmd-accounting-lead { color: var(--text-muted); }
+.pmd-accounting-tabs { display: flex; gap: 4px; margin-bottom: 10px; border-bottom: 1px solid var(--background-modifier-border); }
+.pmd-accounting-tab { border-radius: var(--radius-s) var(--radius-s) 0 0; box-shadow: none; background: transparent; }
+.pmd-accounting-tab.is-active { color: var(--text-on-accent); background: var(--interactive-accent); }
+.pmd-accounting-panel { display: flex; flex-direction: column; gap: 8px; }
+.pmd-accounting-panel .pmd-input { width: 100%; }
+.pmd-accounting-kinds { display: flex; gap: 6px; }
+.pmd-accounting-kind.is-active, .pmd-accounting-chip:focus-visible { color: var(--text-on-accent); background: var(--interactive-accent); }
+.pmd-accounting-minutes { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pmd-accounting-minutes .pmd-input { width: 6em; }
+.pmd-accounting-hint { margin: 0; color: var(--text-muted); font-size: var(--font-ui-small); }
+.pmd-accounting-hint.is-warning { color: var(--text-warning); }
+.pmd-accounting-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.pmd-accounting-status { min-height: 1.4em; margin: 4px 0; color: var(--text-error); font-size: var(--font-ui-small); }
+.pmd-accounting-footer { display: flex; justify-content: flex-start; margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--background-modifier-border); }
+.pmd-accounting-line { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.pmd-accounting-line.is-unaccounted { color: var(--text-warning); }
+.pmd-accounting-line .pmd-accounting-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .pmd-btn { padding: 6px 10px; border: 1px solid var(--background-modifier-border); border-radius: 8px; flex-shrink: 0; }
 .pmd-btn-primary { color: var(--text-on-accent); background: var(--interactive-accent); border-color: var(--interactive-accent); }
 .pmd-btn-primary:hover { background: var(--interactive-accent-hover); border-color: var(--interactive-accent-hover); }
@@ -31,6 +44,7 @@
   transition: opacity .2s ease;
 }
 .pomodoro-ribbon-has-badge .pomodoro-ribbon-badge { opacity: 1; }
+.pomodoro-ribbon-unaccounted { color: var(--text-warning); }
 .pomodoro-ribbon-alert::after {
   content: "";
   position: absolute;
