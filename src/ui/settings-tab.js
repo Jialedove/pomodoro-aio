@@ -3,13 +3,13 @@ const { positiveNumber, normalizeTag } = require("../core/validation");
 const { normalizeRestPresets } = require("../core/modules");
 const { renderLightingSettings } = require("./lighting-settings");
 const { splitAccountingPatch } = require("../core/time-accounting");
-/** @typedef {"accountingNotifyAfterMin"|"accountingPromptAfterMin"|"accountingPromptRepeatMin"|"accountingOverlayAfterMin"|"accountingSnoozeMin"|"accountingSnoozeLimit"|"accountingLeisureBudgetMin"|"accountingAwaySec"} AccountingNumberKey */
+/** @typedef {"accountingNotifyAfterMin"|"accountingPromptAfterMin"|"accountingPromptRepeatMin"|"accountingSnoozeMin"|"accountingSnoozeLimit"|"accountingLeisureBudgetMin"|"accountingAwaySec"} AccountingNumberKey */
 
 /** @type {Record<string, string>} */
 const ACCOUNTING_LABELS = {
   accountingEnabled:"启用时间归属", accountingMode:"强度", accountingLeisureBudgetMin:"每日消遣额度",
-  accountingNotifyAfterMin:"通知", accountingPromptAfterMin:"弹窗", accountingPromptRepeatMin:"弹窗重复间隔",
-  accountingOverlayAfterMin:"全屏遮罩", accountingSnoozeMin:"稍后提醒时长", accountingSnoozeLimit:"每日稍后提醒次数",
+  accountingNotifyAfterMin:"通知", accountingPromptAfterMin:"黑屏选择", accountingPromptRepeatMin:"黑屏重复间隔",
+  accountingSnoozeMin:"稍后提醒时长", accountingSnoozeLimit:"每日稍后提醒次数",
   accountingAwaySec:"离开判定"
 };
 /** @param {unknown} value */
@@ -187,7 +187,7 @@ class PomodoroSettingTab extends PluginSettingTab {
       const settings = this.plugin.settings;
       new Setting(accountingBody).setName("启用时间归属")
         .addToggle(toggle => toggle.setValue(settings.accountingEnabled === true).onChange(value => setAccounting({ accountingEnabled: value })));
-      new Setting(accountingBody).setName("强度").setDesc("提醒：通知加弹窗。强制：再加全屏遮罩，消遣不能超出额度，放宽设置次日生效。")
+      new Setting(accountingBody).setName("强度").setDesc("提醒：黑屏选择界面可以直接关闭（Esc）。强制：只能做出选择，长按 Esc 3 秒才能紧急退出并记入日记；消遣不能超出额度；放宽设置次日生效。")
         .addDropdown(dropdown => {
           dropdown.addOptions({ remind: "提醒", strict: "强制" });
           dropdown.setValue(settings.accountingMode === "strict" ? "strict" : "remind");
@@ -202,9 +202,8 @@ class PomodoroSettingTab extends PluginSettingTab {
         });
       accountingNumber("每日消遣额度（分钟）", "声明“消遣”时占用。提醒模式超出会在日记中标记；强制模式不能超出。", "accountingLeisureBudgetMin");
       accountingNumber("通知（分钟）", "未归属这么久后发系统通知。", "accountingNotifyAfterMin");
-      accountingNumber("弹窗（分钟）", "未归属这么久后，等你停手再把 Obsidian 切到前台并弹出选择窗口。", "accountingPromptAfterMin");
-      accountingNumber("弹窗重复间隔（分钟）", "关掉弹窗后仍未归属时，隔多久再次弹出。", "accountingPromptRepeatMin");
-      accountingNumber("全屏遮罩（分钟）", "仅强制模式：未归属这么久后盖住所有显示器，只能去选择；关掉后 60 秒内没做选择会重新盖上。", "accountingOverlayAfterMin");
+      accountingNumber("黑屏选择（分钟）", "未归属这么久后，等你停手，用黑屏盖住所有显示器，直接在黑屏上选择工作、休息或不计时。", "accountingPromptAfterMin");
+      accountingNumber("黑屏重复间隔（分钟）", "关闭或紧急退出黑屏后仍未归属时，隔多久再次出现。", "accountingPromptRepeatMin");
       accountingNumber("稍后提醒时长（分钟）", "选择“稍后再提醒”后静音多久；静音期间仍计入未归属。", "accountingSnoozeMin");
       accountingNumber("每日稍后提醒次数", "用完后弹窗里不再提供“稍后再提醒”。", "accountingSnoozeLimit");
       accountingNumber("离开判定（秒）", "这么久没有键盘鼠标输入就视为离开，不计入未归属。", "accountingAwaySec");

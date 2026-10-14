@@ -75,7 +75,6 @@ export interface Settings {
   respectModalInputFocus: boolean;
   accountingEnabled: boolean;
   accountingMode: "remind" | "strict";
-  accountingOverlayAfterMin: number;
   accountingPending: { requestedDayKey: string; patch: Record<string, any> } | null;
   accountingAwaySec: number;
   accountingNotifyAfterMin: number;

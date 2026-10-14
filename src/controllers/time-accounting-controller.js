@@ -9,6 +9,7 @@ const {
   snoozeAccounting,
   declareUntracked,
   endDeclaration,
+  logEmergencyExit,
   createLadderState,
   evaluateLadder
 } = require("../core/time-accounting");
@@ -23,15 +24,11 @@ const STORAGE_KEY = "pomodoro-aio-accounting";
 class TimeAccountingController {
   /**
    * @param {any} plugin
-   * @param {{monitor:any, timers:import("../services/background-timers").BackgroundTimers, playBeep:Function, sysNotify:Function, logPluginError:Function, createOverlay?:(onChoose:()=>void)=>any, now?:()=>number}} deps
+   * @param {{monitor:any, timers:import("../services/background-timers").BackgroundTimers, playBeep:Function, sysNotify:Function, logPluginError:Function, now?:()=>number}} deps
    */
-  constructor(plugin, { monitor, timers, playBeep, sysNotify, logPluginError, createOverlay = () => null, now = () => Date.now() }) {
+  constructor(plugin, { monitor, timers, playBeep, sysNotify, logPluginError, now = () => Date.now() }) {
     this.plugin = plugin;
     this.monitor = monitor;
-    /** @type {any} */
-    this.overlay = createOverlay(() => { void this._overlayChosen(); });
-    /** @type {number | null} */
-    this.overlayDismissedAtMs = null;
     this.timers = timers;
     this.helpers = { playBeep, sysNotify, logPluginError };
     this.now = now;
@@ -114,18 +111,17 @@ class TimeAccountingController {
       }
       const ladder = evaluateLadder(this.ladder, {
         nowMs, stretch:this.store.stretch, reason:this.reason, idleSec,
-        snoozeUntilMs:this.store.snoozeUntilMs, promptOpen:this.promptOpen,
-        overlayVisible:!!this.overlay?.visible, overlayDismissedAtMs:this.overlayDismissedAtMs, settings
+        snoozeUntilMs:this.store.snoozeUntilMs, promptOpen:this.promptOpen, settings
       });
       this.ladder = ladder.state;
       this._save();
-      if (!this.store.stretch || nowMs < this.store.snoozeUntilMs) {
-        this.overlay?.hide();
-        if (!this.store.stretch) this.overlayDismissedAtMs = null;
-      } else if (this.overlay?.visible) this.overlay.show(this._overlayMessage());
+      // 已经归属（比如从侧栏开始了计时）时撤下选择屏；仍未归属时刷新上面的分钟数。
+      if (this.promptOpen) {
+        if (!this.store.stretch && this.reason === null) this.plugin.closeAccountingPrompt?.();
+        else this.plugin.refreshAccountingPrompt?.();
+      }
       if (ladder.action === "notify") this.notify(/** @type {UnaccountedReason} */ (this.reason));
-      else if (ladder.action === "prompt") await this.prompt(/** @type {UnaccountedReason} */ (this.reason));
-      else if (ladder.action === "overlay") this.showOverlay();
+      else if (ladder.action === "prompt") this.prompt(/** @type {UnaccountedReason} */ (this.reason));
       else if (ladder.action === "wait") this._scheduleWaitPoll();
       void this.flush();
     } finally {
@@ -151,30 +147,23 @@ class TimeAccountingController {
   }
 
   /** @param {UnaccountedReason} reason */
-  async prompt(reason) {
+  prompt(reason) {
     const settings = this.plugin.settings;
     this.helpers.playBeep("focus-alert", settings.enableSound, settings.soundWaveform, true);
-    await this.monitor.activateObsidian();
     this.plugin.openAccountingPrompt(reason);
   }
 
-  _overlayMessage() {
-    const view = this.view();
-    return { label:`已经有 ${view.stretchMin ?? 0} 分钟没有归属 · 今日累计 ${view.unaccountedMin} 分钟`, title:"现在要做什么？" };
+  /** 选择屏被关闭（提醒模式）或被外部结束：从现在起按间隔再弹。 */
+  promptClosed() {
+    this.ladder = { ...this.ladder, lastPromptAtMs:this.now() };
   }
 
-  showOverlay() {
-    if (!this.overlay) return;
-    const settings = this.plugin.settings;
-    this.helpers.playBeep("focus-alert", settings.enableSound, settings.soundWaveform, true);
-    this.overlay.show(this._overlayMessage());
-  }
-
-  async _overlayChosen() {
-    this.overlayDismissedAtMs = this.now();
-    if (!this.reason || !this.store.stretch) return;
-    await this.monitor.activateObsidian();
-    this.plugin.openAccountingPrompt(this.reason);
+  /** 强制模式下长按 Esc 紧急退出：写日记，并从现在起按间隔再弹。 */
+  emergencyExit() {
+    this.store = logEmergencyExit(this.store, this.now());
+    this.promptClosed();
+    this._save();
+    void this.flush();
   }
 
   /** @param {boolean} open */
@@ -182,22 +171,24 @@ class TimeAccountingController {
     this.promptOpen = open;
   }
 
+  /** @returns {{ok:boolean, error?:string}} */
   snooze() {
     const result = snoozeAccounting(this.store, this.now(), this.plugin.settings);
-    if (!result.ok) { new Notice(result.error); return false; }
+    if (!result.ok) { new Notice(result.error); return { ok:false, error:result.error }; }
     this.store = result.store;
     this._save();
     void this.flush();
     new Notice(`${this.settings.accountingSnoozeMin} 分钟后再提醒（今天还剩 ${snoozesLeft(this.store, this.plugin.settings)} 次）`);
     this.plugin.broadcast?.();
-    return true;
+    return { ok:true };
   }
 
-  /** @param {{kind:unknown, reason:unknown, minutes:unknown}} input */
+  /** @param {{kind:unknown, reason:unknown, minutes:unknown}} input @returns {{ok:boolean, error?:string}} */
   declare(input) {
     if (classifyRuntime(this.plugin.runtime).reason !== "idle") {
-      new Notice("只有在序列空闲时才能声明不计时");
-      return false;
+      const error = "只有在序列空闲时才能声明不计时";
+      new Notice(error);
+      return { ok:false, error };
     }
     const nowMs = this.now();
     // 跨天后第一次声明前先对齐日期与日记路径。
@@ -206,18 +197,17 @@ class TimeAccountingController {
         dayKey:this.plugin.logicalTodayKey(), dailyPath:this.plugin.todayFilePath() }).store;
     }
     const result = declareUntracked(this.store, { ...input, nowMs }, this.plugin.settings);
-    if (!result.ok) { new Notice(result.error); return false; }
+    if (!result.ok) { new Notice(result.error); return { ok:false, error:result.error }; }
     this.store = result.store;
     this.ladder = createLadderState();
     this._save();
     void this.flush();
-    this.overlay?.hide();
     const label = KIND_LABEL[/** @type {"leisure"|"errand"} */ (input.kind)];
     new Notice(result.cappedMin > 0 ? `强制模式：消遣已按剩余额度截为 ${result.cappedMin} 分钟`
       : result.overBudgetMin > 0 ? `已开始${label}，将超出今日额度 ${result.overBudgetMin} 分钟，会记入日记`
         : `已开始${label}：${this.store.declaration?.reason}`);
     this.plugin.broadcast?.();
-    return true;
+    return { ok:true };
   }
 
   endDeclaration() {
@@ -290,7 +280,6 @@ class TimeAccountingController {
     this._interval = null;
     this._waitTimeout = null;
     this._save();
-    this.overlay?.destroy();
     this.monitor.dispose();
   }
 }

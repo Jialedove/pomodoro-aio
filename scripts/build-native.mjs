@@ -16,6 +16,7 @@ await mkdir(outputDir, { recursive:true });
 await mkdir(cacheDir, { recursive:true });
 const targets = [
   { source:path.join(root, "native", "BlackoutOverlay.swift"), output:path.join(outputDir, "pomodoro-blackout") },
+  { source:path.join(root, "native", "AccountingScreen.swift"), output:path.join(outputDir, "pomodoro-accounting") },
   { source:path.join(root, "native", "Guard.swift"), output:path.join(outputDir, "pomodoro-guard") }
 ];
 const args = ["swiftc", "-module-cache-path", cacheDir];

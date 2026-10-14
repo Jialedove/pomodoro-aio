@@ -223,3 +223,12 @@
 
 - `npm run install:vault` 已执行（211/211 测试通过）。`main.js`、`manifest.json`、`styles.css`、`bin/pomodoro-blackout` 与构建产物逐字节一致；`data.json` 安装前后 SHA-256 相同。用户自行重载插件，本轮未操作 Obsidian UI。
 - `npm run guard:install` 已执行，`com.pomodoro-aio.guard` 状态为 running，`--status` 读出 Obsidian 在运行、用户在场。
+
+### 黑屏选择（2026-10-14）
+
+- 合并原来的 L2 Obsidian 弹窗与 L3“去选择”遮罩：未归属达到“黑屏选择”时长（默认 5 分钟）后，直接出现纯黑全屏选择界面，提醒模式和强制模式都用。设置 `accountingOverlayAfterMin` 已删除，旧值会在规范化时丢弃。
+- 新原生程序 `native/AccountingScreen.swift` 编译为 `bin/pomodoro-accounting`，随 `install:vault` 安装。黑屏助手 `pomodoro-blackout` 不变。协议：插件发送 `show`、`update`、`error`、`hide`；程序回传 `choice`（work、rest、declare、resume、complete、next、snooze、close、emergency）。界面跟随指针所在屏幕，其他屏幕显示提示；跟随显示器变化；做出选择后切回之前的 App。
+- `src/ui/accounting-screen.js` 驱动原生程序，原生不可用时在 Obsidian 窗口内绘制同样的界面（含数字键切换、长按 Esc 进度条）。替代已删除的 `accounting-modal.js` 和 `accounting-overlay.js`。
+- 关闭规则：提醒模式或用户通过命令主动打开时，可以直接关闭；强制模式只能长按 Esc 3 秒紧急退出，并写一行日记。关闭或紧急退出后，从那一刻起按重复间隔计时。`declare` 和 `snooze` 返回 `{ok, error}`，错误显示在黑屏上。
+- 背景为纯黑不透明。最初用 0.97 透明度时，截图里底下的窗口仍然清晰可见。
+- 自动检查：`npm run check` 通过，214/214 测试；新增原生协议、关闭与紧急退出、窗口内备用界面（数字键、长按 Esc）、控制器间隔和插件数据组装等测试；测试还发现并修复了原生程序启动失败时重复创建窗口内界面的问题。手动验证：实际启动原生程序并截图，检查了工作和不计时两个选项卡、双显示器提示、纯黑背景。未验证真实键盘交互（输入法、长按 Esc 进度条）；未安装到 Vault。

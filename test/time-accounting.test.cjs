@@ -22,7 +22,7 @@ const {
 const { normalizeCurrentSettings } = require("../src/core/settings.js");
 const { SystemActivityMonitor } = require("../src/integrations/system-activity.js");
 const { TimeAccountingController } = require("../src/controllers/time-accounting-controller.js");
-const { AccountingOverlay } = require("../src/ui/accounting-overlay.js");
+const { AccountingScreen } = require("../src/ui/accounting-screen.js");
 const { EventEmitter } = require("node:events");
 
 const MIN = 60_000;
@@ -165,12 +165,12 @@ test("稍后提醒每天限次并写日记；静音期间仍计入未归属", ()
 });
 
 /** 用阶梯走一遍，返回 [分钟, 动作]（只保留非 none）。 */
-function ladderRun(steps, { stretchStart = at(0), reason = "idle", snoozeUntilMs = 0, promptOpen = false, overlayVisible = false, overlayDismissedAtMs = null, ladderSettings = settings } = {}) {
+function ladderRun(steps, { stretchStart = at(0), reason = "idle", snoozeUntilMs = 0, promptOpen = false, ladderSettings = settings } = {}) {
   let state = createLadderState();
   const actions = [];
   for (const [minute, idleSec = 10] of steps) {
     const result = evaluateLadder(state, { nowMs:at(minute), stretch:{ startedAtMs:stretchStart, lastPresentAtMs:at(minute), countedMs:0 },
-      reason, idleSec, snoozeUntilMs, promptOpen, overlayVisible, overlayDismissedAtMs, settings:ladderSettings });
+      reason, idleSec, snoozeUntilMs, promptOpen, settings:ladderSettings });
     state = result.state;
     if (result.action !== "none") actions.push([minute, result.action]);
   }
@@ -306,10 +306,10 @@ test("控制器：通知、等停手后弹窗，声明后写入日记标题与�
   controller._loaded = controller.load();
   await controller.poll();
   await pollUntil(controller, clock, 5);
-  assert.deepEqual(events, ["notify:这段时间还没有归属", "beep", "beep-strong", "activate"]);
+  assert.deepEqual(events, ["notify:这段时间还没有归属", "beep", "beep-strong"]);
   assert.deepEqual(prompts, ["idle"]);
 
-  assert.equal(controller.declare({ kind:"leisure", reason:"刷 X", minutes:10 }), true);
+  assert.deepEqual(controller.declare({ kind:"leisure", reason:"刷 X", minutes:10 }), { ok:true });
   await pollUntil(controller, clock, 16);
   await controller.flush();
   const text = vault.getAbstractFileByPath(PATH).content;
@@ -362,12 +362,9 @@ test("从选择弹窗开始工作或休息：写入事情名称、结束声明�
 
 const strict = { ...ACCOUNTING_DEFAULTS, accountingMode:"strict" };
 
-test("强制模式：10 分钟盖上全屏遮罩；遮罩或弹窗打开时不再升级；关掉 60 秒后重新盖上", () => {
-  assert.deepEqual(ladderRun([[1], [5], [10]], { ladderSettings:strict }), [[1, "notify"], [5, "prompt"], [10, "overlay"]]);
-  assert.deepEqual(ladderRun([[1], [5], [10]]), [[1, "notify"], [5, "prompt"], [10, "prompt"]]);
-  assert.deepEqual(ladderRun([[10], [11]], { ladderSettings:strict, overlayVisible:true }), []);
-  assert.deepEqual(ladderRun([[11], [11.5], [12]], { ladderSettings:strict, overlayDismissedAtMs:at(11) }), [[11, "prompt"], [12, "overlay"]]);
-  assert.deepEqual(ladderRun([[10, 0.5], [10.6, 3]], { ladderSettings:strict }), [[10, "wait"], [10.6, "overlay"]]);
+test("强制模式与提醒模式阶梯一致：5 分钟黑屏选择，不再有第二级遮罩", () => {
+  assert.deepEqual(ladderRun([[1], [5], [10]], { ladderSettings:strict }), [[1, "notify"], [5, "prompt"], [10, "prompt"]]);
+  assert.deepEqual(ladderRun([[5], [10], [15]], { ladderSettings:strict, promptOpen:true }), []);
 });
 
 test("强制模式：消遣不能超出额度，按剩余截断，用完后拒绝", () => {
@@ -414,6 +411,8 @@ test("插件跨天后应用待生效的放宽设置", async () => {
   assert.equal(await plugin.applyDueAccountingSettings(), false);
 });
 
+const tick = () => new Promise(resolve => { setImmediate(resolve); });
+
 function fakeChild() {
   const child = new EventEmitter();
   child.written = [];
@@ -425,82 +424,195 @@ function fakeChild() {
   return child;
 }
 
-test("原生遮罩：以提示模式显示，点“去选择”后关闭并回调", () => {
+const screenData = {
+  reason:"idle", label:"已经有 5 分钟没有归属 · 今日累计 12 分钟", title:"现在要做什么？", closable:false, initialTab:"work",
+  workModules:[{ id:"work-1", name:"写周报" }], defaultWorkId:"work-1", taskName:"写周报", candidates:[],
+  restModules:[{ id:"rest-1", name:"散步" }], leisureLeftMin:30, strictBudget:true, snoozesLeft:3, snoozeMin:10, currentName:"当前模块"
+};
+
+test("原生选择屏：发送界面数据；选择成功后撤下，失败时把错误发回界面", async () => {
   const child = fakeChild();
-  let chosen = 0;
-  const overlay = new AccountingOverlay({ document:null, binaryPath:"/bin/helper", spawnProcess:() => child, onChoose:() => { chosen += 1; } });
-  overlay.show({ label:"已经有 10 分钟没有归属", title:"现在要做什么？" });
-  assert.equal(overlay.visible, true);
-  assert.deepEqual(child.written[0], { type:"show", mode:"prompt", buttonTitle:"去选择", label:"已经有 10 分钟没有归属", title:"现在要做什么？" });
-  overlay.show({ label:"11", title:"现在要做什么？" });
-  assert.equal(child.written[1].type, "update");
-  child.stdout.emit("data", '{"type":"dismissed"}\n');
-  assert.equal(chosen, 1);
-  assert.equal(overlay.visible, false);
+  const choices = [];
+  const closed = [];
+  let result = { ok:false, error:"今日消遣额度已用完（强制模式）" };
+  const screen = new AccountingScreen({ document:null, binaryPath:"/bin/accounting", spawnProcess:() => child,
+    onChoice:async choice => { choices.push(choice); return result; }, onClosed:reason => closed.push(reason) });
+  screen.show(screenData);
+  assert.equal(screen.visible, true);
+  assert.deepEqual(child.written[0], { type:"show", ...screenData });
+  screen.update({ candidates:["写周报", "回邮件"] });
+  assert.deepEqual(child.written[1], { type:"update", candidates:["写周报", "回邮件"] });
+
+  child.stdout.emit("data", '{"type":"choice","action":"declare","kind":"leisure","reason":"刷 X","minutes":10}\n');
+  await tick();
+  assert.equal(choices[0].reason, "刷 X");
+  assert.deepEqual(child.written.at(-1), { type:"error", message:"今日消遣额度已用完（强制模式）" });
+  assert.equal(screen.visible, true);
+
+  result = { ok:true };
+  child.stdout.emit("data", '{"type":"choice","action":"work","moduleId":"work-1","name":"写周报"}\n');
+  await tick();
+  assert.deepEqual(child.written.at(-1), { type:"hide" });
+  assert.equal(screen.visible, false);
+  assert.deepEqual(closed, ["chosen"]);
   child.emit("exit", 0);
-  assert.equal(chosen, 1);
+  assert.deepEqual(closed, ["chosen"]);
 });
 
-function fakeDomDocument() {
-  const make = () => {
-    const el = { children:[], className:"", textContent:"", attributes:{}, onclick:null,
-      setAttribute(k, v) { this.attributes[k] = v; },
-      appendChild(child) { child.parent = this; this.children.push(child); return child; },
-      append(...items) { items.forEach(item => this.appendChild(item)); },
-      remove() { if (this.parent) this.parent.children = this.parent.children.filter(c => c !== this); },
-      querySelectorAll(selector) {
-        const names = selector.split(",").map(item => item.trim().slice(1));
-        const out = [];
-        const walk = node => node.children.forEach(child => { if (names.some(name => child.className.split(" ").includes(name))) out.push(child); walk(child); });
-        walk(this);
-        return out;
-      } };
+test("原生选择屏：关闭与紧急退出只回报，不当作选择；被外部结束按关闭处理", async () => {
+  for (const action of ["close", "emergency"]) {
+    const child = fakeChild();
+    const closed = [];
+    let chose = false;
+    const screen = new AccountingScreen({ document:null, binaryPath:"/bin/accounting", spawnProcess:() => child,
+      onChoice:async () => { chose = true; return { ok:true }; }, onClosed:reason => closed.push(reason) });
+    screen.show(screenData);
+    child.stdout.emit("data", `{"type":"choice","action":"${action}"}\n`);
+    await tick();
+    assert.equal(chose, false);
+    assert.deepEqual(closed, [action]);
+    assert.equal(screen.visible, false);
+  }
+  const child = fakeChild();
+  const closed = [];
+  const screen = new AccountingScreen({ document:null, binaryPath:"/bin/accounting", spawnProcess:() => child,
+    onChoice:async () => ({ ok:true }), onClosed:reason => closed.push(reason) });
+  screen.show(screenData);
+  child.emit("exit", 9);
+  assert.deepEqual(closed, ["exited"]);
+  assert.equal(screen.visible, false);
+});
+
+/** 只实现选择屏用到的 DOM 接口。 */
+function fakeDom() {
+  const listeners = {};
+  const make = tag => {
+    const el = {
+      tagName:tag.toUpperCase(), children:[], className:"", textContent:"", attributes:{}, style:{}, value:"",
+      parent:null, disabled:false, focused:false,
+      classList:{
+        toggle(name, on) { const set = new Set(el.className.split(" ").filter(Boolean)); (on ?? !set.has(name)) ? set.add(name) : set.delete(name); el.className = [...set].join(" "); },
+        add(name) { el.classList.toggle(name, true); }, remove(name) { el.classList.toggle(name, false); },
+        contains(name) { return el.className.split(" ").includes(name); }
+      },
+      setAttribute(k, v) { el.attributes[k] = v; },
+      appendChild(child) { child.parent = el; el.children.push(child); return child; },
+      append(...items) { items.forEach(item => el.appendChild(item)); },
+      replaceChildren() { el.children = []; },
+      remove() { if (el.parent) el.parent.children = el.parent.children.filter(child => child !== el); },
+      focus() { el.focused = true; }
+    };
     return el;
   };
-  const body = make();
-  return { body, createElement:make };
+  const body = make("body");
+  return {
+    body, listeners, createElement:make,
+    addEventListener(type, fn) { listeners[type] = fn; },
+    removeEventListener(type) { delete listeners[type]; }
+  };
 }
 
-test("原生助手不可用时退回 Obsidian 窗口遮罩", () => {
-  const document = fakeDomDocument();
-  const reasons = [];
-  let chosen = 0;
-  const overlay = new AccountingOverlay({ document, binaryPath:"/bin/helper",
-    spawnProcess:() => { throw new Error("ENOENT"); }, onChoose:() => { chosen += 1; }, onUnavailable:reason => reasons.push(reason) });
-  overlay.show({ label:"已经有 10 分钟没有归属", title:"现在要做什么？" });
-  assert.equal(reasons.length, 1);
-  assert.equal(document.body.children.length, 1);
-  const button = document.body.children[0].children[0].children.find(child => child.textContent === "去选择");
-  button.onclick({ stopPropagation() {} });
-  assert.equal(chosen, 1);
+function findAll(node, predicate, out = []) {
+  for (const child of node.children) {
+    if (predicate(child)) out.push(child);
+    findAll(child, predicate, out);
+  }
+  return out;
+}
+
+test("原生程序不可用时在 Obsidian 窗口内显示黑色选择屏：数字键切换、长按 Esc 紧急退出", async () => {
+  const document = fakeDom();
+  const unavailable = [];
+  const closed = [];
+  let now = 0;
+  const frames = [];
+  globalThis.requestAnimationFrame = callback => { frames.push(callback); return frames.length; };
+  globalThis.cancelAnimationFrame = () => {};
+  let activated = 0;
+  const screen = new AccountingScreen({ document, binaryPath:"/bin/accounting",
+    spawnProcess:() => { throw new Error("ENOENT"); }, onUnavailable:reason => unavailable.push(reason),
+    onChoice:async () => ({ ok:true }), onClosed:reason => closed.push(reason),
+    activateObsidian:async () => { activated += 1; }, now:() => now });
+  screen.show(screenData);
+  assert.equal(unavailable.length, 1);
+  assert.equal(activated, 1);
+  const root = document.body.children[0];
+  assert.equal(root.className, "pmd-accounting-screen");
+  assert.ok(findAll(root, el => el.textContent === "现在要做什么？").length);
+  assert.ok(findAll(root, el => el.textContent === "长按 esc 3 秒紧急退出").length);
+  assert.ok(findAll(root, el => el.className.includes("pmd-as-input") && el.value === "写周报").length);
+
+  const key = (type, key, extra = {}) => document.listeners[type]({ key, repeat:false, isComposing:false, target:root,
+    preventDefault() {}, stopPropagation() {}, ...extra });
+  key("keydown", "3");
+  assert.ok(findAll(root, el => el.textContent === "开始不计时  ↵").length);
+  key("keydown", "2");
+  assert.ok(findAll(root, el => el.textContent === "散步").length);
+
+  // 按住 1 秒松开不会退出；按满 3 秒才紧急退出。
+  key("keydown", "Escape");
+  now = 1000;
+  frames.shift()();
+  key("keyup", "Escape");
+  assert.deepEqual(closed, []);
+  key("keydown", "Escape");
+  now = 4100;
+  while (frames.length) frames.shift()();
+  await tick();
+  assert.deepEqual(closed, ["emergency"]);
   assert.equal(document.body.children.length, 0);
+  assert.equal(screen.visible, false);
 });
 
-test("控制器（强制模式）：盖上遮罩，选择后打开弹窗，开始工作后撤下", async () => {
+test("提醒模式的窗口内选择屏：按一下 Esc 就关闭", async () => {
+  const document = fakeDom();
+  const closed = [];
+  const screen = new AccountingScreen({ document, binaryPath:null, onChoice:async () => ({ ok:true }), onClosed:reason => closed.push(reason) });
+  screen.show({ ...screenData, closable:true });
+  document.listeners.keydown({ key:"Escape", repeat:false, isComposing:false, preventDefault() {}, stopPropagation() {} });
+  await tick();
+  assert.deepEqual(closed, ["close"]);
+  assert.equal(screen.visible, false);
+});
+
+test("控制器：关闭后从关闭时刻起算间隔；紧急退出写一行日记", async () => {
+  const vault = new FakeVault();
+  const plugin = accountingPlugin(vault);
+  Object.assign(plugin.settings, strict);
+  const clock = { value:at(0) };
+  const { controller } = controllerFor(plugin, clock);
+  let prompts = 0;
+  plugin.openAccountingPrompt = () => { prompts += 1; controller.setPromptOpen(true); };
+  controller._loaded = controller.load();
+  await pollUntil(controller, clock, 8);
+  assert.equal(prompts, 1);
+  // 选择屏开着时不重复弹出。
+  controller.setPromptOpen(false);
+  controller.emergencyExit();
+  await pollUntil(controller, clock, 12.9);
+  assert.equal(prompts, 1);
+  await pollUntil(controller, clock, 13.1);
+  assert.equal(prompts, 2);
+  await controller.flush();
+  assert.ok(vault.getAbstractFileByPath(PATH).content.includes(`- ${clockText(at(8))} 紧急退出归属选择`));
+});
+
+test("插件：选择屏数据（强制模式不可直接关闭，手动打开可关闭）与选择分派", async () => {
   const plugin = accountingPlugin();
   Object.assign(plugin.settings, strict);
-  const prompts = [];
-  plugin.openAccountingPrompt = reason => prompts.push(reason);
-  const clock = { value:at(0) };
-  const shown = [];
-  let visible = false;
-  const { controller, events } = controllerFor(plugin, clock);
-  controller.overlay = { get visible() { return visible; }, show:message => { visible = true; shown.push(message); }, hide:() => { visible = false; }, destroy() {} };
-  // 用真实回调路径模拟遮罩按钮。
-  const choose = () => { visible = false; return controller._overlayChosen(); };
-  controller._loaded = controller.load();
-  await pollUntil(controller, clock, 10);
-  assert.equal(prompts.length, 1);
-  controller.setPromptOpen(false);
-  await pollUntil(controller, clock, 10.1);
-  assert.equal(visible, true);
-  assert.match(shown[0].label, /10 分钟/);
-  await choose();
-  assert.deepEqual(prompts, ["idle", "idle"]);
-  assert.ok(events.includes("activate"));
-  plugin.runtime.status = "running";
-  plugin.runtime.moduleRun = { type:"work" };
-  visible = true;
-  await pollUntil(controller, clock, 10.3);
-  assert.equal(visible, false);
+  plugin.accounting = { view:() => ({ strict:true, stretchMin:7, unaccountedMin:12, leisureBudgetMin:30, leisureUsedMin:10, snoozesLeft:2 }),
+    declare:input => ({ ok:input.reason === "开会" }), snooze:() => ({ ok:true }), endDeclaration() {} };
+  const data = plugin.accountingScreenData("idle");
+  assert.equal(data.closable, false);
+  assert.equal(plugin.accountingScreenData("idle", { manual:true }).closable, true);
+  assert.equal(data.label, "已经有 7 分钟没有归属 · 今日累计 12 分钟");
+  assert.equal(data.leisureLeftMin, 20);
+  assert.equal(data.taskName, "");
+  assert.deepEqual(data.restModules, [{ id:"rest-1", name:"散步" }]);
+  const started = [];
+  plugin.startSequence = async index => { started.push(index); return true; };
+  assert.deepEqual(await plugin.handleAccountingChoice({ action:"work", moduleId:"work-1", name:"写周报" }), { ok:true });
+  assert.deepEqual(started, [0]);
+  assert.deepEqual(await plugin.handleAccountingChoice({ action:"declare", kind:"errand", reason:"开会", minutes:30 }), { ok:true });
+  assert.deepEqual(await plugin.handleAccountingChoice({ action:"bogus" }), { ok:false, error:"未知操作" });
 });

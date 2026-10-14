@@ -3,3 +3,4 @@ node_modules/
 npm-debug.log*
 bin/pomodoro-blackout
 bin/pomodoro-guard
+bin/pomodoro-accounting

@@ -40,7 +40,6 @@ const ACCOUNTING_DEFAULTS = Object.freeze({
   accountingNotifyAfterMin:1,
   accountingPromptAfterMin:5,
   accountingPromptRepeatMin:5,
-  accountingOverlayAfterMin:10,
   accountingSnoozeMin:10,
   accountingSnoozeLimit:3,
   accountingLeisureBudgetMin:30,
@@ -51,7 +50,7 @@ const ACCOUNTING_DEFAULTS = Object.freeze({
 
 // 强制模式下这些设置变大即为放宽，次日生效。
 const LOOSEN_WHEN_LARGER = Object.freeze(["accountingAwaySec", "accountingNotifyAfterMin", "accountingPromptAfterMin",
-  "accountingPromptRepeatMin", "accountingOverlayAfterMin", "accountingSnoozeMin", "accountingSnoozeLimit", "accountingLeisureBudgetMin"]);
+  "accountingPromptRepeatMin", "accountingSnoozeMin", "accountingSnoozeLimit", "accountingLeisureBudgetMin"]);
 const DEFERRABLE_KEYS = Object.freeze(["accountingEnabled", "accountingMode", ...LOOSEN_WHEN_LARGER]);
 
 /** @param {Record<string, any>} source @param {Record<string, any>} [base] */
@@ -75,7 +74,6 @@ function normalizeAccountingSettings(source, base = ACCOUNTING_DEFAULTS) {
     accountingNotifyAfterMin:num("accountingNotifyAfterMin", 0.1),
     accountingPromptAfterMin:num("accountingPromptAfterMin", 0.5),
     accountingPromptRepeatMin:num("accountingPromptRepeatMin", 0.5),
-    accountingOverlayAfterMin:num("accountingOverlayAfterMin", 0.5),
     accountingSnoozeMin:num("accountingSnoozeMin", 1),
     accountingSnoozeLimit:count("accountingSnoozeLimit"),
     accountingLeisureBudgetMin:count("accountingLeisureBudgetMin"),
@@ -372,6 +370,13 @@ function declareUntracked(previous, { kind, reason, minutes, nowMs, id }, settin
   return { ok:true, store, overBudgetMin, cappedMin };
 }
 
+/** 强制模式下长按 Esc 紧急退出选择屏：写一行日记。 @param {AccountingStore} previous @param {number} nowMs */
+function logEmergencyExit(previous, nowMs) {
+  const store = { ...previous, outbox:[...previous.outbox] };
+  if (store.dailyPath) enqueue(store, { kind:"line", path:store.dailyPath, text:`${clockText(nowMs)} 紧急退出归属选择` });
+  return store;
+}
+
 /** @param {AccountingStore} previous @param {number} nowMs @param {Record<string, any>} settings */
 function endDeclaration(previous, nowMs, settings) {
   if (!previous.declaration) return { store:previous, actualMs:0 };
@@ -387,39 +392,29 @@ function createLadderState() {
   return { stretchStartedAtMs:null, notified:false, lastPromptAtMs:null, promptWaitSinceMs:null };
 }
 
-const OVERLAY_GRACE_MS = 60_000;
 
 const TYPING_PAUSE_SEC = 2;
 const MAX_PROMPT_WAIT_MS = 30_000;
 
 /**
- * 提醒阶梯：L1 通知、L2 弹窗、L3 全屏遮罩（仅强制模式）。弹窗和遮罩前等用户停手，避免打字时抢焦点。
- * 遮罩显示中或选择弹窗打开时不再升级；遮罩被关掉、60 秒内仍没做选择时重新盖上。
+ * 提醒阶梯：L1 通知 → L2 全屏黑色选择屏，按间隔重复。选择屏出现前等用户停手，避免打字时抢焦点。
+ * 选择屏显示期间不再升级；关闭或紧急退出时由调用方把 lastPromptAtMs 设为关闭时刻，从那时起算间隔。
  * @param {LadderState} previous
- * @param {{nowMs:number, stretch:Stretch|null, reason:UnaccountedReason|null, idleSec:number|null, snoozeUntilMs:number, promptOpen:boolean, overlayVisible?:boolean, overlayDismissedAtMs?:number|null, settings:Record<string, any>}} input
- * @returns {{action:"none"|"notify"|"prompt"|"overlay"|"wait", state:LadderState}}
+ * @param {{nowMs:number, stretch:Stretch|null, reason:UnaccountedReason|null, idleSec:number|null, snoozeUntilMs:number, promptOpen:boolean, settings:Record<string, any>}} input
+ * @returns {{action:"none"|"notify"|"prompt"|"wait", state:LadderState}}
  */
-function evaluateLadder(previous, { nowMs, stretch, reason, idleSec, snoozeUntilMs, promptOpen, overlayVisible = false, overlayDismissedAtMs = null, settings }) {
+function evaluateLadder(previous, { nowMs, stretch, reason, idleSec, snoozeUntilMs, promptOpen, settings }) {
   if (!stretch || !reason) return { action:"none", state:createLadderState() };
   const config = normalizeAccountingSettings(settings);
   const state = previous.stretchStartedAtMs === stretch.startedAtMs ? { ...previous } : { ...createLadderState(), stretchStartedAtMs:stretch.startedAtMs };
-  if (nowMs < snoozeUntilMs) return { action:"none", state:{ ...state, promptWaitSinceMs:null } };
+  if (nowMs < snoozeUntilMs || promptOpen) return { action:"none", state:{ ...state, promptWaitSinceMs:null } };
   const elapsedMs = nowMs - stretch.startedAtMs;
-  /** @param {"prompt"|"overlay"} action @param {LadderState} next */
-  const whenIdle = (action, next) => {
-    const typing = idleSec !== null && idleSec < TYPING_PAUSE_SEC;
-    const waitSince = state.promptWaitSinceMs ?? nowMs;
-    if (typing && nowMs - waitSince < MAX_PROMPT_WAIT_MS) return { action:/** @type {"wait"} */ ("wait"), state:{ ...state, promptWaitSinceMs:waitSince } };
-    return { action, state:{ ...next, notified:true, promptWaitSinceMs:null } };
-  };
-  if (overlayVisible || promptOpen) return { action:"none", state:{ ...state, promptWaitSinceMs:null } };
-  if (isStrict(settings) && elapsedMs >= config.accountingOverlayAfterMin * 60_000
-    && (overlayDismissedAtMs === null || nowMs - overlayDismissedAtMs >= OVERLAY_GRACE_MS)) {
-    return whenIdle("overlay", state);
-  }
   if (elapsedMs >= config.accountingPromptAfterMin * 60_000
     && (state.lastPromptAtMs === null || nowMs - state.lastPromptAtMs >= config.accountingPromptRepeatMin * 60_000)) {
-    return whenIdle("prompt", { ...state, lastPromptAtMs:nowMs });
+    const typing = idleSec !== null && idleSec < TYPING_PAUSE_SEC;
+    const waitSince = state.promptWaitSinceMs ?? nowMs;
+    if (typing && nowMs - waitSince < MAX_PROMPT_WAIT_MS) return { action:"wait", state:{ ...state, promptWaitSinceMs:waitSince } };
+    return { action:"prompt", state:{ ...state, notified:true, lastPromptAtMs:nowMs, promptWaitSinceMs:null } };
   }
   if (!state.notified && reason !== "awaiting" && elapsedMs >= config.accountingNotifyAfterMin * 60_000) {
     return { action:"notify", state:{ ...state, notified:true } };
@@ -450,6 +445,7 @@ module.exports = {
   snoozeAccounting,
   declareUntracked,
   endDeclaration,
+  logEmergencyExit,
   createLadderState,
   evaluateLadder,
   parseHidIdleSeconds,

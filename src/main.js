@@ -43,8 +43,7 @@ const { PomodoroSettingTab } = require("./ui/settings-tab");
 const { SequenceController } = require("./controllers/sequence-controller");
 const { TimeAccountingController } = require("./controllers/time-accounting-controller");
 const { SystemActivityMonitor } = require("./integrations/system-activity");
-const { AccountingModal } = require("./ui/accounting-modal");
-const { AccountingOverlay } = require("./ui/accounting-overlay");
+const { AccountingScreen } = require("./ui/accounting-screen");
 const { classifyRuntime, duePendingPatch } = require("./core/time-accounting");
 const { SettlementCoordinator } = require("./controllers/settlement-coordinator");
 const { LegacyRuntimeController } = require("./legacy/runtime-controller");
@@ -206,8 +205,8 @@ class PomodoroAIO extends Plugin {
     this._scheduleTick = () => {};
     /** @type {InstanceType<typeof TimeAccountingController> | null} */
     this.accounting = null;
-    /** @type {InstanceType<typeof AccountingModal> | null} */
-    this._accountingModal = null;
+    /** @type {InstanceType<typeof AccountingScreen> | null} */
+    this._accountingScreen = null;
   }
   async onload() {
     this._lastPersistenceError = null;
@@ -309,12 +308,7 @@ class PomodoroAIO extends Plugin {
     this._scheduleTick();
     this.accounting = new TimeAccountingController(this, {
       monitor:new SystemActivityMonitor({ document:typeof document === "undefined" ? null : document }),
-      timers:this.backgroundTimers, playBeep, sysNotify, logPluginError,
-      createOverlay:onChoose => new AccountingOverlay({
-        document:typeof document === "undefined" ? null : document,
-        binaryPath:this.nativeHelperPath(), onChoose,
-        onUnavailable:reason => new Notice(`原生遮罩不可用，已改用 Obsidian 窗口遮罩：${reason}`)
-      })
+      timers:this.backgroundTimers, playBeep, sysNotify, logPluginError
     });
     this.accounting.start();
     this.applyStrongAlertStateFromRuntime();
@@ -332,7 +326,8 @@ class PomodoroAIO extends Plugin {
     this.breakBlackout?.destroy();
     this.accounting?.dispose();
     this.accounting = null;
-    this._accountingModal?.close();
+    this._accountingScreen?.destroy();
+    this._accountingScreen = null;
     this.stopPersistentAlertSound();
     if (this._tickTimeout) this.backgroundTimers.clearTimeout(this._tickTimeout);
     await this.deviceBridge?.dispose?.();
@@ -607,12 +602,12 @@ class PomodoroAIO extends Plugin {
     this.syncBreakBlackout(snap);
     this.app.workspace.trigger('pomodoro:aio-state', snap);
   }
-  /** macOS 原生助手路径；其他平台或取不到插件目录时为 null。 */
-  nativeHelperPath(){
+  /** macOS 原生助手路径；其他平台或取不到插件目录时为 null。 @param {string} [name] */
+  nativeHelperPath(name="pomodoro-blackout"){
     const basePath = this.app?.vault?.adapter?.getBasePath?.();
     const pluginDir = this.manifest?.dir;
     if (process.platform !== "darwin" || !basePath || !pluginDir) return null;
-    return require("node:path").resolve(basePath, pluginDir, "bin", "pomodoro-blackout");
+    return require("node:path").resolve(basePath, pluginDir, "bin", name);
   }
   _getBreakBlackoutController(){
     if (this.breakBlackout) return this.breakBlackout;
@@ -888,38 +883,91 @@ class PomodoroAIO extends Plugin {
   }
   /** @param {number | AnyRecord} [indexOrOptions] @param {AnyRecord} [options] */
   startSequence(indexOrOptions, options={}) { return this._getSequenceController().startSequence(indexOrOptions, options); }
-  /** @param {"idle"|"paused"|"awaiting"} reason @param {"work"|"rest"|"declare"} [initialTab] */
-  openAccountingPrompt(reason, initialTab){
-    if (this._accountingModal) return this._accountingModal;
+  _getAccountingScreen(){
+    if (this._accountingScreen) return this._accountingScreen;
+    this._accountingScreen = new AccountingScreen({
+      document:typeof document === "undefined" ? null : document,
+      binaryPath:this.nativeHelperPath("pomodoro-accounting"),
+      onChoice:choice => this.handleAccountingChoice(choice),
+      onClosed:reason => {
+        this.accounting?.setPromptOpen(false);
+        if (reason === "emergency") this.accounting?.emergencyExit();
+        else if (reason !== "chosen") this.accounting?.promptClosed();
+      },
+      onUnavailable:reason => console.warn("Pomodoro AIO 原生选择屏不可用，改用 Obsidian 窗口内选择屏", reason),
+      activateObsidian:() => this.accounting?.monitor.activateObsidian() ?? Promise.resolve()
+    });
+    return this._accountingScreen;
+  }
+  /** @param {"idle"|"paused"|"awaiting"} reason @param {{initialTab?:"work"|"rest"|"declare", manual?:boolean}} [options] */
+  accountingScreenData(reason, { initialTab="work", manual=false }={}){
     const view = this.accounting?.view();
     const pick = (/** @type {"work"|"rest"} */ type) => this.settings.modules.filter(module => module.type === type).map(({ id, name }) => ({ id, name }));
     const workModules = pick("work");
     const selected = this.settings.modules.find(module => module.id === this.runtime.selectedModuleId);
-    this.accounting?.setPromptOpen(true);
-    this._accountingModal = new AccountingModal(this.app, {
-      reason, initialTab, stretchMin:view?.stretchMin ?? null,
-      currentName:(reason === "awaiting" ? this.runtime.attention?.moduleRun?.name : this.runtime.moduleRun?.name) || "当前模块",
-      workModules, restModules:pick("rest"),
-      defaultWorkId:selected?.type === "work" ? selected.id : workModules[0]?.id || null,
+    const defaultWork = selected?.type === "work" ? selected : this.settings.modules.find(module => module.type === "work");
+    const currentName = (reason === "awaiting" ? this.runtime.attention?.moduleRun?.name : this.runtime.moduleRun?.name) || "当前模块";
+    return {
+      reason, initialTab,
+      label:this.accountingScreenLabel(reason, currentName),
+      title:reason === "paused" ? "计时已暂停" : reason === "awaiting" ? "下一段还没开始" : "现在要做什么？",
+      // 提醒模式和用户主动打开时可以直接关闭；强制模式只能长按 Esc 紧急退出。
+      closable:manual || !view?.strict,
+      workModules, defaultWorkId:defaultWork?.id || null,
+      taskName:defaultWork && defaultWork.name !== "工作" ? defaultWork.name : "",
+      candidates:[], restModules:pick("rest"),
       leisureLeftMin:Math.max(0, (view?.leisureBudgetMin ?? 0) - (view?.leisureUsedMin ?? 0)),
-      strict:!!view?.strict,
+      strictBudget:!!view?.strict,
       snoozesLeft:view?.snoozesLeft ?? 0,
       snoozeMin:this.settings.accountingSnoozeMin,
-      loadCandidates:async () => (await this.refreshTodaySnapshot()).unchecked,
-      onStartWork:(moduleId, name) => this.startWorkFromPrompt(moduleId, name),
-      onStartRest:moduleId => this.startRestFromPrompt(moduleId),
-      onDeclare:input => this.accounting?.declare(input) ?? false,
-      onResume:() => this.togglePause(),
-      onCompleteSegment:() => this.completeCurrentModule(),
-      onStartNext:() => this.startPendingStage(),
-      onSnooze:() => this.accounting?.snooze() ?? false,
-      onClosed:() => {
-        this._accountingModal = null;
-        this.accounting?.setPromptOpen(false);
-      }
-    });
-    this._accountingModal.open();
-    return this._accountingModal;
+      currentName
+    };
+  }
+  /** @param {"idle"|"paused"|"awaiting"} reason @param {string} currentName */
+  accountingScreenLabel(reason, currentName){
+    const view = this.accounting?.view();
+    const stretch = view?.stretchMin ? `已经有 ${view.stretchMin} 分钟没有归属` : "这段时间还没有归属";
+    const prefix = reason === "paused" ? `「${currentName}」已暂停 · ` : reason === "awaiting" ? `「${currentName}」等待开始 · ` : "";
+    return `${prefix}${stretch} · 今日累计 ${view?.unaccountedMin ?? 0} 分钟`;
+  }
+  /** @param {"idle"|"paused"|"awaiting"} reason @param {"work"|"rest"|"declare"} [initialTab] @param {{manual?:boolean}} [options] */
+  openAccountingPrompt(reason, initialTab, { manual=false }={}){
+    const screen = this._getAccountingScreen();
+    if (screen.visible) return screen;
+    this.accounting?.setPromptOpen(true);
+    screen.show(this.accountingScreenData(reason, { initialTab, manual }));
+    if (reason === "idle") {
+      this.refreshTodaySnapshot()
+        .then(snapshot => { if (screen.visible) screen.update({ candidates:snapshot.unchecked.slice(0, 6) }); })
+        .catch(error => logPluginError("accounting-candidates", error, { target:this.todayFilePath(), step:"read" }));
+    }
+    return screen;
+  }
+  refreshAccountingPrompt(){
+    const screen = this._accountingScreen;
+    const reason = classifyRuntime(this.runtime).reason;
+    if (!screen?.visible || !screen.data || !reason) return;
+    screen.update({ label:this.accountingScreenLabel(screen.data.reason, screen.data.currentName) });
+  }
+  closeAccountingPrompt(){
+    if (!this._accountingScreen?.visible) return;
+    this._accountingScreen.hide();
+    this.accounting?.setPromptOpen(false);
+  }
+  /** @param {{action:string, [key:string]:any}} choice @returns {Promise<{ok:boolean, error?:string}>} */
+  async handleAccountingChoice(choice){
+    /** @param {unknown} result */
+    const done = result => ({ ok:result !== false });
+    switch (choice.action) {
+    case "work": return done(await this.startWorkFromPrompt(String(choice.moduleId || ""), String(choice.name || "")));
+    case "rest": return done(await this.startRestFromPrompt(String(choice.moduleId || "")));
+    case "declare": return this.accounting?.declare({ kind:choice.kind, reason:choice.reason, minutes:choice.minutes }) ?? { ok:false };
+    case "resume": return done(await this.togglePause());
+    case "complete": return done(await this.completeCurrentModule());
+    case "next": return done(await this.startPendingStage());
+    case "snooze": return this.accounting?.snooze() ?? { ok:false };
+    default: return { ok:false, error:"未知操作" };
+    }
   }
   /** @param {"work"|"rest"|"declare"} [initialTab] */
   openAccountingPromptNow(initialTab){
@@ -927,7 +975,7 @@ class PomodoroAIO extends Plugin {
     const { reason } = classifyRuntime(this.runtime);
     if (!reason) { new Notice("当前正在计时或结算"); return null; }
     if (initialTab === "declare" && reason !== "idle") { new Notice("只有在序列空闲时才能声明不计时"); return null; }
-    return this.openAccountingPrompt(reason, initialTab);
+    return this.openAccountingPrompt(reason, initialTab, { manual:true });
   }
   /** 强制模式下被推迟的放宽设置，跨天后生效。 */
   async applyDueAccountingSettings(){
