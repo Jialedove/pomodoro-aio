@@ -182,6 +182,9 @@ class PomodoroSettingTab extends PluginSettingTab {
       renderAccounting();
       return ok;
     };
+    /** @type {Array<{id:string,name:string,main:boolean,width:number,height:number}> | null} */
+    let displays = null;
+    void this.plugin.listDisplays?.().then((/** @type {any} */ list) => { displays = list; renderAccounting(); });
     const renderAccounting = () => {
       accountingBody.empty();
       const settings = this.plugin.settings;
@@ -207,6 +210,17 @@ class PomodoroSettingTab extends PluginSettingTab {
       accountingNumber("稍后提醒时长（分钟）", "选择“稍后再提醒”后静音多久；静音期间仍计入未归属。", "accountingSnoozeMin");
       accountingNumber("每日稍后提醒次数", "用完后弹窗里不再提供“稍后再提醒”。", "accountingSnoozeLimit");
       accountingNumber("离开判定（秒）", "这么久没有键盘鼠标输入就视为离开，不计入未归属。", "accountingAwaySec");
+      new Setting(accountingBody).setName("黑屏选择显示在").setDesc("有多块显示器时，选择界面放在哪块屏幕上；其他屏幕只显示一行提示。指定的显示器没连接时，改用主显示器。")
+        .addDropdown(dropdown => {
+          /** @type {Record<string, string>} */
+          const options = { main:"主显示器（带菜单栏）", pointer:"跟随鼠标" };
+          for (const display of displays || []) options[display.id] = `${display.name}（${display.width}×${display.height}${display.main ? "，主显示器" : ""}）`;
+          const saved = settings.accountingDisplay || "main";
+          if (!options[saved]) options[saved] = displays ? "已保存的显示器（未连接）" : "已保存的显示器";
+          dropdown.addOptions(options);
+          dropdown.setValue(saved);
+          dropdown.onChange(value => set({ accountingDisplay:value }));
+        });
       new Setting(accountingBody).setName("日记标题").setDesc("声明、未归属时段和稍后提醒记录写在当日日记的这个标题下。")
         .addText(text => text.setValue(settings.accountingHeading || "时间归属").onChange(value => set({ accountingHeading: value || "时间归属" })));
       const pending = settings.accountingPending;

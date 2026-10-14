@@ -84,6 +84,7 @@ export interface Settings {
   accountingSnoozeLimit: number;
   accountingLeisureBudgetMin: number;
   accountingHeading: string;
+  accountingDisplay: string;
   schemaVersion?: number;
 }
 export interface Attention {

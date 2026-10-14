@@ -9,6 +9,7 @@ const {
   snoozeAccounting,
   declareUntracked,
   endDeclaration,
+  extendDeclaration,
   logEmergencyExit,
   createLadderState,
   evaluateLadder
@@ -106,8 +107,9 @@ class TimeAccountingController {
       this.reason = this.store.declaration ? null : reason;
       for (const event of result.events) {
         if (!event.expired) continue;
-        this.helpers.sysNotify("不计时已结束", `${KIND_LABEL[event.declaration.kind]}：${event.declaration.reason}。回来选择下一件事吧。`, settings.enableNotify);
-        this.helpers.playBeep("focus-alert", settings.enableSound, settings.soundWaveform);
+        // 小计时到点：立即弹出黑屏，必须重新选择。
+        this.helpers.playBeep("focus-end", settings.enableSound, settings.soundWaveform, true);
+        if (this.reason) this.plugin.openAccountingPrompt(this.reason, "work", { ended:event.declaration });
       }
       const ladder = evaluateLadder(this.ladder, {
         nowMs, stretch:this.store.stretch, reason:this.reason, idleSec,
@@ -153,6 +155,23 @@ class TimeAccountingController {
     this.plugin.openAccountingPrompt(reason);
   }
 
+  /** 每秒由插件调用：小计时到点时立刻推进，不等 5 秒一次的轮询。 */
+  checkExpiry() {
+    const declaration = this.store.declaration;
+    if (declaration && this.now() >= declaration.startedAtMs + declaration.plannedMs) this._pollSafely();
+  }
+
+  /** @param {number} minutes @returns {{ok:boolean, error?:string}} */
+  extend(minutes) {
+    const result = extendDeclaration(this.store, minutes, this.now(), this.plugin.settings);
+    if (!result.ok) { new Notice(result.error); return { ok:false, error:result.error }; }
+    this.store = result.store;
+    this._save();
+    new Notice(`小计时延长 ${result.addedMin} 分钟`);
+    this.plugin.broadcast?.();
+    return { ok:true };
+  }
+
   /** 选择屏被关闭（提醒模式）或被外部结束：从现在起按间隔再弹。 */
   promptClosed() {
     this.ladder = { ...this.ladder, lastPromptAtMs:this.now() };
@@ -186,7 +205,7 @@ class TimeAccountingController {
   /** @param {{kind:unknown, reason:unknown, minutes:unknown}} input @returns {{ok:boolean, error?:string}} */
   declare(input) {
     if (classifyRuntime(this.plugin.runtime).reason !== "idle") {
-      const error = "只有在序列空闲时才能声明不计时";
+      const error = "只有在序列空闲时才能开始小计时";
       new Notice(error);
       return { ok:false, error };
     }
@@ -204,8 +223,8 @@ class TimeAccountingController {
     void this.flush();
     const label = KIND_LABEL[/** @type {"leisure"|"errand"} */ (input.kind)];
     new Notice(result.cappedMin > 0 ? `强制模式：消遣已按剩余额度截为 ${result.cappedMin} 分钟`
-      : result.overBudgetMin > 0 ? `已开始${label}，将超出今日额度 ${result.overBudgetMin} 分钟，会记入日记`
-        : `已开始${label}：${this.store.declaration?.reason}`);
+      : result.overBudgetMin > 0 ? `已开始小计时（${label}），将超出今日额度 ${result.overBudgetMin} 分钟，会记入日记`
+        : `已开始小计时（${label}）：${this.store.declaration?.reason}`);
     this.plugin.broadcast?.();
     return { ok:true };
   }

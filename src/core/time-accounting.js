@@ -44,6 +44,8 @@ const ACCOUNTING_DEFAULTS = Object.freeze({
   accountingSnoozeLimit:3,
   accountingLeisureBudgetMin:30,
   accountingHeading:"时间归属",
+  // 黑屏选择界面显示在哪块屏幕："main" 带菜单栏的主显示器，"pointer" 跟随鼠标，其他值为显示器 UUID。
+  accountingDisplay:"main",
   /** @type {{requestedDayKey:string, patch:Record<string, any>} | null} */
   accountingPending:null
 });
@@ -78,6 +80,7 @@ function normalizeAccountingSettings(source, base = ACCOUNTING_DEFAULTS) {
     accountingSnoozeLimit:count("accountingSnoozeLimit"),
     accountingLeisureBudgetMin:count("accountingLeisureBudgetMin"),
     accountingHeading:heading || ACCOUNTING_DEFAULTS.accountingHeading,
+    accountingDisplay:String(source?.accountingDisplay ?? fallback.accountingDisplay ?? "main").trim().slice(0, 80) || "main",
     accountingPending:normalizePending(source?.accountingPending === undefined ? fallback.accountingPending : source.accountingPending)
   };
 }
@@ -349,8 +352,8 @@ function declareUntracked(previous, { kind, reason, minutes, nowMs, id }, settin
   if (!text) return { ok:false, error:"请写下理由" };
   const plannedMin = Number(minutes);
   if (!Number.isFinite(plannedMin) || plannedMin <= 0) return { ok:false, error:"请填写时长（分钟）" };
-  if (plannedMin > MAX_DECLARATION_MIN) return { ok:false, error:`单次声明最长 ${MAX_DECLARATION_MIN} 分钟` };
-  if (previous.declaration) return { ok:false, error:"已有进行中的声明" };
+  if (plannedMin > MAX_DECLARATION_MIN) return { ok:false, error:`单次小计时最长 ${MAX_DECLARATION_MIN} 分钟` };
+  if (previous.declaration) return { ok:false, error:"已有进行中的小计时" };
   const config = normalizeAccountingSettings(settings);
   let plannedMs = Math.round(plannedMin * 60_000);
   const remainingMs = Math.max(0, config.accountingLeisureBudgetMin * 60_000 - previous.leisureMs);
@@ -368,6 +371,34 @@ function declareUntracked(previous, { kind, reason, minutes, nowMs, id }, settin
   store.declaration = { id:id || `declaration-${nowMs}`, kind, reason:text, startedAtMs:nowMs, plannedMs,
     dayKey:store.dayKey, dailyPath:store.dailyPath };
   return { ok:true, store, overBudgetMin, cappedMin };
+}
+
+/**
+ * 小计时延长。消遣在强制模式下受剩余额度限制（已用 + 本次计划 + 延长 ≤ 额度）。
+ * @param {AccountingStore} previous @param {number} minutes @param {number} nowMs @param {Record<string, any>} settings
+ * @returns {{ok:true, store:AccountingStore, addedMin:number} | {ok:false, error:string}}
+ */
+function extendDeclaration(previous, minutes, nowMs, settings) {
+  const declaration = previous.declaration;
+  if (!declaration) return { ok:false, error:"当前没有进行中的小计时" };
+  if (nowMs >= declaration.startedAtMs + declaration.plannedMs) return { ok:false, error:"小计时已经结束" };
+  let addMs = Math.round(Math.max(0, Number(minutes) || 0) * 60_000);
+  if (!addMs) return { ok:false, error:"请填写延长的分钟数" };
+  const total = declaration.plannedMs + addMs;
+  if (total > MAX_DECLARATION_MIN * 60_000) return { ok:false, error:`单次小计时最长 ${MAX_DECLARATION_MIN} 分钟` };
+  if (declaration.kind === "leisure" && isStrict(settings)) {
+    const config = normalizeAccountingSettings(settings);
+    const room = config.accountingLeisureBudgetMin * 60_000 - previous.leisureMs - declaration.plannedMs;
+    if (room < 60_000) return { ok:false, error:"今日消遣额度已用完（强制模式）" };
+    addMs = Math.min(addMs, Math.floor(room / 60_000) * 60_000);
+  }
+  return { ok:true, store:{ ...previous, declaration:{ ...declaration, plannedMs:declaration.plannedMs + addMs } }, addedMin:minutesOf(addMs) };
+}
+
+/** @param {AccountingStore} store @param {number} nowMs */
+function declarationRemainingMs(store, nowMs) {
+  const declaration = store.declaration;
+  return declaration ? Math.max(0, declaration.startedAtMs + declaration.plannedMs - nowMs) : 0;
 }
 
 /** 强制模式下长按 Esc 紧急退出选择屏：写一行日记。 @param {AccountingStore} previous @param {number} nowMs */
@@ -445,6 +476,8 @@ module.exports = {
   snoozeAccounting,
   declareUntracked,
   endDeclaration,
+  extendDeclaration,
+  declarationRemainingMs,
   logEmergencyExit,
   createLadderState,
   evaluateLadder,

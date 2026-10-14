@@ -1,21 +1,31 @@
 import AppKit
 import Foundation
 
-// 时间归属选择屏：黑色全屏覆盖所有显示器。指针所在的屏幕显示选择界面，其他屏幕只显示一行提示。
-// 插件拥有全部状态；这里只负责展示并回传选择。stdin/stdout 均为换行分隔的 JSON。
+// 时间归属选择屏：纯黑全屏覆盖所有显示器。选择界面显示在设置指定的屏幕上（默认带菜单栏的主显示器），
+// 其他屏幕只显示一行提示。插件拥有全部状态；这里只负责展示并回传选择。stdin/stdout 均为换行分隔的 JSON。
 //
 // 插件 → 程序：{"type":"show", ...ScreenData}、{"type":"update", ...部分字段}、
 //               {"type":"error","message":…}（重新启用按钮并显示错误）、{"type":"hide"}
 // 程序 → 插件：{"type":"ready"}、{"type":"shown"}、
-//               {"type":"choice","action":"work","moduleId":…,"name":…}
-//               {"type":"choice","action":"rest","moduleId":…}
-//               {"type":"choice","action":"declare","kind":"leisure|errand","reason":…,"minutes":…}
-//               {"type":"choice","action":"resume|complete|next|snooze|close|emergency"}
+//               {"type":"choice","action":"work","moduleId","name","durationMin","workspaceCommandId","lightProgramId","blackout"}
+//               {"type":"choice","action":"rest","moduleId","name","durationMin","lightProgramId","blackout"}
+//               {"type":"choice","action":"declare","kind":"leisure|errand","reason","minutes"}
+//               {"type":"choice","action":"again|resume|complete|next|snooze|close|emergency"}
 //               {"type":"exit","reason":…}
+// 命令行：--list-displays 打印所有显示器（UUID、名称、是否主显示器、尺寸）后退出。
 
 struct ModuleItem {
     let id: String
     let name: String
+    let durationMin: Double
+    let workspaceCommandId: String
+    let lightProgramId: String
+    let blackout: Bool
+}
+
+struct Option {
+    let id: String
+    let title: String
 }
 
 struct ScreenData {
@@ -24,11 +34,16 @@ struct ScreenData {
     var title = "现在要做什么？"
     var closable = true
     var initialTab = "work"
+    var display = "main"
     var workModules: [ModuleItem] = []
     var defaultWorkId: String?
-    var taskName = ""
     var candidates: [String] = []
     var restModules: [ModuleItem] = []
+    var defaultRestId: String?
+    var restPresets: [String] = []
+    var workspaceCommands: [Option] = []
+    var lightPrograms: [Option] = []
+    var againText = ""
     var leisureLeftMin = 0
     var strictBudget = false
     var snoozesLeft = 0
@@ -40,7 +55,18 @@ struct ScreenData {
             guard let list = value as? [[String: Any]] else { return nil }
             return list.compactMap { item in
                 guard let id = item["id"] as? String, let name = item["name"] as? String else { return nil }
-                return ModuleItem(id: id, name: name)
+                return ModuleItem(id: id, name: name,
+                                  durationMin: (item["durationMin"] as? NSNumber)?.doubleValue ?? 25,
+                                  workspaceCommandId: item["workspaceCommandId"] as? String ?? "",
+                                  lightProgramId: item["lightProgramId"] as? String ?? "",
+                                  blackout: item["blackout"] as? Bool ?? false)
+            }
+        }
+        func options(_ value: Any?) -> [Option]? {
+            guard let list = value as? [[String: Any]] else { return nil }
+            return list.compactMap { item in
+                guard let id = item["id"] as? String, let title = item["title"] as? String else { return nil }
+                return Option(id: id, title: title)
             }
         }
         func int(_ key: String) -> Int? { (message[key] as? NSNumber)?.intValue }
@@ -49,11 +75,16 @@ struct ScreenData {
         if let value = message["title"] as? String { title = value }
         if let value = message["closable"] as? Bool { closable = value }
         if let value = message["initialTab"] as? String { initialTab = value }
+        if let value = message["display"] as? String { display = value }
         if let value = modules(message["workModules"]) { workModules = value }
         if message.keys.contains("defaultWorkId") { defaultWorkId = message["defaultWorkId"] as? String }
-        if let value = message["taskName"] as? String { taskName = value }
         if let value = message["candidates"] as? [String] { candidates = value }
         if let value = modules(message["restModules"]) { restModules = value }
+        if message.keys.contains("defaultRestId") { defaultRestId = message["defaultRestId"] as? String }
+        if let value = message["restPresets"] as? [String] { restPresets = value }
+        if let value = options(message["workspaceCommands"]) { workspaceCommands = value }
+        if let value = options(message["lightPrograms"]) { lightPrograms = value }
+        if let value = message["againText"] as? String { againText = value }
         if let value = int("leisureLeftMin") { leisureLeftMin = value }
         if let value = message["strictBudget"] as? Bool { strictBudget = value }
         if let value = int("snoozesLeft") { snoozesLeft = value }
@@ -168,9 +199,7 @@ final class InputBox: NSView {
         field.focusRingType = .none
         field.font = NSFont.systemFont(ofSize: size)
         field.textColor = Palette.text
-        field.placeholderAttributedString = NSAttributedString(string: placeholder, attributes: [
-            .font: NSFont.systemFont(ofSize: size), .foregroundColor: Palette.faint
-        ])
+        setPlaceholder(placeholder, size: size)
         field.setAccessibilityLabel(placeholder)
         field.cell?.isScrollable = true
         field.cell?.wraps = false
@@ -178,14 +207,20 @@ final class InputBox: NSView {
         addSubview(field)
         NSLayoutConstraint.activate([
             widthAnchor.constraint(equalToConstant: width),
-            heightAnchor.constraint(equalToConstant: size + 28),
-            field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-            field.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            heightAnchor.constraint(equalToConstant: size + 26),
+            field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            field.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
             field.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("not supported") }
+
+    func setPlaceholder(_ text: String, size: CGFloat = 20) {
+        field.placeholderAttributedString = NSAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: size), .foregroundColor: Palette.faint
+        ])
+    }
 }
 
 /// 长按 Esc 的进度条。
@@ -214,11 +249,11 @@ func row(_ views: [NSView], spacing: CGFloat = 12) -> NSStackView {
     return stack
 }
 
-func column(_ views: [NSView], spacing: CGFloat = 14) -> NSStackView {
+func column(_ views: [NSView], spacing: CGFloat = 14, alignment: NSLayoutConstraint.Attribute = .centerX) -> NSStackView {
     let stack = NSStackView(views: views)
     stack.orientation = .vertical
     stack.spacing = spacing
-    stack.alignment = .centerX
+    stack.alignment = alignment
     return stack
 }
 
@@ -233,12 +268,58 @@ func grid(_ views: [NSView], perRow: Int, spacing: CGFloat = 10) -> NSStackView 
     return column(rows, spacing: spacing)
 }
 
+/// 左侧固定宽度的字段名 + 控件。
+func labeled(_ title: String, _ control: NSView) -> NSStackView {
+    let label = makeLabel(title, size: 15, color: Palette.muted)
+    label.alignment = .right
+    label.translatesAutoresizingMaskIntoConstraints = false
+    label.widthAnchor.constraint(equalToConstant: 44).isActive = true
+    return row([label, control], spacing: 12)
+}
+
+func popup(_ items: [Option], selected: String, accessibility: String) -> NSPopUpButton {
+    let button = NSPopUpButton(frame: .zero, pullsDown: false)
+    button.controlSize = .large
+    for item in items {
+        button.addItem(withTitle: item.title)
+        button.lastItem?.representedObject = item.id
+    }
+    selectOption(button, id: selected)
+    button.setAccessibilityLabel(accessibility)
+    return button
+}
+
+func selectOption(_ button: NSPopUpButton, id: String) {
+    if let index = button.itemArray.firstIndex(where: { ($0.representedObject as? String) == id }) {
+        button.selectItem(at: index)
+    } else if !id.isEmpty {
+        // 模块引用的选项已不在列表里：保留原值，避免开始时被悄悄改掉。
+        button.addItem(withTitle: "当前设置（已不可用）")
+        button.lastItem?.representedObject = id
+        button.selectItem(at: button.numberOfItems - 1)
+    } else {
+        button.selectItem(at: 0)
+    }
+}
+
+func checkbox(_ title: String, on: Bool) -> NSButton {
+    let box = NSButton(checkboxWithTitle: title, target: nil, action: nil)
+    box.attributedTitle = NSAttributedString(string: title, attributes: [
+        .font: NSFont.systemFont(ofSize: 15), .foregroundColor: Palette.text
+    ])
+    box.state = on ? .on : .off
+    return box
+}
+
+func formatMinutes(_ value: Double) -> String {
+    value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
+}
+
 // MARK: - 选择面板
 
-final class ChoicePanel: NSView {
+final class ChoicePanel: NSView, NSTextFieldDelegate, NSComboBoxDelegate {
     var data: ScreenData
     var send: ([String: Any]) -> Void = { _ in }
-    var onEmergencyProgress: ((CGFloat) -> Void)?
 
     private let shownAt = Date()
     private var busy = false
@@ -251,9 +332,26 @@ final class ChoicePanel: NSView {
     private let status = makeLabel("", size: 14, color: Palette.warning)
     private let holdHint = makeLabel("长按 esc 3 秒紧急退出", size: 13, color: Palette.faint)
     private let holdBar = HoldBar()
-    private var workInput: InputBox?
+    // 工作
     private var workPopup: NSPopUpButton?
-    private var candidateArea = NSStackView()
+    private let workName = NSComboBox()
+    private let workMinutes = InputBox(placeholder: "分钟", size: 18, width: 84)
+    private var workLayout: NSPopUpButton?
+    private var workLight: NSPopUpButton?
+    private var workBlackout: NSButton?
+    private var workMore = NSStackView()
+    private var workMoreToggle: PillButton?
+    // 休息
+    private var restPopup: NSPopUpButton?
+    private var presetButtons: [String: PillButton] = [:]
+    private var selectedPreset: String?
+    private let restCustom = InputBox(placeholder: "其他休息事项", size: 18, width: 300)
+    private let restMinutes = InputBox(placeholder: "分钟", size: 18, width: 84)
+    private var restLight: NSPopUpButton?
+    private var restBlackout: NSButton?
+    private var restMore = NSStackView()
+    private var restMoreToggle: PillButton?
+    // 小计时
     private var reasonInput: InputBox?
     private var minutesInput: InputBox?
     private var leisureButton: PillButton?
@@ -275,7 +373,6 @@ final class ChoicePanel: NSView {
         let title = makeLabel(data.title, size: 44, weight: .bold)
         labelField.stringValue = data.label
         var items: [NSView] = [labelField, title]
-        var spacingAfterTitle: CGFloat = 36
 
         switch data.reason {
         case "paused":
@@ -284,8 +381,13 @@ final class ChoicePanel: NSView {
         case "awaiting":
             items.append(actions([("开始下一段：\(data.currentName)", .primary, { [weak self] in self?.choose(["action": "next"]) })]))
         default:
-            spacingAfterTitle = 32
-            let tabs = row(tabSpecs().map { key, name, number in
+            if !data.againText.isEmpty {
+                let again = PillButton(data.againText, style: .secondary, size: 15, height: 38)
+                again.onPress = { [weak self] in self?.choose(["action": "again"]) }
+                actionButtons.append(again)
+                items.append(again)
+            }
+            let tabs = row([("work", "工作", 1), ("rest", "休息", 2), ("declare", "小计时", 3)].map { key, name, number in
                 let button = PillButton("\(number)  \(name)", style: .tab, size: 18, minWidth: 150, height: 56)
                 button.onPress = { [weak self] in self?.select(tab: key) }
                 tabButtons[key] = button
@@ -304,19 +406,17 @@ final class ChoicePanel: NSView {
                     container.bottomAnchor.constraint(greaterThanOrEqualTo: panel.bottomAnchor)
                 ])
             }
-            // 固定最小高度，切换选项卡时下方内容不跳动。
+            // 固定宽度与最小高度，切换选项卡时下方内容不跳动。
             NSLayoutConstraint.activate([
-                container.widthAnchor.constraint(equalToConstant: 640),
-                container.heightAnchor.constraint(greaterThanOrEqualToConstant: 250)
+                container.widthAnchor.constraint(equalToConstant: 680),
+                container.heightAnchor.constraint(greaterThanOrEqualToConstant: 270)
             ])
             items.append(container)
         }
 
         items.append(status)
-        let snooze = data.snoozesLeft > 0
-            ? PillButton("\(data.snoozeMin) 分钟后再提醒（今天剩 \(data.snoozesLeft) 次）", style: .link, size: 14)
-            : nil
-        if let snooze {
+        if data.snoozesLeft > 0 {
+            let snooze = PillButton("\(data.snoozeMin) 分钟后再提醒（今天剩 \(data.snoozesLeft) 次）", style: .link, size: 14)
             snooze.onPress = { [weak self] in self?.choose(["action": "snooze"]) }
             actionButtons.append(snooze)
             items.append(snooze)
@@ -329,7 +429,7 @@ final class ChoicePanel: NSView {
 
         let stack = column(items, spacing: 14)
         stack.setCustomSpacing(10, after: labelField)
-        stack.setCustomSpacing(spacingAfterTitle, after: title)
+        stack.setCustomSpacing(30, after: title)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
@@ -343,10 +443,6 @@ final class ChoicePanel: NSView {
             let initial = panels[data.initialTab] != nil ? data.initialTab : "work"
             select(tab: initial, animated: false)
         }
-    }
-
-    private func tabSpecs() -> [(String, String, Int)] {
-        [("work", "工作", 1), ("rest", "休息", 2), ("declare", "不计时", 3)]
     }
 
     private func actions(_ specs: [(String, PillButton.Style, () -> Void)]) -> NSView {
@@ -365,66 +461,168 @@ final class ChoicePanel: NSView {
         return button
     }
 
+    private func minuteRow(_ box: InputBox, chips: [Int]) -> NSStackView {
+        box.field.alignment = .center
+        box.field.delegate = self
+        let buttons = chips.map { value -> NSView in
+            let chip = PillButton("\(value)", style: .secondary, size: 15, minWidth: 52, height: 38)
+            chip.onPress = { [weak self] in
+                box.field.stringValue = String(value)
+                self?.refreshDeclare()
+            }
+            return chip
+        }
+        return row([box, makeLabel("分钟", size: 15, color: Palette.muted)] + buttons, spacing: 10)
+    }
+
+    private func moreToggle(_ stack: NSStackView) -> PillButton {
+        stack.isHidden = true
+        let toggle = PillButton("更多选项 ▸", style: .link, size: 14)
+        toggle.onPress = { [weak self, weak toggle] in
+            stack.isHidden.toggle()
+            toggle?.title = stack.isHidden ? "更多选项 ▸" : "更多选项 ▾"
+            self?.needsLayout = true
+        }
+        return toggle
+    }
+
+    private func lightOptions() -> [Option] {
+        [Option(id: "", title: "灯光：继承默认"), Option(id: "none", title: "灯光：不联动")]
+            + data.lightPrograms.map { Option(id: $0.id, title: "灯光：\($0.title)") }
+    }
+
+    private func modulePopup(_ modules: [ModuleItem], selected: String?, noun: String) -> NSPopUpButton? {
+        guard modules.count > 1 else { return nil }
+        let options = modules.enumerated().map { index, module in Option(id: module.id, title: "第 \(index + 1) 个\(noun)：\(module.name)") }
+        let button = popup(options, selected: selected ?? modules[0].id, accessibility: "选择\(noun)模块")
+        button.target = self
+        return button
+    }
+
     private func buildWork() -> NSView {
         guard !data.workModules.isEmpty else {
             return column([makeLabel("序列里还没有工作模块，请先在番茄视图中添加。", size: 16, color: Palette.muted)])
         }
         var items: [NSView] = []
-        if data.workModules.count > 1 {
-            let popup = NSPopUpButton()
-            for (index, module) in data.workModules.enumerated() {
-                popup.addItem(withTitle: "第 \(index + 1) 个工作：\(module.name)")
-                popup.lastItem?.representedObject = module.id
-            }
-            if let id = data.defaultWorkId, let index = data.workModules.firstIndex(where: { $0.id == id }) {
-                popup.selectItem(at: index)
-            }
-            popup.target = self
+        if let popup = modulePopup(data.workModules, selected: data.defaultWorkId, noun: "工作") {
             popup.action = #selector(workModuleChanged)
-            popup.setAccessibilityLabel("从哪个工作模块开始")
             workPopup = popup
             items.append(popup)
         }
-        let input = InputBox(placeholder: "现在要做的事", size: 22, width: 560)
-        input.field.stringValue = data.taskName
-        input.field.target = self
-        input.field.action = #selector(submitFromField)
-        workInput = input
-        items.append(input)
-        candidateArea = column([], spacing: 10)
-        items.append(candidateArea)
+        workName.controlSize = .large
+        workName.font = NSFont.systemFont(ofSize: 18)
+        workName.completes = true
+        workName.numberOfVisibleItems = 10
+        workName.placeholderString = "现在要做的事（下拉选择今日待办，或直接输入）"
+        workName.delegate = self
+        workName.translatesAutoresizingMaskIntoConstraints = false
+        workName.widthAnchor.constraint(equalToConstant: 500).isActive = true
+        workName.setAccessibilityLabel("现在要做的事")
         refreshCandidates()
+        items.append(labeled("事情", workName))
+        items.append(labeled("时长", minuteRow(workMinutes, chips: [15, 25, 45, 60])))
+
+        let layout = popup([Option(id: "", title: "布局：不切换")] + data.workspaceCommands.map { Option(id: $0.id, title: "布局：\($0.title)") },
+                           selected: "", accessibility: "工作区布局")
+        let light = popup(lightOptions(), selected: "", accessibility: "灯光方案")
+        let blackout = checkbox("执行时黑屏", on: false)
+        workLayout = layout
+        workLight = light
+        workBlackout = blackout
+        workMore = row([layout, light, blackout], spacing: 14)
+        let toggle = moreToggle(workMore)
+        workMoreToggle = toggle
+        items.append(toggle)
+        items.append(workMore)
         items.append(primary("开始工作  ↵") { [weak self] in self?.submitWork() })
-        return column(items, spacing: 16)
+        fillWork()
+        return column(items, spacing: 14)
     }
 
+    private func currentWork() -> ModuleItem? {
+        let id = (workPopup?.selectedItem?.representedObject as? String) ?? data.defaultWorkId
+        return data.workModules.first(where: { $0.id == id }) ?? data.workModules.first
+    }
+
+    private func fillWork() {
+        guard let module = currentWork() else { return }
+        workName.stringValue = module.name == "工作" ? "" : module.name
+        workMinutes.field.stringValue = formatMinutes(module.durationMin)
+        if let workLayout { selectOption(workLayout, id: module.workspaceCommandId) }
+        if let workLight { selectOption(workLight, id: module.lightProgramId) }
+        workBlackout?.state = module.blackout ? .on : .off
+    }
+
+    @objc private func workModuleChanged() { fillWork() }
+
     private func refreshCandidates() {
-        candidateArea.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        let names = Array(data.candidates.prefix(6))
-        guard !names.isEmpty else { return }
-        let chips = names.map { name -> NSView in
-            let chip = PillButton(name, style: .secondary, size: 14, height: 34)
-            chip.onPress = { [weak self] in
-                self?.workInput?.field.stringValue = name
-                self?.window?.makeFirstResponder(self?.workInput?.field)
-            }
-            return chip
-        }
-        candidateArea.addArrangedSubview(makeLabel("今日待办", size: 13, color: Palette.faint))
-        candidateArea.addArrangedSubview(grid(chips, perRow: 3))
+        let typed = workName.stringValue
+        workName.removeAllItems()
+        workName.addItems(withObjectValues: data.candidates)
+        workName.stringValue = typed
     }
 
     private func buildRest() -> NSView {
         guard !data.restModules.isEmpty else {
             return column([makeLabel("序列里还没有休息模块，请先在番茄视图中添加。", size: 16, color: Palette.muted)])
         }
-        let buttons = data.restModules.map { module -> NSView in
-            let button = PillButton(module.name, style: .secondary, size: 17, minWidth: 180, height: 52)
-            button.onPress = { [weak self] in self?.choose(["action": "rest", "moduleId": module.id]) }
-            actionButtons.append(button)
-            return button
+        var items: [NSView] = []
+        if let popup = modulePopup(data.restModules, selected: data.defaultRestId, noun: "休息") {
+            popup.action = #selector(restModuleChanged)
+            restPopup = popup
+            items.append(popup)
         }
-        return column([makeLabel("点一下就开始", size: 14, color: Palette.faint), grid(buttons, perRow: 3, spacing: 12)], spacing: 16)
+        if !data.restPresets.isEmpty {
+            let buttons = data.restPresets.map { preset -> NSView in
+                let button = PillButton(preset, style: .tab, size: 15, minWidth: 150, height: 42)
+                button.onPress = { [weak self] in self?.choosePreset(preset) }
+                presetButtons[preset] = button
+                return button
+            }
+            items.append(grid(buttons, perRow: 3, spacing: 10))
+        }
+        restCustom.field.delegate = self
+        items.append(labeled("其他", restCustom))
+        items.append(labeled("时长", minuteRow(restMinutes, chips: [5, 10, 15, 20])))
+        let light = popup(lightOptions(), selected: "", accessibility: "灯光方案")
+        let blackout = checkbox("执行时黑屏", on: false)
+        restLight = light
+        restBlackout = blackout
+        restMore = row([light, blackout], spacing: 14)
+        let toggle = moreToggle(restMore)
+        restMoreToggle = toggle
+        items.append(toggle)
+        items.append(restMore)
+        items.append(primary("开始休息  ↵") { [weak self] in self?.submitRest() })
+        fillRest()
+        return column(items, spacing: 14)
+    }
+
+    private func currentRest() -> ModuleItem? {
+        let id = (restPopup?.selectedItem?.representedObject as? String) ?? data.defaultRestId
+        return data.restModules.first(where: { $0.id == id }) ?? data.restModules.first
+    }
+
+    private func fillRest() {
+        guard let module = currentRest() else { return }
+        if data.restPresets.contains(module.name) {
+            choosePreset(module.name)
+        } else {
+            choosePreset(nil)
+            restCustom.field.stringValue = module.name == "休息" ? "" : module.name
+        }
+        restMinutes.field.stringValue = formatMinutes(module.durationMin)
+        if let restLight { selectOption(restLight, id: module.lightProgramId) }
+        restBlackout?.state = module.blackout ? .on : .off
+    }
+
+    @objc private func restModuleChanged() { fillRest() }
+
+    private func choosePreset(_ preset: String?) {
+        selectedPreset = preset
+        for (name, button) in presetButtons { button.isSelectedTab = name == preset }
+        if preset != nil { restCustom.field.stringValue = "" }
+        status.stringValue = ""
     }
 
     private func buildDeclare() -> NSView {
@@ -435,38 +633,22 @@ final class ChoicePanel: NSView {
         leisureButton = leisure
         errandButton = errand
         let reason = InputBox(placeholder: "理由", size: 20, width: 560)
-        reason.field.target = self
-        reason.field.action = #selector(submitFromField)
+        reason.field.delegate = self
         reasonInput = reason
-        let minutes = InputBox(placeholder: "分钟", size: 20, width: 110)
-        minutes.field.alignment = .center
+        let minutes = InputBox(placeholder: "分钟", size: 18, width: 84)
         minutes.field.stringValue = String(max(5, min(30, data.leisureLeftMin > 0 ? data.leisureLeftMin : 15)))
-        minutes.field.target = self
-        minutes.field.action = #selector(submitFromField)
         minutesInput = minutes
-        NotificationCenter.default.addObserver(self, selector: #selector(minutesChanged), name: NSControl.textDidChangeNotification, object: minutes.field)
-        let chips = [10, 15, 30, 60].map { value -> NSView in
-            let chip = PillButton("\(value)", style: .secondary, size: 15, minWidth: 56, height: 40)
-            chip.onPress = { [weak self] in
-                self?.minutesInput?.field.stringValue = String(value)
-                self?.refreshDeclare()
-            }
-            return chip
-        }
-        let minuteRow = row([minutes, makeLabel("分钟", size: 16, color: Palette.muted)] + chips, spacing: 10)
+        let minuteRowView = minuteRow(minutes, chips: [10, 15, 30, 60])
         refreshDeclare()
-        return column([row([leisure, errand], spacing: 10), reason, minuteRow, budgetHint,
-                       primary("开始不计时  ↵") { [weak self] in self?.submitDeclare() }], spacing: 14)
+        let hint = makeLabel("小计时不算工作时间，到点后必须重新选择；记录写入当日日记。", size: 13, color: Palette.faint)
+        return column([row([leisure, errand], spacing: 10), reason, minuteRowView, budgetHint, hint,
+                       primary("开始小计时  ↵") { [weak self] in self?.submitDeclare() }], spacing: 14)
     }
-
-    @objc private func minutesChanged() { refreshDeclare() }
 
     private func refreshDeclare() {
         leisureButton?.isSelectedTab = declareKind == "leisure"
         errandButton?.isSelectedTab = declareKind == "errand"
-        reasonInput?.field.placeholderAttributedString = NSAttributedString(
-            string: declareKind == "leisure" ? "理由，例如：刷 X、看视频" : "理由，例如：开会、处理快递",
-            attributes: [.font: NSFont.systemFont(ofSize: 20), .foregroundColor: Palette.faint])
+        reasonInput?.setPlaceholder(declareKind == "leisure" ? "理由，例如：刷 X、看视频" : "理由，例如：开会、处理快递")
         let left = data.leisureLeftMin
         let planned = Int(minutesInput?.field.stringValue ?? "") ?? 0
         let over = declareKind == "leisure" && planned > left
@@ -503,36 +685,67 @@ final class ChoicePanel: NSView {
     }
 
     func focusCurrent() {
-        let target: NSView? = currentTab == "work" ? workInput?.field : currentTab == "declare" ? reasonInput?.field : nil
+        let target: NSView? = currentTab == "work" ? workName : currentTab == "declare" ? reasonInput?.field : nil
         window?.makeFirstResponder(target)
     }
 
-    @objc private func workModuleChanged() {
-        guard let id = workPopup?.selectedItem?.representedObject as? String,
-              let module = data.workModules.first(where: { $0.id == id }) else { return }
-        workInput?.field.stringValue = module.name == "工作" ? "" : module.name
+    // 回车提交：通过代理捕获，避免组合框在下拉中点选时误触发提交。
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
+        if control === workName, workName.cell?.isAccessibilityExpanded() == true { return false }
+        submitFromKeyboard()
+        return true
     }
 
-    @objc private func submitFromField() {
+    func controlTextDidChange(_ notification: Notification) {
+        guard let field = notification.object as? NSTextField else { return }
+        if field === restCustom.field, !field.stringValue.isEmpty { choosePreset(nil) }
+        if field === minutesInput?.field { refreshDeclare() }
+    }
+
+    private func submitFromKeyboard() {
         // 刚出现时忽略回车，避免把正在输入的内容当作选择提交。
         guard Date().timeIntervalSince(shownAt) >= 0.8 else { return }
-        if currentTab == "work" { submitWork() } else if currentTab == "declare" { submitDeclare() }
+        switch currentTab {
+        case "work": submitWork()
+        case "rest": submitRest()
+        default: submitDeclare()
+        }
+    }
+
+    private func minutes(_ box: InputBox) -> Double? {
+        guard let value = Double(box.field.stringValue.trimmingCharacters(in: .whitespaces)), value >= 1, value <= 480 else { return nil }
+        return value
     }
 
     private func submitWork() {
-        let name = workInput?.field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard let module = currentWork() else { return }
+        let name = workName.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { show(error: "先写下现在要做的事"); focusCurrent(); return }
-        let moduleId = (workPopup?.selectedItem?.representedObject as? String) ?? data.defaultWorkId ?? data.workModules.first?.id ?? ""
-        choose(["action": "work", "moduleId": moduleId, "name": name])
+        guard let duration = minutes(workMinutes) else { show(error: "时长须为 1–480 分钟"); return }
+        choose(["action": "work", "moduleId": module.id, "name": name, "durationMin": duration,
+                "workspaceCommandId": workLayout?.selectedItem?.representedObject as? String ?? "",
+                "lightProgramId": workLight?.selectedItem?.representedObject as? String ?? "",
+                "blackout": workBlackout?.state == .on])
+    }
+
+    private func submitRest() {
+        guard let module = currentRest() else { return }
+        let custom = restCustom.field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let name = selectedPreset ?? (custom.isEmpty ? nil : custom) else {
+            show(error: "先选一个休息事项，或写下其他休息事项"); return
+        }
+        guard let duration = minutes(restMinutes) else { show(error: "时长须为 1–480 分钟"); return }
+        choose(["action": "rest", "moduleId": module.id, "name": name, "durationMin": duration,
+                "lightProgramId": restLight?.selectedItem?.representedObject as? String ?? "",
+                "blackout": restBlackout?.state == .on])
     }
 
     private func submitDeclare() {
         let reason = reasonInput?.field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !reason.isEmpty else { show(error: "请写下理由"); focusCurrent(); return }
-        guard let minutes = Double(minutesInput?.field.stringValue ?? ""), minutes > 0 else {
-            show(error: "请填写时长（分钟）"); return
-        }
-        choose(["action": "declare", "kind": declareKind, "reason": reason, "minutes": minutes])
+        guard let value = minutesInput.flatMap(minutes) else { show(error: "时长须为 1–480 分钟"); return }
+        choose(["action": "declare", "kind": declareKind, "reason": reason, "minutes": value])
     }
 
     func choose(_ payload: [String: Any]) {
@@ -593,10 +806,20 @@ final class ScreenWindow: NSWindow {
     }
 }
 
+func displayNumber(_ screen: NSScreen) -> CGDirectDisplayID? {
+    (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+}
+
+/// 显示器 UUID：比显示器编号稳定，拔插或重启后仍能认出同一块屏幕。
+func displayUUID(_ screen: NSScreen) -> String? {
+    guard let number = displayNumber(screen),
+          let uuid = CGDisplayCreateUUIDFromDisplayID(number)?.takeRetainedValue() else { return nil }
+    return CFUUIDCreateString(nil, uuid) as String
+}
+
 final class ScreenController: NSObject, NSApplicationDelegate {
     private var windows: [String: ScreenWindow] = [:]
     private var panel: ChoicePanel?
-    private var panelScreenID: String?
     private var previousApp: NSRunningApplication?
     private var terminating = false
     private let parentPID = getppid()
@@ -656,19 +879,28 @@ final class ScreenController: NSObject, NSApplicationDelegate {
     private func show(_ data: ScreenData) {
         previousApp = NSWorkspace.shared.frontmostApplication
         let panel = ChoicePanel(data: data)
-        panel.send = { [weak self] message in
-            self?.send(message)
-        }
+        panel.send = { [weak self] message in self?.send(message) }
         self.panel = panel
         synchronizeWindows(fadeIn: true)
         send(["type": "shown", "screenCount": windows.count])
     }
 
     private func screenID(_ screen: NSScreen) -> String {
-        if let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
-            return "display-\(number.uint32Value)"
-        }
+        if let number = displayNumber(screen) { return "display-\(number)" }
         return "\(screen.localizedName)-\(NSStringFromRect(screen.frame))"
+    }
+
+    /// 选择界面所在的屏幕：按设置找；指定的显示器没连接时退回带菜单栏的主显示器。
+    private func panelScreen(_ screens: [NSScreen]) -> NSScreen {
+        let preference = panel?.data.display ?? "main"
+        if preference == "pointer" {
+            let pointer = NSEvent.mouseLocation
+            return screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) ?? screens[0]
+        }
+        if preference != "main", let match = screens.first(where: { displayUUID($0) == preference }) {
+            return match
+        }
+        return screens[0]
     }
 
     private func makeWindow(for screen: NSScreen) -> ScreenWindow {
@@ -689,6 +921,8 @@ final class ScreenController: NSObject, NSApplicationDelegate {
         return window
     }
 
+    private var panelScreenID: String?
+
     private func synchronizeWindows(fadeIn: Bool = false) {
         guard let panel else { return }
         let screens = NSScreen.screens
@@ -699,37 +933,38 @@ final class ScreenController: NSObject, NSApplicationDelegate {
             windows[id]?.close()
             windows.removeValue(forKey: id)
         }
-        // 选择界面放在指针所在的屏幕；原屏幕消失时换到主屏幕。
-        if panelScreenID == nil || !ids.contains(panelScreenID!) {
-            let pointer = NSEvent.mouseLocation
-            let target = screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) ?? NSScreen.main ?? screens[0]
-            panelScreenID = screenID(target)
-        }
+        let target = panelScreen(screens)
+        let targetID = screenID(target)
+        let moved = targetID != panelScreenID
+        panelScreenID = targetID
         for screen in screens {
             let id = screenID(screen)
             let window = windows[id] ?? makeWindow(for: screen)
+            let isNew = windows[id] == nil
             windows[id] = window
             if window.frame != screen.frame { window.setFrame(screen.frame, display: true) }
             guard let content = window.contentView else { continue }
-            content.subviews.forEach { $0.removeFromSuperview() }
-            let child: NSView
-            if id == panelScreenID {
-                child = panel
-            } else {
-                child = makeLabel("在主屏幕上选择现在要做的事", size: 18, color: Palette.faint)
-                child.translatesAutoresizingMaskIntoConstraints = false
+            if isNew || moved {
+                content.subviews.forEach { $0.removeFromSuperview() }
+                let child: NSView
+                if id == targetID {
+                    child = panel
+                } else {
+                    child = makeLabel("在主屏幕上选择现在要做的事", size: 18, color: Palette.faint)
+                    child.translatesAutoresizingMaskIntoConstraints = false
+                }
+                content.addSubview(child)
+                NSLayoutConstraint.activate([
+                    child.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+                    child.centerYAnchor.constraint(equalTo: content.centerYAnchor),
+                    child.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 32)
+                ])
             }
-            content.addSubview(child)
-            NSLayoutConstraint.activate([
-                child.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-                child.centerYAnchor.constraint(equalTo: content.centerYAnchor),
-                child.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 32)
-            ])
             if fadeIn && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { window.alphaValue = 0 }
             window.orderFrontRegardless()
         }
         NSApp.activate(ignoringOtherApps: true)
-        if let id = panelScreenID, let window = windows[id] {
+        if let window = windows[targetID] {
             window.makeKeyAndOrderFront(nil)
             DispatchQueue.main.async { panel.focusCurrent() }
         }
@@ -811,6 +1046,17 @@ final class ScreenController: NSObject, NSApplicationDelegate {
         if restore { previousApp?.activate(options: []) }
         NSApp.terminate(nil)
     }
+}
+
+if CommandLine.arguments.contains("--list-displays") {
+    let list = NSScreen.screens.enumerated().map { index, screen -> [String: Any] in
+        ["id": displayUUID(screen) ?? "", "name": screen.localizedName, "main": index == 0,
+         "width": Int(screen.frame.width), "height": Int(screen.frame.height)]
+    }
+    if let data = try? JSONSerialization.data(withJSONObject: list), let line = String(data: data, encoding: .utf8) {
+        print(line)
+    }
+    exit(0)
 }
 
 let app = NSApplication.shared

@@ -84,6 +84,8 @@ class PomodoroView extends ItemView {
     const lightingLine = root.createDiv({ cls:"pmd-lighting-status pmd-hidden", attr:{ role:"status" } });
     const accountingLine = root.createDiv({ cls:"pmd-accounting-line pmd-hidden", attr:{ role:"status" } });
     const accountingText = accountingLine.createSpan({ cls:"pmd-accounting-text" });
+    const extendButton = accountingLine.createEl("button", { cls:"pmd-btn", text:"+5 分钟", attr:{ type:"button", title:"小计时延长 5 分钟" } });
+    extendButton.onclick = () => this.plugin.runUserCommand(() => this.plugin.accounting?.extend(5));
     const accountingButton = accountingLine.createEl("button", { cls:"pmd-btn", attr:{ type:"button" } });
     accountingButton.onclick = () => this.plugin.runUserCommand(() => this.plugin.accounting?.view().declaration
       ? this.plugin.endDeclaration() : this.plugin.openAccountingPromptNow());
@@ -427,8 +429,11 @@ class PomodoroView extends ItemView {
       const selectedId = runtime.status === TIMER_STATUS.IDLE
         ? runtime.selectedModuleId || modules[runtime.currentModuleIndex || 0]?.id
         : runtime.attention?.moduleRun?.moduleId || runtime.moduleRun?.moduleId;
-      timer.setText(mmss(runtime.leftSec ?? this.plugin.getLeftSec()));
-      phase.setText(run ? `${run.type === "work" ? "工作" : "休息"}${pending ? " · 待开始" : ""}` : "待机");
+      const smallTimer = runtime.status === TIMER_STATUS.IDLE && !runtime.attention
+        ? /** @type {Record<string, any>} */ (snap).accounting?.declaration || null : null;
+      // 空闲时由小计时占用头部倒计时。
+      timer.setText(mmss(smallTimer ? Math.ceil(Math.max(0, smallTimer.endsAtMs - Date.now()) / 1000) : runtime.leftSec ?? this.plugin.getLeftSec()));
+      phase.setText(smallTimer ? `小计时 · ${smallTimer.label}` : run ? `${run.type === "work" ? "工作" : "休息"}${pending ? " · 待开始" : ""}` : "待机");
       statusLine.classList.toggle("pmd-hidden", runtime.status === TIMER_STATUS.RUNNING || runtime.status === TIMER_STATUS.IDLE);
       statusLine.setText(runtime.status === TIMER_STATUS.PAUSED ? "已暂停" : runtime.status === TIMER_STATUS.AWAITING ? "等待确认" : runtime.status === TIMER_STATUS.SETTLING ? "正在结算" : runtime.status === TIMER_STATUS.FAILED ? "需要恢复结算" : "");
       const lighting = /** @type {Record<string, any>} */ (snap).lightingStatus;
@@ -446,10 +451,11 @@ class PomodoroView extends ItemView {
         const unaccounted = !declaration && accounting.stretchMin !== null;
         accountingLine.classList.toggle("is-unaccounted", unaccounted);
         accountingText.setText(declaration
-          ? `不计时 · ${declaration.label}：${declaration.reason} · 剩 ${Math.max(0, Math.ceil((declaration.endsAtMs - Date.now()) / 60_000))} 分钟`
+          ? `小计时 · ${declaration.label}：${declaration.reason} · 剩 ${Math.max(0, Math.ceil((declaration.endsAtMs - Date.now()) / 60_000))} 分钟`
           : unaccounted ? `未归属 ${accounting.stretchMin} 分钟 · 今日 ${accounting.unaccountedMin} 分钟 · ${leisure}`
             : `今日未归属 ${accounting.unaccountedMin} 分钟 · ${leisure}`);
         accountingButton.setText(declaration ? "结束" : "选择");
+        extendButton.classList.toggle("pmd-hidden", !declaration);
         accountingButton.classList.toggle("pmd-hidden", !declaration && !(accounting.reason && runtime.status !== TIMER_STATUS.RUNNING));
       }
       const dailyGoal = Number(settings.dailyGoal) > 0 ? Number(settings.dailyGoal) : 8;

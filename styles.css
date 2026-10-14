@@ -363,6 +363,18 @@
 .pmd-as-hold { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 10px; }
 .pmd-as-holdbar { width: 260px; height: 4px; overflow: hidden; border-radius: 2px; background: rgba(255, 255, 255, 0.08); }
 .pmd-as-holdfill { width: 0; height: 100%; border-radius: 2px; background: #fff; }
+.pmd-as-tabpanel { display: flex; flex-direction: column; align-items: center; gap: 14px; width: 100%; }
+.pmd-as-tabpanel[hidden] { display: none; }
+.pmd-as-tabpanel.is-entering { animation: pmd-as-fade 0.18s ease-out; }
+.pmd-as-field { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; }
+.pmd-as-field-label { flex: 0 0 44px; color: rgba(255, 255, 255, 0.62); font-size: 15px; text-align: right; }
+.pmd-as-field > .pmd-as-input:not(.is-minutes) { width: min(500px, 100%); }
+.pmd-accounting-screen .pmd-as-input.is-medium { width: min(300px, 100%); }
+.pmd-accounting-screen .pmd-as-select { width: auto; min-width: 180px; }
+.pmd-accounting-screen .pmd-as-tab.is-preset { min-width: 150px; min-height: 42px; font-size: 15px; }
+.pmd-as-presets { max-width: 560px; }
+.pmd-as-check { display: inline-flex; align-items: center; gap: 6px; color: #fff; font-size: 15px; cursor: pointer; }
+.pmd-as-row[hidden] { display: none; }
 @keyframes pmd-as-fade { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
   .pmd-accounting-screen, .pmd-as-body.is-entering { animation: none; }

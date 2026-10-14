@@ -7,6 +7,8 @@ const {
   normalizeAccountingSettings,
   splitAccountingPatch,
   duePendingPatch,
+  extendDeclaration,
+  declarationRemainingMs,
   createAccountingStore,
   normalizeAccountingStore,
   classifyRuntime,
@@ -316,7 +318,9 @@ test("控制器：通知、等停手后弹窗，声明后写入日记标题与�
   assert.match(text, /## 时间归属/);
   assert.ok(text.includes(`- ${clockText(at(0))}–${clockText(at(5))} 未归属 5 分钟`));
   assert.ok(text.includes(`- ${clockText(at(5))}–${clockText(at(15))} 消遣 10 分钟：刷 X`));
-  assert.ok(events.includes("notify:不计时已结束"));
+  // 小计时到点直接弹出黑屏，不再发通知。
+  assert.deepEqual(prompts, ["idle", "idle"]);
+  assert.ok(!events.some(event => event.startsWith("notify:不计时")));
   assert.deepEqual(stored.value.outbox, []);
   assert.equal(controller.view().leisureUsedMin, 10);
 });
@@ -425,9 +429,14 @@ function fakeChild() {
 }
 
 const screenData = {
-  reason:"idle", label:"已经有 5 分钟没有归属 · 今日累计 12 分钟", title:"现在要做什么？", closable:false, initialTab:"work",
-  workModules:[{ id:"work-1", name:"写周报" }], defaultWorkId:"work-1", taskName:"写周报", candidates:[],
-  restModules:[{ id:"rest-1", name:"散步" }], leisureLeftMin:30, strictBudget:true, snoozesLeft:3, snoozeMin:10, currentName:"当前模块"
+  reason:"idle", label:"已经有 5 分钟没有归属 · 今日累计 12 分钟", title:"现在要做什么？", closable:false, initialTab:"work", display:"main",
+  workModules:[{ id:"work-1", name:"写周报", durationMin:25, workspaceCommandId:"ws-write", lightProgramId:"", blackout:false }],
+  restModules:[{ id:"rest-1", name:"散步", durationMin:5, workspaceCommandId:"", lightProgramId:"rest", blackout:true }],
+  defaultWorkId:"work-1", defaultRestId:"rest-1", candidates:[],
+  restPresets:["NSDR 非睡眠深度休息", "散步", "喝水"],
+  workspaceCommands:[{ id:"ws-write", title:"写作" }, { id:"ws-read", title:"阅读" }],
+  lightPrograms:[{ id:"work", title:"专注" }, { id:"rest", title:"放松" }],
+  againText:"", leisureLeftMin:30, strictBudget:true, snoozesLeft:3, snoozeMin:10, currentName:"当前模块"
 };
 
 test("原生选择屏：发送界面数据；选择成功后撤下，失败时把错误发回界面", async () => {
@@ -512,6 +521,11 @@ function fakeDom() {
   };
 }
 
+function hiddenUp(node) {
+  for (let current = node; current; current = current.parent) if (current.hidden) return true;
+  return false;
+}
+
 function findAll(node, predicate, out = []) {
   for (const child of node.children) {
     if (predicate(child)) out.push(child);
@@ -545,9 +559,12 @@ test("原生程序不可用时在 Obsidian 窗口内显示黑色选择屏：数�
   const key = (type, key, extra = {}) => document.listeners[type]({ key, repeat:false, isComposing:false, target:root,
     preventDefault() {}, stopPropagation() {}, ...extra });
   key("keydown", "3");
-  assert.ok(findAll(root, el => el.textContent === "开始不计时  ↵").length);
+  assert.ok(findAll(root, el => el.textContent === "开始小计时  ↵" && !hiddenUp(el)).length);
   key("keydown", "2");
-  assert.ok(findAll(root, el => el.textContent === "散步").length);
+  // 休息页列出全部休息预设，模块当前名称对应的预设已选中。
+  const presets = findAll(root, el => el.className.includes("is-preset"));
+  assert.deepEqual(presets.map(el => el.textContent), ["NSDR 非睡眠深度休息", "散步", "喝水"]);
+  assert.ok(presets[1].className.includes("is-selected"));
 
   // 按住 1 秒松开不会退出；按满 3 秒才紧急退出。
   key("keydown", "Escape");
@@ -599,20 +616,77 @@ test("控制器：关闭后从关闭时刻起算间隔；紧急退出写一行�
 
 test("插件：选择屏数据（强制模式不可直接关闭，手动打开可关闭）与选择分派", async () => {
   const plugin = accountingPlugin();
-  Object.assign(plugin.settings, strict);
+  Object.assign(plugin.settings, strict, { accountingDisplay:"E9648175-DE3C-457B-94BC-1F3B2A5B559B",
+    restPresets:["NSDR 非睡眠深度休息", "在窗边看远方", "散步", "闭眼休息", "喝水", "拉伸"] });
+  plugin.getWorkspaceLayoutCommands = () => [{ id:"ws-write", name:"Workspaces Plus: Load 写作" }];
   plugin.accounting = { view:() => ({ strict:true, stretchMin:7, unaccountedMin:12, leisureBudgetMin:30, leisureUsedMin:10, snoozesLeft:2 }),
-    declare:input => ({ ok:input.reason === "开会" }), snooze:() => ({ ok:true }), endDeclaration() {} };
+    declare:input => ({ ok:input.reason === "开会" || input.minutes === 5 }), snooze:() => ({ ok:true }), endDeclaration() {} };
   const data = plugin.accountingScreenData("idle");
   assert.equal(data.closable, false);
   assert.equal(plugin.accountingScreenData("idle", { manual:true }).closable, true);
   assert.equal(data.label, "已经有 7 分钟没有归属 · 今日累计 12 分钟");
   assert.equal(data.leisureLeftMin, 20);
-  assert.equal(data.taskName, "");
-  assert.deepEqual(data.restModules, [{ id:"rest-1", name:"散步" }]);
+  assert.equal(data.display, "E9648175-DE3C-457B-94BC-1F3B2A5B559B");
+  assert.deepEqual(data.workModules[0], { id:"work-1", name:"工作", durationMin:25, workspaceCommandId:"", lightProgramId:"", blackout:false });
+  assert.deepEqual(data.restModules.map(module => module.id), ["rest-1"]);
+  assert.equal(data.restPresets.length, 6);
+  assert.equal(data.workspaceCommands[0].id, "ws-write");
+  assert.equal(data.againText, "");
+
   const started = [];
   plugin.startSequence = async index => { started.push(index); return true; };
-  assert.deepEqual(await plugin.handleAccountingChoice({ action:"work", moduleId:"work-1", name:"写周报" }), { ok:true });
-  assert.deepEqual(started, [0]);
+  // 工作：名称、时长、布局、灯光、黑屏一起写回模块设置，再从该模块开始。
+  assert.deepEqual(await plugin.handleAccountingChoice({ action:"work", moduleId:"work-1", name:"写周报", durationMin:45,
+    workspaceCommandId:"ws-write", lightProgramId:"none", blackout:true }), { ok:true });
+  assert.deepEqual(plugin.settings.modules[0], { id:"work-1", type:"work", name:"写周报", durationMin:45, blackout:true,
+    workspaceCommandId:"ws-write", lightProgramId:"none" });
+  // 未知布局不写入。
+  await plugin.handleAccountingChoice({ action:"work", moduleId:"work-1", name:"写周报", workspaceCommandId:"ws-unknown" });
+  assert.equal(plugin.settings.modules[0].workspaceCommandId, "ws-write");
+  // 休息：预设名称和时长写回休息模块。
+  assert.deepEqual(await plugin.handleAccountingChoice({ action:"rest", moduleId:"rest-1", name:"喝水", durationMin:3, lightProgramId:"", blackout:false }), { ok:true });
+  assert.equal(plugin.settings.modules[1].name, "喝水");
+  assert.equal(plugin.settings.modules[1].durationMin, 3);
+  assert.deepEqual(started, [0, 0, 1]);
   assert.deepEqual(await plugin.handleAccountingChoice({ action:"declare", kind:"errand", reason:"开会", minutes:30 }), { ok:true });
+  assert.deepEqual(await plugin.handleAccountingChoice({ action:"again" }), { ok:false, error:"没有可以继续的小计时" });
+  const ended = plugin.accountingScreenData("idle", { ended:{ kind:"leisure", reason:"刷 X", plannedMs:15 * MIN } });
+  assert.equal(ended.againText, "再来 5 分钟：消遣 · 刷 X");
+  assert.match(ended.label, /^「刷 X」的 15 分钟消遣已结束/);
+  assert.deepEqual(await plugin.handleAccountingChoice({ action:"again" }), { ok:true });
   assert.deepEqual(await plugin.handleAccountingChoice({ action:"bogus" }), { ok:false, error:"未知操作" });
+});
+
+test("小计时延长：提醒模式照常延长，强制模式按剩余额度截断，已结束不能延长", () => {
+  let store = { ...createAccountingStore(), dayKey:DAY, dailyPath:PATH, leisureMs:10 * MIN };
+  store = declareUntracked(store, { kind:"leisure", reason:"刷 X", minutes:15, nowMs:at(0) }, settings).store;
+  const remind = extendDeclaration(store, 10, at(5), settings);
+  assert.equal(remind.ok, true);
+  assert.equal(remind.store.declaration.plannedMs, 25 * MIN);
+  const capped = extendDeclaration(store, 10, at(5), strict);
+  assert.equal(capped.addedMin, 5);
+  assert.equal(capped.store.declaration.plannedMs, 20 * MIN);
+  assert.deepEqual(extendDeclaration(capped.store, 5, at(6), strict), { ok:false, error:"今日消遣额度已用完（强制模式）" });
+  assert.deepEqual(extendDeclaration(store, 5, at(16), settings), { ok:false, error:"小计时已经结束" });
+  assert.equal(declarationRemainingMs(store, at(5)), 10 * MIN);
+  assert.equal(normalizeCurrentSettings({}).accountingDisplay, "main");
+});
+
+test("控制器：小计时到点立即弹出黑屏，并带上刚结束的小计时", async () => {
+  const plugin = accountingPlugin();
+  const opened = [];
+  plugin.openAccountingPrompt = (reason, tab, options) => { opened.push({ reason, tab, ended:options?.ended }); controller.setPromptOpen(true); };
+  const clock = { value:at(0) };
+  const { controller, events } = controllerFor(plugin, clock);
+  controller._loaded = controller.load();
+  await controller.poll();
+  assert.deepEqual(controller.declare({ kind:"leisure", reason:"刷 X", minutes:2 }), { ok:true });
+  clock.value = at(2) + 300;
+  controller.checkExpiry();
+  await tick();
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0].reason, "idle");
+  assert.equal(opened[0].ended.reason, "刷 X");
+  assert.ok(events.includes("beep-strong"));
+  assert.equal(controller.view().declaration, null);
 });
