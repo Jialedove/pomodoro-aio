@@ -73,6 +73,12 @@ export interface Settings {
   autoAdvance: boolean;
   enableProjects: boolean;
   respectModalInputFocus: boolean;
+  activityNudgeEnabled: boolean;
+  activityAwaySec: number;
+  activityGentleAfterMin: number;
+  activityStrongAfterMin: number;
+  activityStrongRepeatMin: number;
+  activitySnoozeMin: number;
   schemaVersion?: number;
 }
 export interface Attention {

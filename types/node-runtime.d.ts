@@ -6,6 +6,7 @@ declare module "node:path" {
 
 declare module "node:child_process" {
   export function spawn(command: string, args: string[], options: Record<string, any>): any;
+  export function execFile(command: string, args: string[], options: Record<string, any>, callback: (error: Error | null, stdout: string, stderr: string) => void): any;
 }
 
 declare module "node:timers" {

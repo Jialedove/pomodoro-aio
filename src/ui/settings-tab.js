@@ -154,6 +154,18 @@ class PomodoroSettingTab extends PluginSettingTab {
         this._restartStrongAlert();
       }));
     new Setting(alerts).setName("每日工作段目标").addText(text => text.setValue(String(this.plugin.settings.dailyGoal || 8)).onChange(value => set({ dailyGoal: positiveNumber(value, 8) })));
+
+    const nudge = section("活动提醒", "检测到你在用电脑、但番茄钟没在计时（未开始或已暂停）时提醒你。macOS 检测所有 App 的键盘鼠标输入，其他平台只检测 Obsidian 窗口内的输入。");
+    new Setting(nudge).setName("启用活动提醒")
+      .addToggle(toggle => toggle.setValue(this.plugin.settings.activityNudgeEnabled === true).onChange(value => set({ activityNudgeEnabled: value })));
+    /** @param {string} name @param {string} desc @param {"activityGentleAfterMin"|"activityStrongAfterMin"|"activityStrongRepeatMin"|"activitySnoozeMin"|"activityAwaySec"} key */
+    const nudgeNumber = (name, desc, key) => new Setting(nudge).setName(name).setDesc(desc)
+      .addText(text => text.setValue(String(this.plugin.settings[key])).onChange(value => set({ [key]: Number(value) })));
+    nudgeNumber("轻提醒（分钟）", "连续使用这么久仍未计时，发系统通知并响一声。", "activityGentleAfterMin");
+    nudgeNumber("强提醒（分钟）", "连续使用这么久仍未计时，把 Obsidian 切到前台并弹出设置窗口。", "activityStrongAfterMin");
+    nudgeNumber("强提醒重复间隔（分钟）", "关掉弹窗但仍未开始计时时，隔多久再次强提醒。", "activityStrongRepeatMin");
+    nudgeNumber("稍后提醒（分钟）", "弹窗里“稍后再提醒”暂停提醒的时长。", "activitySnoozeMin");
+    nudgeNumber("离开判定（秒）", "这么久没有键盘鼠标输入就视为离开，重新计算连续使用时间。", "activityAwaySec");
   }
 
   _restartStrongAlert() {

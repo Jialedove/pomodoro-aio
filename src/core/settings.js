@@ -3,6 +3,7 @@ const { normalizeCaptureHeading } = require("./quick-capture");
 const { normalizeModuleDefinition, normalizeRestPresets, normalizeOrchestration } = require("./modules");
 const { TIMER_SCHEMA_VERSION } = require("./timer");
 const { DEFAULT_LIGHT_PROGRAMS, normalizeLightingSettings } = require("./lighting");
+const { ACTIVITY_NUDGE_DEFAULTS, normalizeActivityNudgeSettings } = require("./activity-nudge");
 /** @typedef {import("../../types/contracts").Settings} Settings */
 
 /** @type {Settings} */
@@ -22,7 +23,8 @@ const DEFAULT_SETTINGS = {
   strongAlertDelaySec:30, strongAlertIntervalSec:60,
   persistentAlertSound:true, ribbonClickAutoNext:true, respectModalInputFocus:true,
   lightingEnabled:true, lightingBaseUrl:"http://127.0.0.1:18473", lightingDeviceId:"",
-  lightingDefaultWorkId:"work", lightingDefaultRestId:"rest", lightingPrograms:DEFAULT_LIGHT_PROGRAMS
+  lightingDefaultWorkId:"work", lightingDefaultRestId:"rest", lightingPrograms:DEFAULT_LIGHT_PROGRAMS,
+  ...ACTIVITY_NUDGE_DEFAULTS
 };
 
 /** @param {unknown} raw @param {Settings} fallback @param {(path:string)=>string} normalizePath @returns {Settings} */
@@ -69,6 +71,7 @@ function normalizeCurrentSettings(raw, fallback = DEFAULT_SETTINGS, normalizePat
   result.soundWaveform = ["sine", "square", "triangle"].includes(source.soundWaveform) ? source.soundWaveform : base.soundWaveform;
   result.schemaVersion = TIMER_SCHEMA_VERSION;
   Object.assign(result, normalizeLightingSettings(source, base));
+  Object.assign(result, normalizeActivityNudgeSettings(source, base));
   return result;
 }
 

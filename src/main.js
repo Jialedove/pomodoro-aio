@@ -41,6 +41,10 @@ const { BreakBlackoutController } = require("./ui/break-blackout");
 const { NativeBlackoutController } = require("./ui/native-blackout");
 const { PomodoroSettingTab } = require("./ui/settings-tab");
 const { SequenceController } = require("./controllers/sequence-controller");
+const { ActivityNudgeController } = require("./controllers/activity-nudge-controller");
+const { SystemActivityMonitor } = require("./integrations/system-activity");
+const { ActivityNudgeModal } = require("./ui/activity-nudge-modal");
+const { untrackedReason } = require("./core/activity-nudge");
 const { SettlementCoordinator } = require("./controllers/settlement-coordinator");
 const { LegacyRuntimeController } = require("./legacy/runtime-controller");
 const { WorkspacesPlusAdapter, workspaceLayoutLabel } = require("./integrations/workspaces-plus");
@@ -199,6 +203,10 @@ class PomodoroAIO extends Plugin {
     this._dailyCompletionSyncRef = null;
     this._unloading = false;
     this._scheduleTick = () => {};
+    /** @type {InstanceType<typeof ActivityNudgeController> | null} */
+    this.activityNudge = null;
+    /** @type {InstanceType<typeof ActivityNudgeModal> | null} */
+    this._nudgeModal = null;
   }
   async onload() {
     this._lastPersistenceError = null;
@@ -263,6 +271,8 @@ class PomodoroAIO extends Plugin {
     this.addCommand({ id: 'complete-task', name: '完成当前任务并勾选日记待办', callback: (evt)=> this.runUserCommand(()=> this.completeTask(), evt) });
     this.addCommand({ id: 'open-today', name: '打开当日日记', callback: (evt)=> this.runUserCommand(()=> this.openToday(), evt) });
     this.addCommand({ id: 'quick-capture', name: '快速记录', callback: (evt)=> this.runUserCommand(()=> this.openQuickCaptureModal(), evt) });
+    this.addCommand({ id: 'set-current-work', name: '设置现在在做的事并开始', callback: (evt)=> this.runUserCommand(()=> this.openActivityNudgeNow(), evt) });
+    this.addCommand({ id: 'snooze-activity-nudge', name: '活动提醒：稍后再提醒', callback: (evt)=> this.runUserCommand(()=> this.activityNudge?.snooze(), evt) });
     this._registerDailyTaskCompletionSync();
 
     // 设置页
@@ -294,6 +304,11 @@ class PomodoroAIO extends Plugin {
       }, delay);
     };
     this._scheduleTick();
+    this.activityNudge = new ActivityNudgeController(this, {
+      monitor:new SystemActivityMonitor({ document:typeof document === "undefined" ? null : document }),
+      timers:this.backgroundTimers, playBeep, sysNotify, logPluginError
+    });
+    this.activityNudge.start();
     this.applyStrongAlertStateFromRuntime();
     this.updateRibbonVisuals();
     this.syncBreakBlackout();
@@ -307,6 +322,9 @@ class PomodoroAIO extends Plugin {
     if (this._dailyCompletionSyncRef) this.app?.vault?.offref?.(this._dailyCompletionSyncRef);
     this._dailyCompletionSyncRef = null;
     this.breakBlackout?.destroy();
+    this.activityNudge?.dispose();
+    this.activityNudge = null;
+    this._nudgeModal?.close();
     this.stopPersistentAlertSound();
     if (this._tickTimeout) this.backgroundTimers.clearTimeout(this._tickTimeout);
     await this.deviceBridge?.dispose?.();
@@ -853,6 +871,39 @@ class PomodoroAIO extends Plugin {
   }
   /** @param {number | AnyRecord} [indexOrOptions] @param {AnyRecord} [options] */
   startSequence(indexOrOptions, options={}) { return this._getSequenceController().startSequence(indexOrOptions, options); }
+  /** @param {"idle"|"paused"} reason @param {number} [activeMin] */
+  openActivityNudgeModal(reason, activeMin=0){
+    if (this._nudgeModal) return this._nudgeModal;
+    const workModules = this.settings.modules.filter(module => module.type === "work").map(({ id, name }) => ({ id, name }));
+    const selected = this.settings.modules.find(module => module.id === this.runtime.selectedModuleId);
+    this._nudgeModal = new ActivityNudgeModal(this.app, {
+      reason, activeMin, snoozeMin:this.settings.activitySnoozeMin,
+      pausedName:this.runtime.moduleRun?.name || "当前模块",
+      workModules,
+      defaultModuleId:selected?.type === "work" ? selected.id : workModules[0]?.id || null,
+      loadCandidates:async () => (await this.refreshTodaySnapshot()).unchecked,
+      onStart:(moduleId, name) => this.startWorkFromNudge(moduleId, name),
+      onResume:() => this.togglePause(),
+      onSnooze:() => this.activityNudge?.snooze(),
+      onClosed:() => { this._nudgeModal = null; }
+    });
+    this._nudgeModal.open();
+    return this._nudgeModal;
+  }
+  openActivityNudgeNow(){
+    const reason = untrackedReason(this.runtime);
+    if (!reason) { new Notice("番茄钟正在计时或等待确认"); return null; }
+    return this.openActivityNudgeModal(reason);
+  }
+  /** @param {string} moduleId @param {string} name */
+  async startWorkFromNudge(moduleId, name){
+    const index = this.settings.modules.findIndex(module => module.id === moduleId && module.type === "work");
+    if (index < 0) { new Notice("工作模块已不存在，请重新选择"); return false; }
+    if (untrackedReason(this.runtime) !== "idle") { new Notice("当前已有计时，请先完成或重置当前模块"); return false; }
+    const taskName = String(name || "").trim();
+    if (taskName && taskName !== this.settings.modules[index].name) await this.updateModule(moduleId, { name:taskName });
+    return this.startSequence(index);
+  }
   /** @param {number} index */
   selectModule(index) { return this._getSequenceController().selectModule(index); }
   /** @param {number} index @param {AnyRecord} [options] */

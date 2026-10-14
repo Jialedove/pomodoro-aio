@@ -4,6 +4,11 @@
 .pmd-input { flex: 1 1 auto; display: block; width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--background-modifier-border); border-radius: 8px; }
 .pmd-capture-modal-input { width: 100%; resize: vertical; }
 .pmd-capture-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.pmd-nudge-lead { color: var(--text-muted); }
+.pmd-nudge-fields { display: flex; flex-direction: column; gap: 8px; }
+.pmd-nudge-fields .pmd-input { width: 100%; }
+.pmd-nudge-status { min-height: 1.4em; margin-top: 6px; color: var(--text-error); font-size: var(--font-ui-small); }
+.pmd-nudge-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .pmd-btn { padding: 6px 10px; border: 1px solid var(--background-modifier-border); border-radius: 8px; flex-shrink: 0; }
 .pmd-btn-primary { color: var(--text-on-accent); background: var(--interactive-accent); border-color: var(--interactive-accent); }
 .pmd-btn-primary:hover { background: var(--interactive-accent-hover); border-color: var(--interactive-accent-hover); }
