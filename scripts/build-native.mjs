@@ -14,8 +14,10 @@ const outputDir = path.join(root, "bin");
 const cacheDir = path.join(os.tmpdir(), "pomodoro-aio-swift-cache");
 await mkdir(outputDir, { recursive:true });
 await mkdir(cacheDir, { recursive:true });
-const output = path.join(outputDir, "pomodoro-blackout");
-const source = path.join(root, "native", "BlackoutOverlay.swift");
+const targets = [
+  { source:path.join(root, "native", "BlackoutOverlay.swift"), output:path.join(outputDir, "pomodoro-blackout") },
+  { source:path.join(root, "native", "Guard.swift"), output:path.join(outputDir, "pomodoro-guard") }
+];
 const args = ["swiftc", "-module-cache-path", cacheDir];
 let overlayDir;
 try {
@@ -42,13 +44,16 @@ try {
     args.push("-vfsoverlay", overlay);
     console.log("Using temporary overlay for duplicate SwiftBridging module map.");
   }
-  args.push(source, "-o", output);
-  const result = spawnSync("xcrun", args, { cwd:root, stdio:"inherit" });
-  if (result.error) throw result.error;
-  if (result.status !== 0) process.exitCode = result.status || 1;
+  for (const { source, output } of targets) {
+    const result = spawnSync("xcrun", [...args, source, "-o", output], { cwd:root, stdio:"inherit" });
+    if (result.error) throw result.error;
+    if (result.status !== 0) { process.exitCode = result.status || 1; break; }
+  }
 } finally {
   if (overlayDir) await rm(overlayDir, { recursive:true, force:true });
 }
 if (process.exitCode) process.exit(process.exitCode);
-await chmod(output, 0o755);
-console.log(`Built ${output}`);
+for (const { output } of targets) {
+  await chmod(output, 0o755);
+  console.log(`Built ${output}`);
+}

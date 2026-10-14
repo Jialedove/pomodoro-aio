@@ -211,3 +211,10 @@
 - 放宽设置次日生效：`splitAccountingPatch` 在强制模式下，把关闭、切回提醒、调大任一时长、额度或次数的改动写入 `accountingPending`；收紧立即生效，并撤掉同一项的待生效改动。跨天后，在轮询中由 `applyDueAccountingSettings` 应用。设置页显示待生效内容，可撤销。
 - 原生助手：`show`/`update` 支持 `mode:"prompt"` 和 `buttonTitle`；提示模式下隐藏倒计时、不闪烁、退出时不切回之前的 App。黑屏模式行为不变。
 - 自动检查：`npm run check` 通过，210/210 测试，新增 7 项。原生助手编译通过，但未实际运行提示模式遮罩；未在真实 Obsidian 中验证。
+
+### 第三阶段：守护进程
+
+- `native/Guard.swift` 编译为 `bin/pomodoro-guard`，和黑屏助手一起由 `npm run build:native` 构建。它每 30 秒检查一次：人在电脑前（系统空闲少于 120 秒），且 Obsidian 已连续 60 秒没有运行时，用 `NSWorkspace` 打开 Obsidian。人不在时不累计宽限时间。日志为 JSON 行。支持 `--status`（打印状态后退出）和 `--dry-run`（只记录不打开）。
+- `scripts/guard.mjs` 负责 install/uninstall/status。install 把程序复制到 `~/Library/Application Support/pomodoro-aio/`，写入 `~/Library/LaunchAgents/com.pomodoro-aio.guard.plist`（RunAtLoad + KeepAlive），再用 `launchctl bootstrap gui/<uid>` 启动；日志在 `~/Library/Logs/pomodoro-aio-guard.log`。不随 `install:vault` 安装。
+- 自动检查：`npm run check` 通过，211/211 测试，新增 1 项 plist 测试，含 `plutil -lint`。手动验证：`--status` 读出空闲时间和 Obsidian 运行状态；`--dry-run` 下，目标程序未运行时过了宽限期记录 `would-launch`，Obsidian 运行时不动作。未安装 LaunchAgent。
+- 局限：守护进程只保证 Obsidian 在运行，无法发现插件被禁用。

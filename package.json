@@ -14,7 +14,10 @@
     "test": "node --test test/*.test.cjs",
     "check:build": "node scripts/check-build.cjs",
     "check": "npm run typecheck && npm run lint && npm test && npm run build && npm run check:build && npm run build:native",
-    "install:vault": "npm run check && node scripts/install-vault.mjs"
+    "install:vault": "npm run check && node scripts/install-vault.mjs",
+    "guard:install": "npm run build:native && node scripts/guard.mjs install",
+    "guard:uninstall": "node scripts/guard.mjs uninstall",
+    "guard:status": "node scripts/guard.mjs status"
   },
   "devDependencies": {
     "esbuild": "0.28.0",

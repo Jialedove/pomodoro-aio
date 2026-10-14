@@ -44,6 +44,16 @@ npm run install:vault
 
 此命令覆盖插件目录中的 `main.js`、`manifest.json`、`styles.css`，在 macOS 上另复制 `bin/pomodoro-blackout`；保留 `data.json`。安装后需重载插件。默认目标是 Dove 的卡片库；可通过 `OBSIDIAN_PLUGIN_DIR` 临时指定其他插件目录。
 
+## 守护进程（可选，macOS）
+
+```bash
+npm run guard:install    # 安装并启动，登录后自动运行
+npm run guard:status
+npm run guard:uninstall
+```
+
+`pomodoro-guard` 发现你在用电脑、但 Obsidian 已连续 60 秒没有运行时，会自动打开 Obsidian，让时间归属提醒始终在场。它不做计时，也不读取 Vault。
+
 ## 许可证
 
 [MIT License](LICENSE)
